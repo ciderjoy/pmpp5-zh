@@ -1,0 +1,1095 @@
+\chapter{多维网格与数据}
+\label{chap:multidimensional-grids-and-data}
+
+\setcounter{footnote}{0}
+
+第二章中，我们学习了如何编写一个简单的 CUDA C++ 程序：调用内核函数，启动一个
+处理一维数组元素的一维线程网格。内核规定网格中每个线程要执行的语句。本章将更
+一般地考察线程的组织方式，并学习如何使用线程和线程块处理多维数组。全章贯穿
+多个例子，包括把彩色图像转换为灰度图像、模糊图像以及矩阵乘法。这些例子也将
+帮助读者熟悉数据并行推理，为后续讨论 GPU 架构、内存组织和性能优化做好准备。
+
+\section{多维网格组织}
+\label{sec:multidimensional-grid-organization}
+
+在 CUDA 中，网格中的所有线程都执行同一个内核函数，并依靠自己的坐标（即线程
+索引）彼此区分，同时确定要处理的数据区域。正如第二章所见，这些线程按两级层次
+组织：一个网格由一个或多个线程块组成，每个线程块又由一个或多个线程组成。同一
+线程块中的所有线程共享相同的块索引，该索引可以通过内置变量 \code{blockIdx}
+访问。每个线程还有自己的线程索引，可以通过内置变量 \code{threadIdx} 访问。
+线程执行内核函数时，引用 \code{blockIdx} 和 \code{threadIdx} 会得到该线程的
+坐标。内核调用语句中的执行配置参数指定网格和每个线程块的维度；这些维度可以
+通过内置变量 \code{gridDim} 和 \code{blockDim} 访问。
+
+一般而言，网格是一个三维线程块数组，而每个线程块又是一个三维线程数组。调用
+内核时，程序需要指定网格大小以及每个线程块在各个维度上的大小。这些大小通过
+内核调用语句中的执行配置参数（位于 \code{<<< ... >>>} 之间）指定。第一个
+执行配置参数以线程块数量为单位指定网格的维度，第二个以线程数量为单位指定
+每个线程块的维度。每个参数的类型都是 \code{dim3}，这是一种包含三个整数
+元素 \code{x}、\code{y} 和 \code{z} 的向量类型；三个元素分别指定三个维度的
+大小。如果程序使用的维度少于三个，只需把未使用维度的大小设为 1。
+
+例如，下面的主机代码调用 \code{vecAddKernel}，生成一个一维网格；该网格包含
+32 个线程块，每个线程块包含 128 个线程：
+
+\begin{lstlisting}[language=C++]
+dim3 dimGrid(32, 1, 1);
+dim3 dimBlock(128, 1, 1);
+vecAddKernel<<<dimGrid, dimBlock>>>(...);
+\end{lstlisting}
+
+在这个例子中，网格中的线程总数为
+\[
+  128 \times 32 = 4096.
+\]
+注意，\code{dimBlock} 和 \code{dimGrid} 是由程序员在主机代码中定义的变量。
+只要类型为 \code{dim3}，它们可以使用任何合法的 C++ 变量名。例如，下面的
+语句与前面的语句实现相同的效果：
+
+\begin{lstlisting}[language=C++]
+dim3 dog(32, 1, 1);
+dim3 cat(128, 1, 1);
+vecAddKernel<<<dog, cat>>>(...);
+\end{lstlisting}
+
+网格和线程块的维度也可以根据其他变量计算。例如，图 2.12 中的内核调用可以
+改写为：
+
+\begin{lstlisting}[language=C++]
+dim3 dimGrid(ceil(n/256.0), 1, 1);
+dim3 dimBlock(256, 1, 1);
+vecAddKernel<<<dimGrid, dimBlock>>>(...);
+\end{lstlisting}
+
+这样，线程块数量就可以随向量长度变化，使网格拥有足够的线程覆盖所有向量元素。
+在本例中，程序员选择把线程块大小固定为 256；调用内核时变量 \code{n} 的值
+决定网格的维度。如果 \code{n} 等于 1000，网格包含 4 个线程块；如果 \code{n}
+等于 4000，网格包含 16 个线程块。在这两种情况下，线程数都足以覆盖所有向量
+元素。网格启动后，网格和线程块的维度在整个网格执行完毕之前保持不变。
+
+为了方便一维网格和一维线程块的调用，CUDA 提供了一种特殊的简写形式。不使用
+\code{dim3} 变量时，可以直接使用算术表达式指定一维网格和线程块的配置。在
+这种情况下，CUDA 编译器把算术表达式作为 \code{x} 维度，并假定 \code{y} 和
+\code{z} 维度均为 1。因此，图 2.12 中的内核调用可以写成：
+
+\begin{lstlisting}[language=C++]
+vecAddKernel<<<ceil(n/256.0), 256>>>(...);
+\end{lstlisting}
+
+熟悉 C++ 的读者会发现，这种一维配置的“简写”利用了 C++ 构造函数和默认参数
+的工作方式。\code{dim3} 构造函数的参数默认值为 1。当只传入一个值而期望
+\code{dim3} 时，该值传给构造函数的第一个参数，第二、第三个参数使用默认值 1。
+因此得到一个一维网格或线程块，其 \code{x} 维度大小就是传入的值，\code{y} 和
+\code{z} 维度大小为 1。
+
+在内核函数中，变量 \code{gridDim} 和 \code{blockDim} 的 \code{x} 字段会根据
+执行配置参数预先初始化。例如，如果 \code{n} 等于 4000，那么在
+\code{vecAddKernel} 内引用 \code{gridDim.x} 和 \code{blockDim.x}，得到的值
+分别为 16 和 256。注意，与主机代码中的 \code{dim3} 变量不同，内核函数中的
+这些变量名属于 CUDA C++ 规范，不能更改。也就是说，\code{gridDim} 和
+\code{blockDim} 是内置变量，始终反映网格和线程块的维度。
+
+在 CUDA C++ 中，\code{gridDim.x} 的允许取值范围为 1 到 $2^{31}-1$；
+\code{gridDim.y} 和 \code{gridDim.z} 的允许取值范围为 1 到
+$2^{16}-1=65{,}535$。同一线程块中的所有线程共享 \code{blockIdx.x}、
+\code{blockIdx.y} 和 \code{blockIdx.z} 的值。在所有线程块之间，
+\code{blockIdx.x} 的取值范围为 0 到 \code{gridDim.x-1}，
+\code{blockIdx.y} 的取值范围为 0 到 \code{gridDim.y-1}，
+\code{blockIdx.z} 的取值范围为 0 到 \code{gridDim.z-1}。
+
+下面转而讨论线程块的配置。每个线程块组织成一个三维线程数组。
+
+把 \code{blockDim.z} 设为 1，就可以创建二维线程块。
+像向量加法示例那样，一维线程块满足
+\[
+  \code{blockDim.y}=1,\qquad \code{blockDim.z}=1.
+\]
+
+前文已经提到，同一网格中的所有线程块具有相同的维度和大小。线程块每个维度
+的线程数量由内核调用的第二个执行配置参数指定。在内核中，可以通过
+\code{blockDim} 的 \code{x}、\code{y} 和 \code{z} 字段访问这一配置。
+
+在当前 CUDA 系统中，一个线程块的总大小限制为 1024 个线程。只要线程总数不超过
+1024，这些线程可以以任意方式分布在三个维度中。例如，下面的
+\code{blockDim} 值都是允许的：
+\[
+  (512,1,1),\qquad (8,16,4),\qquad (32,16,2).
+\]
+另一方面，\code{blockDim} 为 $(32,32,2)$ 时线程总数超过 1024，因此不允许。
+
+网格及其线程块不需要具有相同的维度。网格可以比线程块维度更高，反之亦然。
+例如，图 \ref{fig:3-1} 展示了一个小型示例，其中
+\code{gridDim} 为 $(2,2,1)$，\code{blockDim} 为 $(4,2,2)$。可以使用下面的
+主机代码创建该网格：
+
+\begin{lstlisting}[language=C++]
+dim3 dimGrid(2, 2, 1);
+dim3 dimBlock(4, 2, 2);
+KernelFunction<<<dimGrid, dimBlock>>>(...);
+\end{lstlisting}
+
+\begin{figure}[htbp]
+  \centering
+  \begingroup
+  \scriptsize
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{c@{\hspace{0.8em}}c}
+    \fbox{\begin{minipage}{0.23\textwidth}
+      \centering
+      \textbf{主机}\\[0.3em]
+      \fbox{\code{Kernel 1}}\\[0.8em]
+      \fbox{\code{Kernel 2}}
+    \end{minipage}}
+    &
+    \fbox{\begin{minipage}{0.58\textwidth}
+      \centering
+      \textbf{设备}\\[0.2em]
+      \fbox{\begin{minipage}{0.45\textwidth}
+        \centering
+        \textbf{网格 1（Grid 1）}\\[0.2em]
+        \begin{tabular}{cc}
+          \fbox{块 $(0,0)$} & \fbox{块 $(0,1)$}\\
+          \fbox{块 $(1,0)$} & \fbox{块 $(1,1)$}
+        \end{tabular}
+      \end{minipage}}\\[0.6em]
+      \fbox{\begin{minipage}{0.45\textwidth}
+        \centering
+        \textbf{网格 2（Grid 2）}\\[0.2em]
+        \fbox{\begin{minipage}{0.9\textwidth}
+          \centering
+          \textbf{块 $(1,1)$ 展开}\\
+          $4\times2\times2=16$ 个线程\\
+          \code{threadIdx=(z,y,x)}
+        \end{minipage}}
+      \end{minipage}}
+    \end{minipage}}
+  \end{tabular}
+  \endgroup
+  \caption{CUDA 多维网格组织示例（依据原书图 3.1 重绘的概念示意）}
+  \label{fig:3-1}
+\end{figure}
+
+图 \ref{fig:3-1} 中的网格由 4 个线程块组成，排列成一个 $2\times2$ 数组。
+每个线程块使用 $(\code{blockIdx.y},\code{blockIdx.x})$ 标记。例如，块
+$(1,0)$ 的 \code{blockIdx.y}=1，\code{blockIdx.x}=0。需要注意，块和线程标签
+的排列顺序是最高维度在前。这与设置执行配置参数时代码使用的顺序相反；代码中
+最低维度在前。用这种相反的顺序标记块，更适合说明线程坐标如何映射到多维数据
+的索引。
+
+每个 \code{threadIdx} 也包含三个字段：x 坐标 \code{threadIdx.x}、y 坐标
+\code{threadIdx.y} 和 z 坐标 \code{threadIdx.z}。图 \ref{fig:3-1} 展示了
+线程块内部的组织方式。在这个例子中，每个线程块组织成一个 $4\times2\times2$
+的线程数组。由于网格中的所有线程块具有相同的维度，图中只展开其中一个线程块。
+图 \ref{fig:3-1} 展开块 $(1,1)$，展示其中的 16 个线程。例如，线程 $(1,0,2)$
+具有 \code{threadIdx.z}=1、\code{threadIdx.y}=0 和 \code{threadIdx.x}=2。
+在这个例子中，网格共有 4 个线程块，每个线程块 16 个线程，总计 64 个线程。
+
+\noindent\textbf{译者注：}原书相应说明中有一处疑似排印错误，写作
+\code{threadId.x}；CUDA C++ 的内置变量实际是 \code{threadIdx.x}，本译稿按
+正确标识符规范化。
+这里使用很小的数字只是为了让图示保持简单；典型 CUDA 网格包含数千到数百万个
+线程。
+
+\section{将线程映射到多维数据}
+\label{sec:mapping-threads-to-multidimensional-data}
+
+选择一维、二维还是三维线程组织，通常取决于数据的性质。例如，图片是由像素组成
+的二维数组，使用由二维线程块组成的二维网格，通常很适合处理图片中的像素。图
+\ref{fig:3-2} 展示了这种处理方式，输入图片 \code{Pin} 的大小为 $62\times76$
+（垂直方向或 y 方向有 62 个像素，水平方向或 x 方向有 76 个像素）。假设我们
+选择 $16\times16$ 的线程块，即 x 方向和 y 方向各有 16 个线程。需要在 y 方向
+使用 4 个线程块，在 x 方向使用 5 个线程块，因此总共需要 $4\times5=20$ 个
+线程块，如图 \ref{fig:3-2} 所示。粗线表示线程块边界；本概念重绘用文字标出
+实际像素区和线程覆盖区，具体的有效线程分类见图 \ref{fig:3-5}。每个线程负责处理
+一个像素，其 y、x 坐标由 \code{blockIdx}、
+\code{blockDim} 和 \code{threadIdx} 的值推导得到。
+
+\footnote{本书始终按多维数据的降序维度书写其尺寸：先写 z 维，再写 y 维，最后
+写 x 维。例如，对于垂直方向（或 y 方向）有 $n$ 个像素、水平方向（或 x 方向）
+有 $m$ 个像素的图片，我们将其写作 $n\times m$。这遵循 C++ 多维数组的索引
+约定。例如，正文和图中可以简写 $P[y][x]$ 为 $P_{y,x}$。遗憾的是，这与
+\code{gridDim} 和 \code{blockDim} 中数据维度的排列顺序相反。当根据要处理的
+多维数组定义线程网格的维度时，这种差异尤其容易造成混淆。}
+
+垂直（行）坐标为：
+\[
+  \code{blockIdx.y} \times \code{blockDim.y} + \code{threadIdx.y}.
+\]
+水平（列）坐标为：
+\[
+  \code{blockIdx.x} \times \code{blockDim.x} + \code{threadIdx.x}.
+\]
+
+\begin{figure}[htbp]
+  \centering
+  \fbox{\begin{minipage}{0.88\textwidth}
+    \centering
+    \textbf{输入图片：$62\times76$}\\[0.4em]
+    \begin{tabular}{c|c|c|c|c}
+      \multicolumn{5}{c}{x 方向：5 个线程块，每块 $16\times16$}\\
+      \hline
+      \rule{0pt}{1.1em}块 & 块 & 块 & 块 & 块\\ \hline
+      块 & 块 & 块 & 块 & 块\\ \hline
+      块 & 块 & 块 & 块 & 块\\ \hline
+      块 & 块 & 块 & 块 & 块\\ \hline
+    \end{tabular}\\[0.3em]
+    y 方向：4 个线程块；实际像素区域为 $62\times76$，
+    线程覆盖区域为 $64\times80$
+  \end{minipage}}
+  \caption{使用二维线程网格处理输入图片 \code{Pin}（$62\times76$，
+  依据原书图 3.2 重绘的概念示意）}
+  \label{fig:3-2}
+\end{figure}
+
+例如，块 $(1,0)$ 中线程 $(0,0)$ 要处理的 \code{Pin} 元素可由下面的索引得到：
+\[
+\begin{aligned}
+\text{行索引}
+  &=\code{blockIdx.y * blockDim.y}
+    +\code{threadIdx.y}\\
+  &=1\times16+0=16,\\
+\text{列索引}
+  &=\code{blockIdx.x * blockDim.x}
+    +\code{threadIdx.x}\\
+  &=0\times16+0=0.
+\end{aligned}
+\]
+因此，该线程处理的元素是 $P_{\mathrm{in}}[16,0]$。
+
+注意，图 \ref{fig:3-2} 中 y 方向多生成了 2 个线程，x 方向多生成了 4 个线程。
+也就是说，为了处理 $62\times76$ 个像素，我们总共生成了 $64\times80$ 个线程。
+这与一维内核 \code{vecAddKernel} 使用 4 个 256 线程块处理 1000 个元素时
+的情况类似。回顾第二章图 2.10，需要用 \code{if} 语句防止多出的 24 个线程
+产生影响。同样，图片处理内核也应检查线程的垂直索引和水平索引是否落在有效
+像素范围内。
+
+假设主机代码使用整数变量 \code{n} 记录 y 方向的像素数，使用另一个整数变量
+\code{m} 记录 x 方向的像素数。进一步假设输入图片数据已经复制到设备全局内存，
+可以通过指针变量 \code{Pin_d} 访问；输出图片已经分配在设备内存中，可以通过
+\code{Pout_d} 访问。下面的主机代码调用二维内核 \code{colorToGrayscaleConversion}
+处理图片：
+
+\begin{lstlisting}[language=C++]
+dim3 dimGrid(ceil(m/16.0), ceil(n/16.0), 1);
+dim3 dimBlock(16, 16, 1);
+colorToGrayscaleConversion<<<dimGrid, dimBlock>>>(
+    Pout_d, Pin_d, m, n);
+\end{lstlisting}
+
+\noindent\textbf{译者注：}原书此处的主机调用顺序与图 3.4 中的内核形参声明
+\code{Pout, Pin} 相反。为使示例按该声明正确工作，本译稿将调用顺序校正为
+\code{Pout_d, Pin_d}；这一处改动特此注明。
+
+为简单起见，本例把线程块维度固定为 $16\times16$。另一方面，网格维度取决于
+图片的尺寸。处理一张 $1500\times2000$（300 万像素）的图片时，需要生成
+11,750 个线程块：y 方向 94 个，x 方向 125 个。在内核函数中引用
+\code{gridDim.x}、\code{gridDim.y}、\code{blockDim.x} 和 \code{blockDim.y}，
+得到的值分别为 125、94、16 和 16。
+
+在展示内核代码之前，需要先理解 C 和 C++ 语句如何访问动态分配的多维数组。理想
+情况下，我们希望把 \code{Pin_d} 当作二维数组访问，使第 $j$ 行、第 $i$ 列的
+元素可以写成 \code{Pin_d[j][i]}。但是，CUDA C++ 所基于的 C++ 标准要求，在
+把 \code{Pin} 当作二维数组访问时，列数必须在编译期已知。对于动态分配的数组，
+这个信息在编译期并不知道。事实上，使用动态数组的部分原因正是允许数组大小和
+维度根据运行时的数据大小变化。因此，动态分配二维数组的列数在编译期未知，是
+设计所决定的。结果是，在当前 CUDA C++ 中，程序员需要显式地把动态分配的二维
+数组线性化（或“展平”）为等价的一维数组。
+
+实际上，C 和 C++ 中的所有多维数组最终都会被线性化。这是因为现代计算机使用
+“扁平”的内存空间（见“内存空间”侧栏）。对于静态分配的数组，编译器允许程序员
+使用 \code{Pin_d[j][i]} 这样的高维索引语法访问元素；在底层，编译器会把它们
+线性化为等价的一维数组，并把多维索引语法转换为一维偏移量。对于动态分配的数组，
+由于编译期缺少执行这种转换所需的维度信息，这项转换就留给程序员完成。
+
+\begin{quote}
+\textbf{内存空间}
+
+内存空间是对现代计算机中处理器如何访问内存的一种简化视图。通常，每个正在运行
+的应用程序都有自己的内存空间。应用要处理的数据以及为应用执行的指令，都存放
+在该内存空间的位置中。每个位置通常可以容纳一个字节，并具有一个地址。需要
+多个字节的变量——例如占 4 字节的 \code{float} 和占 8 字节的 \code{double}——
+存放在连续的字节位置中。访问内存空间中的数据值时，处理器给出起始地址（起始
+字节位置的地址）以及所需的字节数。
+
+大多数现代计算机至少有 $4$G 个按字节编址的位置。这里，每个 G 表示的位置数为
+\[
+  1{,}073{,}741{,}824=2^{30}.
+\]
+所有位置都带有从 0 到最大编号的地址。由于每个位置只有一个地址，我们称这种
+内存空间具有“扁平”组织。因此，所有多维数组最终都会被“展平”为等价的一维数组。
+C++ 程序员虽然可以使用多维数组语法访问元素，但编译器会把这种访问转换为一个
+指向数组起始元素的基指针，以及根据多维索引计算得到的一维偏移量。
+\end{quote}
+
+二维数组至少有两种线性化方式。一种方式是把同一行的所有元素放在连续位置中，
+再把各行依次放入内存空间。这种布局称为行主序（row-major layout），如图
+\ref{fig:3-3} 所示。为提高可读性，我们用 $M_{j,i}$ 表示矩阵 $M$ 第 $j$ 行、
+第 $i$ 列的元素。它等价于 C++ 中的 \code{M[j][i]}，但在正文和图中更易读。
+图 \ref{fig:3-3} 展示了一个 $4\times4$ 矩阵 $M$ 被线性化为包含 16 个元素的
+一维数组：先放第 0 行的 4 个元素，再放第 1 行的 4 个元素，以此类推。因此，
+矩阵第 $j$ 行、第 $i$ 列元素的一维等价索引为
+\[
+  j\times4+i.
+\]
+$j\times4$ 项跳过第 $j$ 行之前所有行的元素，$i$ 项再选择第 $j$ 行对应区段
+中的元素。例如，$M_{2,1}$ 的一维索引为 $2\times4+1=9$，图中一维数组的
+$M_9$ 就是它的等价元素。这正是 C 和 C++ 编译器线性化二维数组的方式。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c}
+    \begin{tabular}{|c|c|c|c|}
+      \hline
+      $M_{0,0}$ & $M_{0,1}$ & $M_{0,2}$ & $M_{0,3}$\\ \hline
+      $M_{1,0}$ & $M_{1,1}$ & $M_{1,2}$ & $M_{1,3}$\\ \hline
+      $M_{2,0}$ & $M_{2,1}$ & $M_{2,2}$ & $M_{2,3}$\\ \hline
+      $M_{3,0}$ & $M_{3,1}$ & $M_{3,2}$ & $M_{3,3}$\\ \hline
+    \end{tabular}\\[0.4em]
+    $\Downarrow$ 按行展开\\[0.4em]
+    \begin{tabular}{|c|c|c|c|c|c|c|c|}
+      \hline
+      $M_{0,0}$ & $M_{0,1}$ & $M_{0,2}$ & $M_{0,3}$
+        & $M_{1,0}$ & $M_{1,1}$ & $M_{1,2}$ & $M_{1,3}$\\ \hline
+      $M_{2,0}$ & $M_{2,1}$ & $M_{2,2}$ & $M_{2,3}$
+        & $M_{3,0}$ & $M_{3,1}$ & $M_{3,2}$ & $M_{3,3}$\\ \hline
+    \end{tabular}\\[0.4em]
+    $M_{2,1}\longrightarrow M_{2\times4+1}=M_9$
+  \end{tabular}
+  \caption{二维 C++ 数组的行主序布局（索引为 $j\times\code{Width}+i$）
+  及其一维索引（依据原书图 3.3 重绘）}
+  \label{fig:3-3}
+\end{figure}
+
+另一种二维数组线性化方式是把同一列的所有元素放在连续位置中，再把各列依次
+放入内存空间。这种布局称为列主序（column-major layout），由 FORTRAN 编译器
+使用。二维数组的列主序布局等价于其转置形式的行主序布局。这里不再详细讨论
+列主序，只提醒主要编程经验来自 FORTRAN 的读者：CUDA C++ 使用行主序，而不是
+列主序。此外，许多为 FORTRAN 程序设计的 C 库使用列主序，以匹配 FORTRAN
+编译器的布局。因此，如果从 C 或 C++ 程序调用这些库，库的手册通常会要求用户
+转置输入数组。
+
+现在可以研究图 \ref{fig:3-4} 所示的 \code{colorToGrayscaleConversion} 内核。
+该内核使用下面的公式把每个彩色像素转换为对应的灰度值：
+\[
+  L = 0.299r + 0.587g + 0.114b.
+\]
+
+\noindent\textbf{译者注：}原书正文在这里给出的灰度公式与图 3.4 代码中的权重
+\code{0.21f}、\code{0.71f} 和 \code{0.07f} 并不相同。本译稿保留了两处
+底本内容，并将这一差异明确标出。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++]
+// The input image is encoded as unsigned chars [0, 255]
+// Each pixel is 3 consecutive chars for the 3 channels (RGB)
+__global__
+void colorToGrayscaleConversion(unsigned char* Pout,
+                                unsigned char* Pin, int width, int height) {
+    int col = blockIdx.x*blockDim.x + threadIdx.x;
+    int row = blockIdx.y*blockDim.y + threadIdx.y;
+    if (col < width && row < height) {
+        // Get 1D offset for the grayscale image
+        int grayOffset = row*width + col;
+        // One can think of the RGB image having CHANNEL
+        // times more columns than the grayscale image
+        int rgbOffset = grayOffset*CHANNELS;
+        unsigned char r = Pin[rgbOffset];     // Red value
+        unsigned char g = Pin[rgbOffset + 1]; // Green value
+        unsigned char b = Pin[rgbOffset + 2]; // Blue value
+        // Perform the rescaling and store it
+        // We multiply by floating-point constants
+        Pout[grayOffset] = (unsigned char)(0.21f*r + 0.71f*g + 0.07f*b);
+    }
+}
+  \end{lstlisting}
+  \caption{\code{colorToGrayscaleConversion} 内核及其二维线程到数据的映射
+  （依据原书图 3.4 重绘）}
+  \label{fig:3-4}
+\end{figure}
+
+水平方向总共有 \code{blockDim.x*gridDim.x} 个线程。与 \code{vecAddKernel}
+示例类似，下面的表达式生成从 0 到
+\code{blockDim.x*gridDim.x-1} 的每个整数值：
+\[
+  \code{col = blockIdx.x*blockDim.x + threadIdx.x}.
+\]
+\code{gridDim.x*blockDim.x} 大于或等于图片宽度（从主机代码传入的 \code{m}）。
+换言之，水平方向的线程数至少等于像素数；同样，垂直方向的线程数也至少等于
+像素数。
+
+因此，只要测试并确保 \code{row} 和 \code{col} 都在有效范围内，即满足
+\code{(col < width) && (row < height)}，就能覆盖图片中的每个像素。由于每一行
+有 \code{width} 个像素，行 \code{row}、列 \code{col} 处像素的一维索引为
+\code{row*width+col}（图中第 10 行）。这个一维索引 \code{grayOffset} 是
+\code{Pout} 的像素索引，因为输出灰度图像中的每个像素占一个字节
+（\code{unsigned char}）。
+
+以 $62\times76$ 的图片为例，块 $(1,0)$ 中线程 $(0,0)$ 计算得到的
+\code{Pout} 像素的一维索引为：
+\[
+\begin{aligned}
+\text{行索引}
+  &=\code{blockIdx.y * blockDim.y}
+    +\code{threadIdx.y}\\
+  &=1\times16+0=16,\\
+\text{列索引}
+  &=\code{blockIdx.x * blockDim.x}
+    +\code{threadIdx.x}\\
+  &=0\times16+0=0.
+\end{aligned}
+\]
+因此，
+\[
+\begin{aligned}
+P_{\mathrm{out}}[16,0]
+  &=\code{Pout[16*76+0]}\\
+  &=\code{Pout[1216]}.
+\end{aligned}
+\]
+
+对于 \code{Pin}，需要把灰度像素索引乘以 3（图中第 13 行），因为每个彩色像素
+由三个元素存储：分别是 r、g、b，每个元素占一个字节。所得的
+\code{rgbOffset} 是 \code{Pin} 中该彩色像素的起始位置。程序从 \code{Pin}
+的三个连续字节位置读取 r、g 和 b 的值，计算灰度值，再使用
+\code{grayOffset} 把结果写入 \code{Pout}。
+\footnote{这里假设 \code{CHANNELS} 是值为 3 的常量，其定义位于内核函数之外。}
+
+以同一个 $62\times76$ 图片为例，块 $(1,0)$ 中线程 $(0,0)$ 所处理像素的
+\code{Pin} 第一个分量的一维索引为：
+\[
+\begin{aligned}
+\text{行索引}
+  &=\code{blockIdx.y * blockDim.y}
+    +\code{threadIdx.y}\\
+  &=1\times16+0=16,\\
+\text{列索引}
+  &=\code{blockIdx.x * blockDim.x}
+    +\code{threadIdx.x}\\
+  &=0\times16+0=0.
+\end{aligned}
+\]
+因此，
+\[
+\begin{aligned}
+P_{\mathrm{in}}[16,0]
+  &=\code{Pin[16*76*3+0]}\\
+  &=\code{Pin[3648]}.
+\end{aligned}
+\]
+访问的数据是从字节偏移 3648 开始的三个字节。
+
+\begin{figure}[htbp]
+  \centering
+  \begingroup
+  \scriptsize
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{c@{\hspace{0.4em}}c@{\hspace{0.4em}}c@{\hspace{0.4em}}c@{\hspace{0.4em}}c}
+    \multicolumn{5}{c}{\textbf{覆盖区域：$62\times76$ 像素，线程覆盖 $64\times80$}}\\
+    \hline
+    \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1\\
+      12 个块，$256$ 个线程有效}}
+      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
+      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
+      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
+      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 2\\
+        $192/256$ 有效}}\\
+    \hline
+    \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
+      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
+      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
+      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
+      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 2}}\\
+    \hline
+    \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
+      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
+      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
+      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
+      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 2}}\\
+    \hline
+    \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 3\\
+      $224/256$ 有效}}
+      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 3}}
+      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 3}}
+      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 3}}
+      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 4\\
+        $168/256$ 有效}}\\
+    \hline
+  \end{tabular}
+  \endgroup
+  \caption{用 $16\times16$ 线程块覆盖 $76\times62$（宽$\times$高，本章正文记作
+  $62\times76$）图片时的四类区域（依据原书图 3.5 重绘）}
+  \label{fig:3-5}
+\end{figure}
+
+图 \ref{fig:3-5} 展示了处理 $62\times76$ 图片时
+\code{colorToGrayscaleConversion} 的执行。使用 $16\times16$ 线程块时，该内核
+生成 $64\times80$ 个线程；网格包含 $4\times5=20$ 个线程块，垂直方向 4 个，
+水平方向 5 个。线程块的执行行为分为图中四个阴影区域。
+
+图中的第 1 区域包含覆盖图片大部分像素的 12 个线程块。这些线程的
+\code{col} 和 \code{row} 值都在有效范围内，全部通过 \code{if} 测试并处理
+深色区域中的像素；每个线程块的 $16\times16=256$ 个线程都会处理像素。
+
+第 2 区域包含覆盖图片右上方中等阴影区域的 3 个线程块。这些线程的
+\code{row} 值始终在有效范围内，但其中一些 \code{col} 值超过图片宽度
+\code{m=76}。这是因为水平方向的线程数总是程序员选择的 \code{blockDim.x}
+（此处为 16）的倍数。覆盖 76 个像素所需的最小 16 的倍数是 80。因此，每行
+有 12 个线程的 \code{col} 值在有效范围内并处理像素；其余 4 个线程的
+\code{col} 值超出范围，无法通过 \code{if} 条件。每个线程块中总共有
+$12\times16=192$ 个线程处理像素。
+
+第 3 区域对应覆盖图片左下方中等阴影区域的 4 个线程块。这些线程的
+\code{col} 值始终在有效范围内，但其中一些 \code{row} 值超过图片高度
+\code{n=62}。这是因为垂直方向的线程数总是程序员选择的 \code{blockDim.y}
+（此处为 16）的倍数。覆盖 62 个像素所需的最小 16 的倍数是 64。因此，每列
+有 14 个线程的 \code{row} 值在有效范围内并处理像素；其余 2 个线程无法通过
+\code{if} 条件。总共有 $16\times14=224$ 个线程处理像素。
+
+第 4 区域包含覆盖右下方浅色区域的线程。与第 2 区域一样，最上方 14 行中每行
+有 4 个线程的 \code{col} 值超出范围；与第 3 区域一样，最下方两行的
+\code{row} 值全部超出范围。因此，只有 $14\times12=168$ 个线程处理像素。
+
+前面对二维数组的讨论可以很容易扩展到三维数组，只需在线性化数组时加入另一个
+维度。具体做法是把数组的每个“平面”依次放入地址空间。假设程序员使用变量
+\code{m} 和 \code{n} 分别记录三维数组的列数和行数，还需要在调用内核时确定
+\code{blockDim.z} 和 \code{gridDim.z} 的值。在内核中，数组索引还要包含另一个
+全局索引：
+
+\begin{lstlisting}[language=C++]
+int plane = blockIdx.z*blockDim.z + threadIdx.z;
+\end{lstlisting}
+
+三维数组 \code{P} 的线性化访问形式为：
+\[
+  \code{P[plane*m*n + row*m + col]}.
+\]
+处理三维 \code{P} 数组的内核需要检查三个全局索引 \code{plane}、\code{row} 和
+\code{col} 是否都落在数组的有效范围内。CUDA 内核中三维数组的使用方式，将在
+第 8 章的模板（stencil）计算模式中进一步研究。
+
+\section{图像模糊——一个更复杂的内核}
+\label{sec:image-blur}
+
+到目前为止，我们研究了两个内核。第一个是 \code{vecAddKernel}。第二个内核的
+名称为 \code{colorToGrayscaleConversion}。在这两个内核中，每个线程只对一个
+数组元素执行少量算术运算。这些内核很好地说明了 CUDA 的基本程序结构和数据
+并行执行概念。
+
+此时，读者可能会提出一个显而易见的问题：CUDA 程序中的所有线程是否都只彼此
+独立地执行如此简单的操作？答案是否定的。在真实的 CUDA 程序中，线程经常会对
+自己的数据执行复杂操作，并且需要彼此协作。接下来的几章将逐步研究更复杂、
+具有这些特征的例子。我们先从图像模糊函数开始。
+
+图像模糊会平滑图像中像素值的突变。图 \ref{fig:3-6} 展示了图像模糊的效果。
+简单地说，模糊就是让图像变得不清晰。对人眼而言，模糊图像往往会隐藏细节，
+呈现“整体图景”，也就是图中主要主题对象的印象。在计算机图像处理算法中，
+图像模糊的一种常见用途，是用周围干净的像素值修正有问题的像素值，从而减小
+噪声和颗粒状渲染效果的影响。在计算机视觉中，图像模糊可以让边缘检测和目标
+识别算法关注主题对象，而不会被大量细粒度对象拖累。在显示系统中，有时会把
+图像的其余部分模糊掉，以突出某个特定区域。
+
+\begin{figure}[htbp]
+  \centering
+  \fbox{\begin{minipage}{0.82\textwidth}
+    \centering
+    \fbox{\parbox[c][2.0cm][c]{0.30\textwidth}{\centering 原始图像}}
+    \quad$\longrightarrow$\quad
+    \fbox{\parbox[c][2.0cm][c]{0.30\textwidth}{\centering 模糊图像}}
+  \end{minipage}}
+  \caption{原始图像与模糊图像的概念对比（依据原书图 3.6 重绘）}
+  \label{fig:3-6}
+\end{figure}
+
+从数学上说，图像模糊函数把输入图像中包含原始像素的一个像素块进行加权求和，
+用结果计算输出图像像素的值。正如第 7 章将要学习的，这类加权求和属于卷积模式。
+本章采用一种简化方法：取围绕目标像素并包含目标像素在内的 $N\times N$ 像素块
+的简单平均值。为保持算法简单，我们不根据像素到目标像素的距离为不同像素赋予
+不同权重。在实际的卷积模糊方法中，使用这种权重很常见，例如高斯模糊
+（Gaussian Blur）。
+
+图 \ref{fig:3-7} 展示了使用 $3\times3$ 像素块进行图像模糊的例子。计算位置为
+$(\code{row},\code{col})$ 的输出像素值时，像素块以输入图像中同一位置的像素为
+中心。$3\times3$ 像素块覆盖三行（\code{row-1}、\code{row}、\code{row+1}）
+和三列（\code{col-1}、\code{col}、\code{col+1}）。例如，计算位置 $(25,50)$
+处的输出像素时，要使用下面 9 个像素：
+\[
+\begin{array}{ccc}
+(24,49) & (24,50) & (24,51)\\
+(25,49) & (25,50) & (25,51)\\
+(26,49) & (26,50) & (26,51)
+\end{array}
+\]
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tabular}{|c|c|c|}
+    \hline
+    $(\code{row-1},\code{col-1})$ & $(\code{row-1},\code{col})$
+      & $(\code{row-1},\code{col+1})$\\ \hline
+    $(\code{row},\code{col-1})$ & \fbox{\textbf{目标像素}}
+      & $(\code{row},\code{col+1})$\\ \hline
+    $(\code{row+1},\code{col-1})$ & $(\code{row+1},\code{col})$
+      & $(\code{row+1},\code{col+1})$\\ \hline
+  \end{tabular}
+  \caption{输出像素由输入图像中以自身为中心的邻域像素块求平均得到
+  （依据原书图 3.7 重绘）}
+  \label{fig:3-7}
+\end{figure}
+
+图 \ref{fig:3-8} 展示了图像模糊内核。与
+\code{colorToGrayscaleConversion} 内核采用的策略类似，我们让每个线程计算一个
+输出像素，也就是说，线程到输出数据的映射保持不变。在内核开始处，可以看到
+熟悉的 \code{col} 和 \code{row} 索引计算（第 3–4 行），以及检查两个索引是否
+在图像高度 \code{h} 和宽度 \code{w} 的有效范围内的 \code{if} 语句（第 5 行）。
+只有 \code{col} 和 \code{row} 都在有效范围内的线程，才允许参与执行。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++]
+__global__
+void blurKernel(unsigned char *in, unsigned char *out, int w, int h) {
+    int col = blockIdx.x*blockDim.x + threadIdx.x;
+    int row = blockIdx.y*blockDim.y + threadIdx.y;
+    if (col < w && row < h) {
+        int pixVal = 0;
+        int pixels = 0;
+
+        // Get average of the surrounding BLUR_SIZE x BLUR_SIZE box
+        for (int blurRow = -BLUR_SIZE; blurRow < BLUR_SIZE + 1; ++blurRow) {
+            for (int blurCol = -BLUR_SIZE; blurCol < BLUR_SIZE + 1; ++blurCol) {
+                int curRow = row + blurRow;
+                int curCol = col + blurCol;
+                // Verify we have a valid image pixel
+                if (curRow >= 0 && curRow < h && curCol >= 0 && curCol < w) {
+                    pixVal += in[curRow*w + curCol];
+                    ++pixels; // Keep track of number of pixels in the avg
+                }
+            }
+        }
+        // Write our new pixel value out
+        out[row*w + col] = (unsigned char)((float)pixVal/pixels);
+    }
+}
+  \end{lstlisting}
+  \caption{图像模糊内核（依据原书图 3.8 重绘）}
+  \label{fig:3-8}
+\end{figure}
+
+如图 \ref{fig:3-7} 所示，\code{col} 和 \code{row} 的值也给出了该线程负责计算
+的输出像素中心位置，以及用于计算该输出像素的输入像素块中心位置。图
+\ref{fig:3-8} 中的嵌套 \code{for} 循环（第 10–11 行）遍历像素块中的所有像素。
+我们假设程序定义了常量 \code{BLUR_SIZE}。\code{BLUR_SIZE} 的值表示像素块
+每一侧包含的像素数，也称为半径。像素块一条边上的像素总数为
+\[
+  2\times\code{BLUR_SIZE}+1.
+\]
+例如，对于 $3\times3$ 像素块，\code{BLUR_SIZE} 设为 1；对于
+$7\times7$ 像素块，\code{BLUR_SIZE} 设为 3。外层循环遍历像素块的各行，内层
+循环对每一行遍历像素块的各列。
+
+在 $3\times3$ 像素块的例子中，\code{BLUR_SIZE} 为 1。对于负责计算输出像素
+$(25,50)$ 的线程，在外层循环第一次迭代中，
+\code{curRow = row-BLUR_SIZE = (25-1) = 24}。因此，内层循环遍历输入图像的
+第 24 行，\code{curCol} 从 \code{col-BLUR_SIZE = 50-1 = 49} 变化到
+\code{col+BLUR_SIZE = 51}。第一次外层循环处理的像素就是
+$(24,49)$、$(24,50)$ 和 $(24,51)$。读者可以验证，第二次外层循环处理
+$(25,49)$、$(25,50)$ 和 $(25,51)$；第三次处理 $(26,49)$、$(26,50)$ 和
+$(26,51)$。
+
+第 16 行使用 \code{curRow} 和 \code{curCol} 的线性化索引访问当前迭代所经过
+的输入像素值，并把像素值累加到运行中的求和变量 \code{pixVal} 中。第 17 行
+通过递增 \code{pixels} 记录又加入了一个像素值。处理完像素块中的所有像素后，
+第 22 行把 \code{pixVal} 除以 \code{pixels}，计算像素块的平均值，并使用
+\code{row} 和 \code{col} 的线性化索引把结果写入输出像素。
+
+第 15 行的条件语句保护第 16、17 行的执行。例如，计算靠近图像边缘的输出像素
+时，像素块可能延伸到输入图像的有效范围之外。假设使用 $3\times3$ 像素块，
+图 \ref{fig:3-9} 展示了这种情况。在情况 1 中，正在模糊左上角像素；预期像素
+块中的 9 个像素有 5 个并不存在于输入图像中。此时输出像素的 \code{row} 和
+\code{col} 值分别为 0 和 0。嵌套循环的 9 次迭代中，\code{curRow} 和
+\code{curCol} 的取值为：
+\[
+(-1,-1),\ (-1,0),\ (-1,1),\ (0,-1),\ (0,0),\ (0,1),\
+(1,-1),\ (1,0),\ (1,1).
+\]
+对于超出图片范围的 5 个像素，至少有一个索引小于 0。\code{curRow>=0} 和
+\code{curCol>=0} 条件会捕获这些值，并跳过第 16、17 行的执行。因此，只有
+4 个有效像素会被累加到 \code{pixVal}，\code{pixels} 也只递增 4 次，所以
+第 22 行可以正确计算平均值。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c@{\hspace{1.2em}}c@{\hspace{1.2em}}c}
+    \fbox{\begin{minipage}{0.24\textwidth}
+      \centering
+      \textbf{情况 1：角点}\\[0.3em]
+      3$\times$3 邻域\\
+      4 个有效像素
+    \end{minipage}}
+    &
+    \fbox{\begin{minipage}{0.24\textwidth}
+      \centering
+      \textbf{情况 2：边}\\[0.3em]
+      3$\times$3 邻域\\
+      6 个有效像素
+    \end{minipage}}
+    &
+    \fbox{\begin{minipage}{0.24\textwidth}
+      \centering
+      \textbf{情况 3：内部}\\[0.3em]
+      3$\times$3 邻域\\
+      9 个有效像素
+    \end{minipage}}\\[0.7em]
+    \multicolumn{3}{c}{\scriptsize 译者补充：四个角点和四条边的边界处理都依赖有效像素计数。}
+  \end{tabular}
+  \caption{图像边缘附近像素的边界条件（依据原书图 3.9 重绘的概念示意）}
+  \label{fig:3-9}
+\end{figure}
+
+读者应自行分析图 \ref{fig:3-9} 中其他情况，并研究
+\code{blurKernel} 中嵌套循环的执行行为。需要注意，大多数线程会发现其负责的
+$3\times3$ 像素块中的所有像素都位于输入图像内，因此会累加全部 9 个像素。
+但是，四个角点的线程只累加 4 个像素；四条边上其他像素的线程累加 6 个像素。
+这些差异正是必须用 \code{pixels} 变量记录实际累加像素数量的原因。
+
+\section{矩阵乘法}
+\label{sec:matrix-multiplication}
+
+矩阵--矩阵乘法（简称矩阵乘法）是基础线性代数子程序（Basic Linear Algebra
+Subprograms，BLAS）标准的重要组成部分（见“线性代数函数”侧栏）。它是许多
+线性代数求解器（例如 LU 分解）的基础，也是深度学习中的重要计算；第 19 章
+讨论卷积神经网络、第 20 章讨论大语言模型时还会看到这一点。
+
+\begin{quote}
+\textbf{线性代数函数}
+
+线性代数运算广泛用于科学和工程应用。基础线性代数子程序（BLAS）是发布基础
+代数运算库的事实标准。BLAS 函数分为三个等级；等级越高，函数
+执行的运算数量越多。
+
+一级函数执行如下形式的向量运算：
+\[
+  \mathbf{y}=\alpha\mathbf{x}+\mathbf{y},
+\]
+其中 $\mathbf{x}$ 和 $\mathbf{y}$ 是向量，$\alpha$ 是标量。第二级函数执行
+如下形式的矩阵--向量运算：
+\[
+  \mathbf{y}=\alpha A\mathbf{x}+\beta\mathbf{y},
+\]
+其中 $A$ 是矩阵，$\mathbf{x}$ 和 $\mathbf{y}$ 是向量，$\alpha$ 和 $\beta$ 是
+标量。第 17 章讨论稀疏线性代数中的一种二级函数。第三级函数执行如下形式的
+矩阵--矩阵运算：
+\[
+  C=\alpha AB+\beta C,
+\]
+其中 $A$、$B$ 和 $C$ 是矩阵，$\alpha$ 和 $\beta$ 是标量。
+\end{quote}
+
+第二章的向量加法例子是一级 BLAS 函数的一个特例，其中 $\alpha=1$。本章的
+矩阵--矩阵乘法例子是三级函数的一个特例，其中 $\alpha=1$、$\beta=0$。这些
+BLAS 函数很重要，因为它们是更高层代数函数（例如线性方程组求解器和特征值
+分析）的基本构件。正如后文将要讨论的，不同 BLAS 函数实现的性能，在顺序和
+并行计算机上都可能存在数量级上的差异。
+
+一个 $i\times j$（$i$ 行、$j$ 列）矩阵 $M$ 与一个
+$j\times k$（$j$ 行、$k$ 列）矩阵 $N$ 相乘，会产生一个
+$i\times k$ 矩阵 $P$。矩阵乘法中，输出矩阵 $P$ 的每个元素都是 $M$ 的一行
+与 $N$ 的一列的内积。我们继续采用如下约定：$P_{\mathrm{row,col}}$ 表示
+垂直方向第 \code{row} 行、水平方向第 \code{col} 列的元素。如图
+\ref{fig:3-10} 所示，$P_{\mathrm{row,col}}$（矩阵 $P$ 中的小方格）是由
+$M$ 的第 \code{row} 行（$M$ 中的水平条带）与 $N$ 的第 \code{col} 列
+（$N$ 中的垂直条带）形成的向量的内积。内积也称点积，是两个向量对应元素
+乘积之和，即：
+\[
+  P_{\mathrm{row,col}}
+  = \sum_{k=0}^{\code{Width}-1}
+    M_{\mathrm{row},k}N_{k,\mathrm{col}}.
+\]
+
+例如，在图 \ref{fig:3-10} 中，假设 \code{row}=1、\code{col}=5，则：
+\[
+\begin{aligned}
+P_{1,5}={}&M_{1,0}N_{0,5}+M_{1,1}N_{1,5}
+          +M_{1,2}N_{2,5}+\cdots\\
+        &+M_{1,\code{Width}-1}N_{\code{Width}-1,5}.
+\end{aligned}
+\]
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c@{\hspace{0.7em}}c@{\hspace{0.7em}}c}
+    \fbox{\begin{minipage}{0.24\textwidth}
+      \centering
+      \textbf{$M$}\\[0.3em]
+      行 \code{row}\\
+      （水平条带）
+    \end{minipage}}
+    &
+    \fbox{\begin{minipage}{0.24\textwidth}
+      \centering
+      \textbf{$N$}\\[0.3em]
+      列 \code{col}\\
+      （垂直条带）
+    \end{minipage}}
+    &
+    \fbox{\begin{minipage}{0.24\textwidth}
+      \centering
+      \textbf{$P$}\\[0.2em]
+      \fbox{\rule{0pt}{0.8cm}\rule{0.13\textwidth}{0pt}}\\[0.15em]
+      \scriptsize 高亮内框表示一个瓦片
+    \end{minipage}}\\
+    \multicolumn{3}{c}{$M$ 的一行与 $N$ 的一列相乘并求和，得到 $P$ 的一个元素；
+    每个线程块负责 $P$ 中的一个瓦片。}
+  \end{tabular}
+  \caption{使用多个线程块分块计算矩阵 $P$（依据原书图 3.10 重绘）}
+  \label{fig:3-10}
+\end{figure}
+
+为了使用 CUDA 实现矩阵乘法，可以沿用
+\code{colorToGrayscaleConversion} 内核的线程映射方法，把网格中的线程映射到
+输出矩阵 $P$ 的元素。也就是说，每个线程负责计算一个 $P$ 元素。每个线程要
+计算的 $P$ 元素的行、列索引仍然是：
+\[
+  \code{row = blockIdx.y*blockDim.y + threadIdx.y},
+\]
+\[
+  \code{col = blockIdx.x*blockDim.x + threadIdx.x}.
+\]
+采用这种一一对应的映射后，线程的 \code{row} 和 \code{col} 索引也就是其输出
+元素的行、列索引。图 \ref{fig:3-11} 展示了基于这种线程到数据映射的内核源代码。
+读者应当立即看到熟悉的 \code{row}、\code{col} 计算模式（第 3–4 行），以及
+检查两个索引是否都在有效范围内的 \code{if} 语句（第 5 行）。这些语句与
+\code{colorToGrayscaleConversion} 内核中的对应语句几乎相同。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++]
+__global__ void MatrixMulKernel(float* M, float* N,
+                                float* P, int Width) {
+    int row = blockIdx.y*blockDim.y + threadIdx.y;
+    int col = blockIdx.x*blockDim.x + threadIdx.x;
+    if ((row < Width) && (col < Width)) {
+        float Pvalue = 0;
+        for (int k = 0; k < Width; ++k) {
+            Pvalue += M[row*Width+k]*N[k*Width+col];
+        }
+        P[row*Width+col] = Pvalue;
+    }
+}
+  \end{lstlisting}
+  \caption{每个线程计算一个 $P$ 元素的矩阵乘法内核
+  （依据原书图 3.11 重绘）}
+  \label{fig:3-11}
+\end{figure}
+
+唯一重要的区别是，我们作了一个简化假设：
+\code{MatrixMulKernel} 只需要处理方阵，因此把 \code{width} 和 \code{height}
+都替换为单个 \code{Width}。这种线程到数据的映射实际上把 $P$ 划分成多个
+瓦片（tile），图 \ref{fig:3-10} 中的大型浅色方格就是其中一个瓦片。每个线程块
+负责计算其中一个瓦片。
+
+下面关注每个线程执行的工作。回顾一下，$P_{\mathrm{row,col}}$ 是 $M$ 的第
+\code{row} 行与 $N$ 的第 \code{col} 列的内积。在图 \ref{fig:3-11} 中，我们
+使用 \code{for} 循环执行内积运算。进入循环前，先把局部变量 \code{Pvalue}
+初始化为 0（第 6 行）。循环每次从 $M$ 的第 \code{row} 行和 $N$ 的第
+\code{col} 列各访问一个元素，把两个元素相乘，并把乘积累加到 \code{Pvalue}
+（第 8 行）。
+
+先看循环中如何访问 $M$ 的元素。$M$ 按行主序线性化为等价的一维数组：从第 0
+行开始，各行依次放在内存空间中。因此，第 1 行的起始元素是
+\code{M[1*Width]}，因为需要跳过第 0 行的所有元素。一般而言，第
+\code{row} 行的起始元素为 \code{M[row*Width]}。由于同一行的所有元素位于
+连续位置，第 \code{row} 行第 \code{k} 个元素位于
+\code{M[row*Width+k]}。这就是图 \ref{fig:3-11} 第 8 行使用的一维数组偏移量。
+
+再看如何访问 $N$。如图 \ref{fig:3-11} 所示，第 \code{col} 列的起始元素是
+第 0 行的第 \code{col} 个元素，即 \code{N[col]}。访问该列的下一个元素时，
+需要跳过一整行，因为同一列的下一个元素位于下一行。因此，第 \code{col} 列的
+第 \code{k} 个元素位于 \code{N[k*Width+col]}（第 8 行）。
+
+退出 \code{for} 循环后，所有线程都把其 $P$ 元素的值保存在 \code{Pvalue}
+变量中。随后，每个线程使用一维等价索引 \code{row*Width+col} 把自己的
+输出元素写入 $P$（第 10 行）。再次说明，这种索引模式与
+\code{colorToGrayscaleConversion} 内核使用的模式相似。
+
+下面用一个小例子说明矩阵乘法内核的执行。图 \ref{fig:3-12} 展示了
+\code{BLOCK_WIDTH=2} 时的 $4\times4$ 矩阵 $P$。虽然这样小的矩阵和线程块
+大小并不现实，但可以把整个例子放在一幅图中。矩阵 $P$ 被分为四个瓦片，每个
+线程块计算一个瓦片。具体做法是创建 $2\times2$ 的线程块，每个线程计算一个
+$P$ 元素。在这个例子中，块 $(0,0)$ 的线程 $(0,0)$ 计算 $P_{0,0}$，而块
+$(1,0)$ 的线程 $(0,0)$ 计算 $P_{2,0}$。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c|c||c|c}
+    \hline
+    $P_{0,0}$ & $P_{0,1}$ & $P_{0,2}$ & $P_{0,3}$\\ \hline
+    $P_{1,0}$ & $P_{1,1}$ & $P_{1,2}$ & $P_{1,3}$\\ \hline\hline
+    $P_{2,0}$ & $P_{2,1}$ & $P_{2,2}$ & $P_{2,3}$\\ \hline
+    $P_{3,0}$ & $P_{3,1}$ & $P_{3,2}$ & $P_{3,3}$\\ \hline
+  \end{tabular}\\[0.4em]
+  \begin{tabular}{c}
+    \textbf{每个 $2\times2$ 方格是一个线程块}\\
+    块 $(0,0)$ 的线程 $(0,0)\longrightarrow P_{0,0}$\\
+    块 $(1,0)$ 的线程 $(0,0)\longrightarrow P_{2,0}$
+  \end{tabular}
+  \caption{\code{MatrixMulKernel} 的一个小型执行示例
+  （依据原书图 3.12 重绘）}
+  \label{fig:3-12}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \begingroup
+  \scriptsize
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{c@{\hspace{0.8em}}c@{\hspace{0.8em}}c}
+    \fbox{\begin{minipage}{0.23\textwidth}
+      \centering
+      \textbf{$M$}\\
+      第 \code{row} 行
+    \end{minipage}}
+    & $\longrightarrow$
+    & \fbox{\begin{minipage}{0.23\textwidth}
+      \centering
+      \textbf{$P$}\\
+      $P_{\mathrm{row,col}}$
+    \end{minipage}}\\[0.5em]
+    \fbox{\begin{minipage}{0.23\textwidth}
+      \centering
+      \textbf{$N$}\\
+      第 \code{col} 列
+    \end{minipage}}
+    & $\longrightarrow$
+    & \multicolumn{1}{c}{\parbox{0.24\textwidth}{\centering
+      \scriptsize 线程 $(0,0)$、$(1,0)$、$(0,1)$、$(1,1)$\\[-0.1em]
+      \scriptsize 分别产生 4 个点积}}
+  \end{tabular}
+  \endgroup
+  \caption{一个线程块执行矩阵乘法时的动作（依据原书图 3.13 重绘）}
+  \label{fig:3-13}
+\end{figure}
+
+\noindent
+在 \code{MatrixMulKernel} 中，\code{row} 和 \code{col} 索引确定线程要计算的
+$P$ 元素。\code{row} 索引同时确定 $M$ 的行，\code{col} 索引确定 $N$ 的列，
+它们构成该线程的输入。图 \ref{fig:3-13} 展示了每个线程块中的乘法动作。对于
+小型矩阵乘法例子，块 $(0,0)$ 中的线程产生 4 个点积。块 $(0,0)$ 中线程
+$(1,0)$ 的行、列索引分别为 $0\times2+1=1$ 和 $0\times2+0=0$，因此该线程
+映射到 $P_{1,0}$，计算 $M$ 第 1 行与 $N$ 第 0 列的点积。
+\noindent\textbf{译者注：}原书此处将两个乘数排印为 0；由于本例的线程块为
+$2\times2$，这里按前文的索引公式校正为 2。
+
+现在手动跟踪图 \ref{fig:3-11} 中块 $(0,0)$ 的线程 $(0,0)$ 执行
+\code{for} 循环的过程。第 0 次迭代（$k=0$）中，
+\code{row*Width+k = 0*4+0 = 0}，\code{k*Width+col = 0*4+0 = 0}。
+因此访问的输入元素是 \code{M[0]} 和 \code{N[0]}，它们分别是
+$M_{0,0}$ 和 $N_{0,0}$ 的一维等价元素；它们确实是 $M$ 第 0 行和 $N$ 第 0 列
+中的第 0 个元素。
+
+第 1 次迭代（$k=1$）中，
+\code{row*Width+k = 0*4+1 = 1}，\code{k*Width+col = 1*4+0 = 4}。
+因此访问 \code{M[1]} 和 \code{N[4]}，它们分别是 $M_{0,1}$ 和 $N_{1,0}$
+的一维等价元素；它们是 $M$ 第 0 行和 $N$ 第 0 列中的第 1 个元素。
+
+第 2 次迭代（$k=2$）中，
+\code{row*Width+k = 0*4+2 = 2}，\code{k*Width+col = 2*4+0 = 8}，
+因此访问 \code{M[2]} 和 \code{N[8]}，也就是 $M_{0,2}$ 和 $N_{2,0}$ 的一维
+等价元素。最后，第 3 次迭代（$k=3$）中，
+\code{row*Width+k = 0*4+3 = 3}，\code{k*Width+col = 3*4+0 = 12}，
+访问 \code{M[3]} 和 \code{N[12]}，也就是 $M_{0,3}$ 和 $N_{3,0}$ 的一维
+等价元素。
+
+由此可以验证，对于块 $(0,0)$ 中的线程 $(0,0)$，这个 \code{for} 循环确实
+计算了 $M$ 第 0 行与 $N$ 第 0 列的内积。循环结束后，线程写入
+\code{P[row*Width+col]}，即 \code{P[0]}。这是 $P_{0,0}$ 的一维等价元素，
+因此该线程成功计算了所需内积，并把结果写入 $P_{0,0}$。其他线程或其他线程块
+中的线程也可以用同样方式手动执行并验证这个循环。
+
+由于网格的大小受每个网格允许的最大线程块数量以及每个线程块允许的最大线程数
+限制，\code{MatrixMulKernel} 能处理的最大输出矩阵 $P$ 也受这些约束限制。如果
+要计算大于这个限制的输出矩阵，可以把输出矩阵分成网格能够覆盖的子矩阵，并让
+主机代码为每个子矩阵启动一个不同的网格。另一种方法是修改内核代码，让每个
+线程计算 $P$ 的多个元素。我们将在第 5 章进一步优化矩阵乘法实现，并在第 15
+章深入讨论这一重要计算的高级优化。
+
+\section{小结}
+\label{sec:chapter-3-summary}
+
+CUDA 网格和线程块都是最多包含三个维度的多维结构。网格和线程块的多维性有助于
+组织线程，使其映射到多维数据。内核执行配置参数定义网格及其线程块的维度。
+\code{blockIdx} 和 \code{threadIdx} 中的唯一坐标让网格中的线程能够识别自己
+以及自己的数据区域。程序员有责任在内核函数中使用这些变量，使线程正确识别
+要处理的数据部分。访问多维数据时，程序员通常需要把多维索引线性化为一维偏移。
+原因是，C++ 中动态分配的多维数组通常以行主序的一维数组形式存储。本章使用
+复杂度逐步增加的例子，帮助读者熟悉多维网格处理多维数组的机制。这些技能是理解
+本书后续并行模式及其相关优化技术的基础。
+
+\phantomsection
+\section*{练习}
+\addcontentsline{toc}{section}{练习}
+
+\begin{enumerate}[label=\arabic*.,leftmargin=2.7em]
+  \item 本章实现了一个矩阵乘法内核，每个线程生成一个输出矩阵元素。本题要求
+  实现不同的矩阵--矩阵乘法内核并比较它们。
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item 编写一个让每个线程生成一个输出矩阵行的内核，并为该设计填写执行
+    配置参数。
+    \item 编写一个让每个线程生成一个输出矩阵列的内核，并为该设计填写执行
+    配置参数。
+    \item 分析上述两种内核设计各自的优点和缺点。
+  \end{enumerate}
+
+  \item 矩阵--向量乘法接收输入矩阵 $B$ 和向量 $\mathbf{c}$，生成输出向量
+  $\mathbf{a}$。输出向量 $\mathbf{a}$ 的每个元素都是输入矩阵 $B$ 的一行与
+  $\mathbf{c}$ 的点积，即
+  \[
+    a_i=\sum_j B_{i,j}\times c_j.
+  \]
+  为简单起见，只处理元素为单精度浮点数的方阵。编写矩阵--向量乘法内核以及
+  可以调用它的主机存根函数。该存根函数接收四个参数：输出向量 $\mathbf{a}$ 的
+  指针、输入矩阵 $B$ 的指针、输入向量 $\mathbf{c}$ 的指针，以及每个维度的
+  元素数量 $N$。使用一个线程计算输出向量的一个元素。
+
+  \item 考虑下面的 CUDA 内核以及调用它的主机函数：
+
+\noindent\textbf{练习题 3 的 CUDA 代码：}
+\begin{lstlisting}[language=C++]
+__global__ void foo_kernel(float* a, float* b, unsigned int M, unsigned int N) {
+    unsigned int row = blockIdx.y*blockDim.y + threadIdx.y;
+    unsigned int col = blockIdx.x*blockDim.x + threadIdx.x;
+    if (row < M && col < N) {
+        b[row*N + col] = a[row*N + col]/2.1f + 4.8f;
+    }
+}
+void foo(float* a_d, float* b_d) {
+    unsigned int M = 150;
+    unsigned int N = 300;
+    dim3 bd(16, 32);
+    dim3 gd((N - 1)/16 + 1, (M - 1)/32 + 1);
+    foo_kernel<<<gd, bd>>>(a_d, b_d, M, N);
+}
+\end{lstlisting}
+
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item 每个线程块中的线程数是多少？
+    \item 网格中的线程数是多少？
+    \item 网格中的线程块数是多少？
+    \item 执行第 05 行代码的线程数是多少？
+  \end{enumerate}
+
+  \item 考虑一个宽度为 400、高度为 500 的二维矩阵。该矩阵以一维数组形式存储。
+  请分别指定矩阵第 20 行、第 10 列元素的数组索引：
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item 矩阵按行主序存储时；
+    \item 矩阵按列主序存储时。
+  \end{enumerate}
+
+  \item 考虑一个宽度为 400、高度为 500、深度为 300 的三维张量。该张量按行主序
+  存储为一维数组。请指定 $x=10$、$y=20$、$z=5$ 的张量元素的数组索引。
+\end{enumerate}

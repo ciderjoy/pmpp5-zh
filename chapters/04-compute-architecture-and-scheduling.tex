@@ -1,0 +1,1027 @@
+\chapter{计算架构与调度}
+\label{chap:compute-architecture-and-scheduling}
+
+\setcounter{footnote}{0}
+
+第一章介绍过，CPU 的设计目标是尽量降低指令执行延迟，而 GPU 的设计目标是尽量
+提高指令执行吞吐量。第二章和第三章介绍了 CUDA 编程的核心特征：编写和调用内核，
+启动并执行由大量线程组成的网格。在接下来的三章中，我们将讨论现代 GPU 的架构，
+包括计算架构、内存架构，以及由理解这些架构而产生的性能优化技术。
+
+本章介绍 CUDA C++ 程序员需要理解、并据此分析内核代码性能行为的若干 GPU 计算
+架构特征。我们首先给出计算架构的高层次简化视图，并研究灵活的资源分配、线程块
+调度和占用率（occupancy）等概念；随后进一步讨论线程调度、延迟容忍、控制流分歧
+和同步。最后，我们介绍可用于查询 GPU 可用资源的 API 函数，以及帮助估计 GPU
+执行内核时占用率的工具。
+
+接下来的两章将介绍 GPU 内存架构的核心概念和编程注意事项。第五章重点讨论片上
+内存架构；第六章将简要介绍片外内存架构，然后详细讨论整个 GPU 架构的各种性能
+考量。掌握这些概念的 CUDA C++ 程序员，将能够编写和理解高性能并行内核。
+
+\section{现代 GPU 的架构}
+\label{sec:modern-gpu-architecture}
+
+图 \ref{fig:4-1} 展示了 CUDA C++ 程序员所看到的、典型 CUDA-capable GPU 架构的
+高层次视图。GPU 由一组高度多线程化的流式多处理器（Streaming Multiprocessor，
+SM）组成。每个 SM 都有多个称为流式处理器（streaming processor）的处理单元
+\footnote{流式处理器有时也称为 CUDA core。为避免与 CPU core 混淆，本书统一使用
+“流式处理器”这一术语。}，
+这些处理单元共享控制逻辑和内存资源。图 4.1 中，SM 内的小方格表示流式处理器。
+例如，Hopper H100 GPU 有 132 个 SM，每个 SM 有 128 个流式处理器，因此整个 GPU
+共有
+\[
+  132\times128=16{,}896
+\]
+个流式处理器。从 Hopper 架构开始，GPU 中的 SM 被分组为 GPU 处理集群（GPU
+Processing Cluster，GPC）。例如，Hopper H100 的 132 个 SM 分布在 8 个 GPC 中。
+
+SM 的内存资源由不同的片上内存结构组成，在图 \ref{fig:4-1} 中统称为
+\textbf{Memory}。第五章将讨论这些片上内存结构。GPU 还配有若干 GB 的片外设备
+内存，在图中称为\textbf{全局内存（Global Memory）}。全局内存通过多个内存控制器
+或内存通道访问；这些控制器或通道在整体上提供较高的数据访问带宽。
+
+较早的 GPU 使用 GDDR（Graphics Double Data Rate）SDRAM（Synchronous Dynamic
+Random Access Memory）。从 NVIDIA Pascal 架构开始，GPU 还可能使用 HBM
+（High-Bandwidth Memory）、HBM2、HBM2E 或 HBM3。这些内存由与 GPU 集成在同一
+封装中的 DRAM 模块构成。为简洁起见，本书后文将这些内存类型统称为 DRAM。第六章
+将讨论访问 GPU DRAM 时涉及的最重要概念。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c}
+    \fbox{\begin{minipage}{0.88\textwidth}
+      \centering
+      \textbf{GPU}\\[0.3em]
+      \begin{tabular}{c@{\hspace{0.3em}}c@{\hspace{0.3em}}c@{\hspace{0.3em}}c}
+        \fbox{\begin{minipage}{0.18\textwidth}\centering
+          \textbf{GPC}\\[0.2em]
+          \fbox{\begin{minipage}{0.82\textwidth}\centering
+            \textbf{SM}\\[-0.1em]
+            \scriptsize SP SP SP\\[-0.1em]
+            \scriptsize SP SP SP
+          \end{minipage}}\\[-0.1em]
+          \scriptsize $\cdots$ 多个 SM
+        \end{minipage}}
+        &
+        \fbox{\begin{minipage}{0.18\textwidth}\centering
+          \textbf{GPC}\\[0.2em]
+          \fbox{\begin{minipage}{0.82\textwidth}\centering
+            \textbf{SM}\\[-0.1em]
+            \scriptsize SP SP SP\\[-0.1em]
+            \scriptsize SP SP SP
+          \end{minipage}}\\[-0.1em]
+          \scriptsize $\cdots$ 多个 SM
+        \end{minipage}}
+        &
+        \fbox{\begin{minipage}{0.18\textwidth}\centering
+          \textbf{GPC}\\[0.2em]
+          \fbox{\begin{minipage}{0.82\textwidth}\centering
+            \textbf{SM}\\[-0.1em]
+            \scriptsize SP SP SP\\[-0.1em]
+            \scriptsize SP SP SP
+          \end{minipage}}\\[-0.1em]
+          \scriptsize $\cdots$ 多个 SM
+        \end{minipage}}
+        &
+        \fbox{\begin{minipage}{0.18\textwidth}\centering
+          \textbf{GPC}\\[0.2em]
+          \fbox{\begin{minipage}{0.82\textwidth}\centering
+            \textbf{SM}\\[-0.1em]
+            \scriptsize SP SP SP\\[-0.1em]
+            \scriptsize SP SP SP
+          \end{minipage}}\\[-0.1em]
+          \scriptsize $\cdots$ 多个 SM
+        \end{minipage}}
+      \end{tabular}\\[0.5em]
+      \fbox{\parbox[c][0.55cm][c]{0.72\textwidth}{\centering
+        \textbf{片外全局内存（DRAM）}\quad
+        内存控制器 / 内存通道}}
+    \end{minipage}}
+  \end{tabular}
+  \caption{CUDA-capable GPU 的架构（依据原书图 4.1 重绘的概念示意；
+  SP 表示流式处理器）}
+  \label{fig:4-1}
+\end{figure}
+
+\section{线程块调度}
+\label{sec:thread-block-scheduling}
+
+调用内核时，CUDA 运行时系统会启动一个执行内核代码的线程网格。虽然 GPU 拥有
+大量执行资源，但一个内核所启动的线程网格很容易需要远超 GPU 当前可用的执行
+资源。因此，需要在线程块执行资源变得可用时，将线程分配给这些资源的线程块调度
+机制。
+
+在 CUDA 中，线程以线程块为单位分配给 SM。也就是说，一个线程块中的所有线程会
+同时分配到同一个 SM。图 \ref{fig:4-2} 展示了这种分配方式。同一个 SM 可以同时
+分配多个线程块，具体数量取决于 SM 的可用资源。例如，图中每个 SM 分配了三个
+线程块。不过，线程块需要预留执行所需的硬件资源，所以一个 SM 能同时分配的线程
+块数量是有限的；这一数量取决于多种因素，第 \ref{sec:resource-partitioning}
+节将讨论这些因素。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c@{\hspace{0.7em}}c@{\hspace{0.7em}}c}
+    \fbox{\begin{minipage}{0.24\textwidth}\centering
+      \textbf{网格}\\[0.2em]
+      块 0、块 1、块 2、$\ldots$
+    \end{minipage}}
+    & $\longrightarrow$ &
+    \fbox{\begin{minipage}{0.48\textwidth}\centering
+      \textbf{GPU}\\[0.2em]
+      \begin{tabular}{cc}
+        \fbox{\begin{minipage}{0.18\textwidth}\centering
+          \textbf{SM 0}\\[-0.1em]块 0\\块 3\\块 6
+        \end{minipage}}
+        &
+        \fbox{\begin{minipage}{0.18\textwidth}\centering
+          \textbf{SM 1}\\[-0.1em]块 1\\块 4\\块 7
+        \end{minipage}}\\[0.3em]
+        \fbox{\begin{minipage}{0.18\textwidth}\centering
+          \textbf{SM 2}\\[-0.1em]块 2\\块 5\\块 8
+        \end{minipage}}
+        &
+        \fbox{\begin{minipage}{0.18\textwidth}\centering
+          \textbf{待执行列表}\\[-0.1em]块 9、块 10、$\ldots$
+        \end{minipage}}
+      \end{tabular}
+    \end{minipage}}
+  \end{tabular}
+  \caption{线程块按块分配给流式多处理器（依据原书图 4.2 重绘）}
+  \label{fig:4-2}
+\end{figure}
+
+由于 SM 数量有限，而且每个 SM 能同时分配的线程块数量也有限，因此一个 CUDA
+设备能够同时执行的线程块总数存在上限。但是，网格通常包含远多于该上限的线程块。
+为了确保网格中的所有线程块都得到执行，运行时系统会维护待执行线程块列表，并在
+已分配线程块执行完毕后，把新的线程块分配给 SM。
+
+以线程块为单位把线程分配给 SM，可以保证同一个线程块中的线程在同一个 SM 上、
+并且在相近的时间执行。这一保证使同一线程块中的线程能够以不同线程块之间无法
+实现的方式交互。例如，它们可以进行线程块范围的屏障同步，也可以通过位于 SM
+中的低延迟 SRAM（Static Random Access Memory）共享内存交换数据。第五章将讨论
+共享内存。
+
+从 Hopper 架构开始，CUDA 引入了一个可选的层次结构：线程块集群（thread block
+cluster），即一组线程块。类似于同一线程块中的线程会被分配到同一个 SM，同一
+线程块集群中的线程块会共同调度到同一个 GPC。集群中的线程可以通过相应 API
+进行同步，并且可以访问由集群中所有线程块共享内存组成的分布式共享内存
+（distributed shared memory）。第五章将进一步讨论分布式共享内存。
+
+\section{同步与透明可扩展性}
+\label{sec:synchronization-transparent-scalability}
+
+CUDA 允许同一线程块中的线程使用线程块范围的屏障同步函数协调活动。最常用的
+函数是 \code{__syncthreads()}。注意，该函数名中的两个下划线分别由两个连续的
+\code{_} 字符组成；这是 CUDA 中表示内建函数（intrinsic function）的约定，见
+“内建函数”侧栏。
+
+当一个线程调用 \code{__syncthreads()} 时，它会停留在调用所在的程序位置，直到
+同一线程块中的每个线程都到达该位置。调用同步函数的线程被称为到达了与该程序
+位置对应的屏障。屏障确保线程块中的所有线程都完成当前执行阶段，然后任何线程
+才能进入下一阶段。只有当线程块中的所有线程都到达屏障后，它们才会被释放，继续
+执行屏障之后的语句。
+
+\begin{quote}
+\textbf{内建函数}
+
+现代处理器通常提供能够执行关键功能或显著提高性能的特殊指令。这些指令通常以
+内建函数（intrinsic，简称 intrinsic）的形式提供给程序员。从程序员的角度看，
+它们像库函数；但编译器会特殊处理它们，把每次调用转换为相应的特殊指令。最终
+代码中通常没有普通的函数调用，只有与用户代码内联的特殊指令。GNU Compiler
+Collection（gcc）、Intel C Compiler 和 Clang/LLVM C Compiler 等主流现代编译器
+都支持内建函数。
+\end{quote}
+
+在线程块集群层次，CUDA 通过 Cooperative Groups API \cite{cuda-guide-4} 提供集群
+范围同步机制。线程块集群中的所有线程可以在某个程序位置同步，以确保同一集群
+中的所有线程都到达屏障，并且它们对分布式共享内存的操作都已完成，然后再从屏障
+中释放。参与某个屏障的线程集合称为该屏障的\textbf{范围（scope）}。
+
+在网格层次，整个网格中的线程也可以通过 Cooperative Groups API \cite{cuda-guide-4}
+进行网格范围的屏障同步。不过，网格范围同步的开销高于线程块范围和集群范围
+同步，并且必须满足若干重要限制，以确保网格中的所有线程确实同时在执行并能够
+到达屏障。下面主要讨论线程块范围的屏障同步。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c|l}
+    \toprule
+    线程 & 执行时间线（从左向右）\\
+    \midrule
+    $T_0$ & \rule{0.16\textwidth}{0.4pt}\hspace{0.04\textwidth}
+      \texttt{barrier}\hspace{0.08\textwidth}\rule{0.20\textwidth}{0.4pt}\\
+    $T_1$ & \rule{0.22\textwidth}{0.4pt}\hspace{0.04\textwidth}
+      \texttt{barrier}\hspace{0.08\textwidth}\rule{0.20\textwidth}{0.4pt}\\
+    $T_2$ & \rule{0.30\textwidth}{0.4pt}\hspace{0.04\textwidth}
+      \texttt{barrier}\hspace{0.08\textwidth}\rule{0.20\textwidth}{0.4pt}\\
+    $T_N$ & \rule{0.38\textwidth}{0.4pt}\hspace{0.04\textwidth}
+      \texttt{last arrival}\hspace{0.04\textwidth}\rule{0.20\textwidth}{0.4pt}\\
+    \bottomrule
+  \end{tabular}\\[-0.1em]
+  \scriptsize 左侧曲线表示到达时间；最后一个线程到达后，所有线程才能继续。
+  \caption{屏障同步的执行时序示例（依据原书图 4.3 重绘）}
+  \label{fig:4-3}
+\end{figure}
+
+屏障同步是协调并行活动的简单而常用的方法。现实生活中也经常需要屏障同步。
+例如，四位朋友乘车去购物中心。他们可以分别去不同商店购买自己的物品，这比
+四人始终聚在一起、依次访问所有商店高效得多。但是，在离开购物中心之前需要
+进行屏障同步：必须等四位朋友都回到车上才能出发。提前完成购物的人必须等待
+尚未完成的人；如果没有屏障，汽车可能在某人仍在商场时离开。
+
+图 \ref{fig:4-3} 中有 $N$ 个参与同步的线程，时间从左向右推进。有些线程较早
+到达屏障，有些线程较晚到达。早到达的线程等待晚到达的线程；当最后一个线程
+到达屏障时，所有线程都可以被释放并继续执行。屏障同步保证“没有人掉队”。
+
+在 CUDA 中，如果存在 \code{__syncthreads()} 语句，则线程块中的所有线程都必须
+执行它。当 \code{__syncthreads()} 放在 \code{if} 语句中时，线程块中的所有线程
+要么都执行包含该调用的路径，要么都不执行。对于 \code{if-else} 语句，如果两个
+路径各有一个 \code{__syncthreads()}，线程块中的所有线程也必须全部执行
+\code{then} 路径，或全部执行 \code{else} 路径。两个调用是不同的屏障同步点。
+
+图 \ref{fig:4-4} 展示了一个错误用法：从第 04 行开始的 \code{if} 语句中有两个
+屏障同步调用。偶数 \code{threadIdx.x} 的线程执行 \code{then} 路径，其余线程
+执行 \code{else} 路径。第 06 行和第 10 行的调用定义了两个不同的屏障。由于不能
+保证线程块中的所有线程会到达其中任一屏障，这段代码违反了屏障同步函数的使用规则，
+执行行为未定义。错误的屏障同步用法可能导致错误结果，也可能让线程永远相互等待，
+即死锁。程序员必须避免这种不恰当的用法。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,firstnumber=1]
+__global__ void foo_kernel(...) {
+    ...
+    ...
+    if (threadIdx.x % 2 == 0) {
+        ...
+        __syncthreads();
+    } else {
+        ...
+        ...
+        __syncthreads();
+    }
+}
+  \end{lstlisting}
+  \caption{错误使用 \code{__syncthreads()} 的示例；第 06 行和第 10 行
+  是不同的屏障（依据原书图 4.4 重绘）}
+  \label{fig:4-4}
+\end{figure}
+
+屏障同步会对其范围内的线程施加执行约束。这些线程应当在相近的时间完成，以免
+等待时间过长。更重要的是，系统必须确保参与屏障的所有线程都能获得最终到达
+屏障所需的资源，否则永远无法到达的线程可能导致死锁。CUDA 运行时通过以线程块
+为单位分配执行资源来满足这一约束：线程块中的所有线程不仅必须被分配到同一个
+SM，还必须同时被分配到该 SM。只有当运行时为线程块中的所有线程取得所需资源后，
+线程块才能开始执行。
+
+这说明 CUDA 屏障同步应尽量限制在较小范围内。如果屏障同步只限于线程块范围，
+CUDA 运行时就可以按照任意相对顺序执行不同线程块。这种灵活性使 CUDA 程序具有
+可扩展性，如图 \ref{fig:4-5} 所示。图中时间从上向下推进。在只有少量执行资源
+的低成本系统中，同时执行的线程块较少，左侧示例每次执行两个线程块；在执行资源
+更多的高端系统中，右侧示例每次执行四个线程块。如今的高端 GPU 可以同时执行
+数百乃至数千个线程块。
+
+同时执行的一组线程块通常称为一个\textbf{波次（wave）}。网格中的线程块总数
+与能够同时执行的线程块数之比，称为波次数。例如，图 \ref{fig:4-5} 左侧示例
+有四个波次，右侧示例有两个波次。当线程块之间负载不均衡时，较多波次更理想，
+因为硬件有更多机会在 SM 之间平衡负载；当线程块负载均衡时，较少波次通常可以
+接受，有时还更理想。第六章讨论线程粗化时会再次看到这一点。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c@{\hspace{1.0em}}c}
+    \fbox{\begin{minipage}{0.34\textwidth}\centering
+      \textbf{低成本 GPU：每次 2 个块}\\[0.2em]
+      波次 1：块 0、1\\
+      波次 2：块 2、3\\
+      波次 3：块 4、5\\
+      波次 4：块 6、7
+    \end{minipage}}
+    &
+    \fbox{\begin{minipage}{0.34\textwidth}\centering
+      \textbf{高端 GPU：每次 4 个块}\\[0.2em]
+      波次 1：块 0、1、2、3\\
+      波次 2：块 4、5、6、7
+    \end{minipage}}
+  \end{tabular}
+  \caption{线程块之间没有同步约束时，CUDA 程序具有透明可扩展性
+  （依据原书图 4.5 重绘）}
+  \label{fig:4-5}
+\end{figure}
+
+使用较少波次时，需要避免最后一个波次不完整、只包含少量线程块而无法充分利用
+硬件的情况。例如，一个有 660 个线程块的网格运行在能够同时执行 264 个线程块
+的 GPU 上时，会产生
+\[
+  660/264=2.5
+\]
+个波次。如果线程块负载较均衡，先执行 264 个块，再执行 264 个块，最后执行
+只有 132 个块的部分波次。这个部分波次会使 GPU 资源利用不足，这种现象有时称为
+\textbf{尾部效应（tail effect）}。为避免尾部效应，最好把网格线程块数量配置为
+同时可运行线程块数量的整数倍，从而得到整数个波次；该数量取决于 GPU 所拥有的
+硬件资源。
+
+能够在资源数量不同的各种 GPU 上执行同一份应用代码，使厂商可以按照不同市场
+对成本、功耗和性能的要求生产多种 GPU。例如，移动处理器可以用极低功耗较慢地
+执行应用，桌面处理器则可以用更高功耗更快地执行同一应用；两者不需要修改应用
+代码。这种让同一应用代码在具有不同执行资源的硬件上运行的能力称为
+\textbf{透明可扩展性（transparent scalability）}，它减轻了应用开发者的负担，
+也提高了应用的可用性。
+
+\section{Warp 与 SIMD 硬件}
+\label{sec:warps-and-simd}
+
+前面看到，当线程块处于不同的屏障同步范围时，它们可以按照任意相对顺序执行，
+从而允许 CUDA 应用在不同设备之间透明扩展。但是，还没有讨论同一线程块内部线程
+的执行时序。概念上，应假设线程块中的线程也可以按照任意相对顺序执行。在具有
+多个阶段的算法中，只要希望屏障范围内的所有线程完成上一阶段后再进入下一阶段，
+就应使用屏障同步。内核正确性不应依赖线程在没有屏障同步时恰好同步执行的假设。
+
+CUDA GPU 中的线程调度是硬件实现概念，必须结合具体硬件讨论。在迄今为止的大多数
+实现中，线程块被分配到流式多处理器后，会进一步划分为每组 32 个线程的单元，
+称为 \textbf{warp}。warp 的大小由实现决定，未来 GPU 代际可能发生变化。了解
+warp 有助于理解和优化特定 CUDA 设备代际上的应用性能。
+
+warp 是 SM 中的线程调度单位。图 \ref{fig:4-6} 展示了一个实现中线程块划分为
+warp 的方式。示例中，块 1、块 2 和块 3 都分配给同一个 SM；每个块又被划分为
+多个 warp。每个 warp 由连续的 \code{threadIdx} 值组成：线程 0–31 构成第一个
+warp，线程 32–63 构成第二个 warp，以此类推。如果每个线程块有 256 个线程，
+则每个块有
+\[
+  256/32=8
+\]
+个 warp；SM 中有三个这样的块，因此共有 $8\times3=24$ 个 warp。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c|c|c}
+    \toprule
+    线程块 & 线程范围 & warp 数量\\
+    \midrule
+    Block 1 & 0--31,\ 32--63,\ $\ldots$,\ 224--255 & 8\\
+    Block 2 & 0--31,\ 32--63,\ $\ldots$,\ 224--255 & 8\\
+    Block 3 & 0--31,\ 32--63,\ $\ldots$,\ 224--255 & 8\\
+    \midrule
+    \multicolumn{2}{r|}{SM 中总计} & 24\\
+    \bottomrule
+  \end{tabular}
+  \caption{线程块被划分为 warp 以进行线程调度（依据原书图 4.6 重绘）}
+  \label{fig:4-6}
+\end{figure}
+
+如果线程块是一维数组，即只使用 \code{threadIdx.x}，划分很直接。一个 warp 中的
+\code{threadIdx.x} 连续递增。warp 大小为 32 时，warp 0 从线程 0 到线程 31，
+warp 1 从线程 32 到线程 63。一般而言，warp $n$ 从线程 $32n$ 开始，到线程
+$32(n+1)-1$ 结束。如果线程块大小不是 32 的倍数，最后一个 warp 会用非活动线程
+填充到 32 个位置。例如，一个有 48 个线程的块会划分为两个 warp，第二个 warp
+用 16 个非活动线程填充。
+
+对于包含多个线程维度的线程块，在划分 warp 之前，线程维度会投影为线性化的
+行主序布局。线性布局中，较大的 y、z 坐标排在较小坐标之后。二维线程块的情况
+是：先放置 \code{threadIdx.y=0} 的所有线程，再放置
+\code{threadIdx.y=1} 的所有线程，以此类推；相同 y 值的线程按照递增的
+\code{threadIdx.x} 连续排列。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c}
+    \begin{tabular}{c|c|c|c}
+      $T_{0,0}$ & $T_{0,1}$ & $T_{0,2}$ & $T_{0,3}$\\ \hline
+      $T_{1,0}$ & $T_{1,1}$ & $T_{1,2}$ & $T_{1,3}$\\ \hline
+      $T_{2,0}$ & $T_{2,1}$ & $T_{2,2}$ & $T_{2,3}$\\ \hline
+      $T_{3,0}$ & $T_{3,1}$ & $T_{3,2}$ & $T_{3,3}$
+    \end{tabular}\\[0.4em]
+    $\longrightarrow\quad
+    T_{0,0},T_{0,1},T_{0,2},T_{0,3},
+    T_{1,0},T_{1,1},\ldots,T_{3,3}$
+    \quad（行主序线性布局）
+  \end{tabular}
+  \caption{将二维线程放入线性布局（依据原书图 4.7 重绘）}
+  \label{fig:4-7}
+\end{figure}
+
+图 \ref{fig:4-7} 上半部分是二维线程块，下半部分是线性化视图。前四个线程的
+y 坐标为 0，按 x 坐标递增排列；接下来四个线程的 y 坐标为 1，也按 x 坐标递增
+排列。这里的坐标分别对应 CUDA 字段 \code{threadIdx.y} 和 \code{threadIdx.x}。
+示例中的 16 个线程构成半个 warp，另用 16 个非活动线程补足一个 32 线程 warp。
+
+如果二维线程块为 $8\times8$，64 个线程会构成两个 warp。第一个 warp 从
+$T_{0,0}$ 到 $T_{3,7}$，第二个 warp 从 $T_{4,0}$ 到 $T_{7,7}$。读者可以
+自行画出该图验证这一点。
+
+对于三维线程块，首先把 \code{threadIdx.z=0} 的所有线程放入线性顺序，其中
+线程按二维线程块的方式排列；然后放入 \code{threadIdx.z=1} 的线程，以此类推。
+例如，一个三维 $2\times8\times4$ 线程块（x 维为 4、y 维为 8、z 维为 2）
+共有 64 个线程，会划分为两个 warp：第一个 warp 从 $T_{0,0,0}$ 到
+$T_{0,7,3}$，第二个 warp 从 $T_{1,0,0}$ 到 $T_{1,7,3}$。
+
+SM 设计为按照单指令多数据（Single Instruction, Multiple Data，SIMD）模型执行
+warp 中的所有线程。也就是说，在任意时刻，一条指令会被取出并由 warp 中所有
+线程执行。为此，一个 SM 被组织为多个处理分区，SM 上的 warp 分布到这些处理
+分区中。图 \ref{fig:4-8} 给出了一个玩具示例：SM 由两个处理分区组成，每个
+处理分区包含 8 个共享一条指令取出/分发单元的流式处理器。作为真实例子，拥有
+128 个流式处理器的 Hopper H100 SM 被组织为四个处理分区，每个分区有 32 个
+流式处理器。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c@{\hspace{1em}}c}
+    \fbox{\begin{minipage}{0.31\textwidth}\centering
+      \textbf{处理分区 0}\\
+      指令取出/分发\\
+      SP SP SP SP SP SP SP SP
+    \end{minipage}}
+    &
+    \fbox{\begin{minipage}{0.31\textwidth}\centering
+      \textbf{处理分区 1}\\
+      指令取出/分发\\
+      SP SP SP SP SP SP SP SP
+    \end{minipage}}
+  \end{tabular}\\[-0.1em]
+  \scriptsize 一个玩具 SM；真实 H100 SM 有四个处理分区，每个分区 32 个 SP。
+  \caption{SM 由处理分区组成，以执行 SIMD 指令（依据原书图 4.8 重绘）}
+  \label{fig:4-8}
+\end{figure}
+
+同一 warp 中的线程会被分配到同一个处理分区，该分区为 warp 取出指令，并让
+warp 中所有线程执行这条指令。由于 CUDA 线程调度机制把 warp 映射到处理分区，
+实际上限制了 warp 中所有线程在任意时刻执行相同指令，因此 warp 的执行行为
+通常称为单指令多线程（Single Instruction, Multiple Thread，SIMT）。
+
+SIMT 的一个重要优点是，程序员可以用标量线程编写内核代码，之后由 SM 把线程
+分组为 warp，透明地使用 SIMD 硬件。这不同于传统 CPU SIMD 编程：在 CPU 中，
+程序员或编译器通常需要使用 API 在每个线程内部显式利用 SIMD 硬件，增加了另一
+层编程复杂度。\footnote{虽然 SIMT 比 SIMD 更易编程，但程序员仍应避免控制流
+分歧，因为分歧会对性能产生负面影响，见第 \ref{sec:control-divergence} 节。}
+
+SIMD 的优势在于，指令取出/分发单元等控制硬件的成本由多个执行单元共享。这样
+设计可以让较小比例的硬件用于控制，把更大比例的芯片面积用于提高算术吞吐量。
+在可预见的未来，warp 划分仍会是常见的实现技术。不过，warp 大小可能因实现
+而异；截至目前，所有 CUDA 设备都使用了类似的 32 线程 warp 配置。
+
+由于同一 warp 中线程的调度方式具有特殊关系，CUDA 提供了一组 warp 级原语，即
+在 warp 内进行高效数据交换和同步的 API 函数。程序员可以使用它们提高涉及线程
+协作的计算速度和效率。这些原语支持以 warp 为中心的编程风格，把 warp 作为
+软件层次结构中（线程块与线程之间）的额外层次。第十、十一和十二章将介绍相关
+warp 级原语。
+
+\begin{quote}
+\textbf{Warp 与 SIMD 硬件}
+
+1945 年，John von Neumann 在报告中描述了构建电子计算机的模型，该模型以先驱
+EDVAC 计算机的设计为基础。今天通常称为“冯·诺依曼模型”，它几乎是所有现代
+计算机的基础蓝图。
+
+冯·诺依曼模型中的计算机有输入/输出（I/O），可以向系统提供程序和数据，也可以
+从系统产生结果。执行程序时，计算机首先把程序及其数据输入内存。程序由一组
+指令组成；控制单元维护程序计数器（Program Counter，PC），其中保存下一条待
+执行指令的内存地址。在每个“指令周期”中，控制单元使用 PC 将指令取入指令
+寄存器（Instruction Register，IR），再检查指令位以确定计算机各组件要执行的
+动作。这也是该模型被称为“存储程序”模型的原因：用户只需把不同程序存入内存，
+就能改变计算机行为。
+
+将线程作为 warp 执行的动机，可以用适合 GPU 的修改版冯·诺依曼模型表示。对应
+图 \ref{fig:4-8} 中处理分区的处理器只有一个负责取出和分发指令的控制单元；
+相同的控制信号会发送到多个处理单元，每个处理单元对应 SM 中的一个流式处理器，
+并执行 warp 中的一个线程。所有处理单元都由指令寄存器中的同一条指令控制，
+它们的执行差异来自寄存器文件中不同的数据操作数。这就是处理器设计中的 SIMD。
+
+例如，所有处理单元都可以执行 \code{add r1, r2, r3}，但不同处理单元中的
+\code{r2} 和 \code{r3} 内容不同。SIMD 是 Flynn 分类法 \cite{flynn-4} 中四类
+计算机架构之一，另外三类是单指令单数据（SISD）、多指令单数据（MISD）和多
+指令多数据（MIMD）。现代处理器的控制单元相当复杂，包括指令取出逻辑和指令
+缓存访问端口；让多个处理单元共享一个控制单元，可以显著降低硬件制造成本和
+功耗。
+\end{quote}
+
+\section{控制流分歧}
+\label{sec:control-divergence}
+
+当 warp 中所有线程在处理数据时遵循相同的执行路径，更正式地说，遵循相同的
+控制流时，SIMD 执行效果很好。例如，对于 \code{if-else} 结构，如果 warp 中
+所有线程都执行 \code{then} 路径，或者所有线程都执行 \code{else} 路径，执行
+就很高效。
+
+但是，当同一 warp 中的线程采取不同控制流路径时，SIMD 硬件会分别遍历这些路径，
+每条路径执行一次。例如，部分线程走 \code{then} 路径、其余线程走 \code{else}
+路径时，硬件会执行两次：一次执行 \code{then} 路径，另一次执行 \code{else}
+路径。每次遍历其中一条路径时，走另一条路径的线程都不会产生有效作用。
+
+同一 warp 中的线程采取不同控制流路径时，称这些线程发生了\textbf{控制流分歧
+（control divergence）}。这种多遍执行方式使 SIMD 硬件能够实现 CUDA 线程的
+完整语义：硬件仍对 warp 中所有线程执行相同指令，但只让选择了当前路径的线程
+在该遍中生效，从而既保持线程独立性，又利用 SIMD 硬件的低成本。分歧的代价是
+额外路径遍历，以及每次遍历中非活动线程仍占用的执行资源。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c|c|c}
+    \toprule
+    线程 & \code{then} 遍 & \code{else} 遍\\
+    \midrule
+    0--23 & 执行 A & 非活动\\
+    24--31 & 非活动 & 执行 B\\
+    \bottomrule
+  \end{tabular}\\[-0.1em]
+  \scriptsize 两条路径执行完后，warp 中线程可能重新汇合并执行 C。
+  \caption{warp 在 \code{if-else} 语句处分歧的示例（依据原书图 4.9 重绘）}
+  \label{fig:4-9}
+\end{figure}
+
+图 \ref{fig:4-9} 中，包含线程 0–31 的 warp 到达 \code{if-else} 语句时，线程
+0–23 走 \code{then} 路径，线程 24–31 走 \code{else} 路径。warp 首先执行一遍，
+其中线程 0–23 执行 A、线程 24–31 非活动；随后再执行一遍，其中线程 24–31
+执行 B、线程 0–23 非活动。之后线程可能重新汇合并执行 C。
+
+在 Pascal 及更早架构中，这些遍按顺序执行，即一遍执行完后再执行另一遍。从
+Volta 架构开始，不同遍可以并发执行，也就是一条路径的执行可以与另一条路径
+交错。这一特性称为独立线程调度（independent thread scheduling）。因此，不能
+假定 warp 中线程在分歧路径执行后一定会重新汇合。如果 warp 中所有线程必须
+完成某个阶段后才能继续，应使用 \code{__syncwarp()} 等 warp 级屏障同步原语
+保证正确性。
+
+分歧也可能出现在其他控制流结构中。图 \ref{fig:4-10} 展示了分歧
+\code{for} 循环：每个线程执行不同数量的迭代，次数从 4 到 8 不等。前四次迭代
+中所有线程都活动并执行 A；第五次迭代中，部分线程执行 A，另一些线程（例如
+线程 4）已经完成迭代而处于非活动状态；第八次迭代中，图示线程中只有线程 1
+和线程 7 执行 A，其他线程均非活动。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c|cccccccc}
+    \toprule
+    迭代 & 1 & 2 & 3 & 4 & 5 & 6 & 7 & 8\\
+    \midrule
+    线程 1 & A&A&A&A&A&A&A&A\\
+    线程 4 & A&A&A&A&--&--&--&--\\
+    线程 7 & A&A&A&A&A&A&A&A\\
+    \bottomrule
+  \end{tabular}\\[-0.1em]
+  \scriptsize A 表示执行，-- 表示非活动；不同线程的循环次数不同。
+  \caption{warp 在 \code{for} 循环处分歧的示例（依据原书图 4.10 重绘）}
+  \label{fig:4-10}
+\end{figure}
+
+检查控制结构的判定条件，可以判断它是否可能造成线程分歧。如果判定条件基于
+\code{threadIdx} 值，控制语句就可能导致分歧。例如，条件
+\code{threadIdx.x > 2} 会让块中第一个 warp 的线程走两条不同路径：
+线程 0、1、2 走一条路径，线程 3、4、5 等走另一条路径。类似地，如果
+循环条件依赖线程索引，循环也可能造成分歧。
+
+使用带线程控制分歧的控制结构，一个常见原因是处理线程映射到数据时的边界条件。
+这是因为线程总数通常必须是线程块大小的倍数，而数据大小可以是任意数值。从
+第二章的向量加法内核开始，我们就使用了 \code{if (i < n)}，因为并非所有向量
+长度都是线程块大小的倍数。
+
+例如，假设向量长度为 1003，线程块大小为 64。需要启动 16 个线程块处理全部
+1003 个元素，但 16 个线程块共有 1024 个线程，因此必须禁止第 15 个线程块中
+最后 21 个线程执行原程序不允许的工作。这 16 个线程块被划分为 32 个 warp，
+只有最后一个线程块中的第二个 warp 会产生控制流分歧。
+
+随着处理向量长度增大，边界条件造成的分歧对性能的影响会降低。长度为 100 时，
+四个 warp 中有一个分歧，影响可能很明显；长度为 1000 时，32 个 warp 中只有
+一个分歧，分歧只影响约 3\% 的执行时间；即使使该 warp 执行时间加倍，对总时间
+的影响也约为 3\%。长度达到 10,000 或更大时，只有 313 个 warp 中的一个分歧，
+影响会远低于 1\%。
+
+二维数据（例如第三章的彩色转灰度示例）也需要用 \code{if} 处理数据边缘线程
+的边界条件。对 $62\times76$ 图片，使用 $4\times5=20$ 个 $16\times16$
+线程块，每个块划分成 8 个 warp，每个 warp 包含两行线程，总计 160 个 warp。
+参照第三章图 3.5：
+
+\begin{itemize}
+  \item 区域 1 的 12 个块中没有 warp 分歧，共 $12\times8=96$ 个 warp；
+  \item 区域 2 的 24 个 warp 全部产生分歧；
+  \item 区域 3 中，底部 warp 完全映射到图像外，因此不会通过 \code{if}，不产生分歧；
+  \item 区域 4 中，前 7 个 warp 产生分歧，最后一个 warp 不产生分歧。
+\end{itemize}
+
+总计 160 个 warp 中有 31 个产生控制流分歧。如果处理 $200\times150$ 的图片，
+使用 $16\times16$ 线程块，则共有 $13\times10=130$ 个线程块，即 1040 个 warp。
+区域 1–4 的 warp 数分别为
+\[
+  864=12\times9\times8,\quad
+  72=9\times8,\quad
+  96=12\times8,\quad
+  8=1\times8.
+\]
+其中只有 80 个 warp 产生分歧，性能影响小于 8\%。如果处理水平尺寸超过 1000
+像素的真实图片，影响会低于 2\%。
+
+\section{Warp 调度与延迟容忍}
+\label{sec:warp-scheduling-latency-tolerance}
+
+线程被分配到 SM 时，通常会有比 SM 中流式处理器更多的线程分配给它。也就是说，
+每个 SM 的执行单元只能在任意时刻执行已分配线程的一部分。在较早的 GPU 设计中，
+一个 SM 在任意时刻只能为一个 warp 执行一条指令；较新的设计中，一个 SM 可以
+同时为少量 warp 执行指令，因为 SM 包含多个处理分区。无论哪种情况，硬件在
+任意时刻都只能为分配给 SM 的 warp 子集执行指令。
+
+为什么要给 SM 分配这么多 warp？答案是为了容忍全局内存访问等长延迟操作。当
+warp 要执行的指令需要等待先前发起的长延迟操作结果时，该 warp 不会被选中执行；
+硬件会选择另一个不再等待结果的驻留 warp。没有等待前序指令结果的 warp 已经
+\textbf{准备好执行}。若有多个 warp 准备好执行，优先级逻辑会选择其中一个。
+
+SM 在每个时刻选择不同准备好执行的 warp 的能力称为\textbf{细粒度多线程
+（fine-grained multithreading）}。它让 SM 可以利用某些线程的指令等待时间，
+执行其他线程的指令。因此，即使指令延迟很长，warp 的细粒度多线程执行仍能保持
+执行单元高利用率。这通常称为\textbf{延迟容忍（latency tolerance）}或
+\textbf{延迟隐藏（latency hiding）}。
+
+\begin{quote}
+\textbf{延迟容忍}
+
+日常生活中经常需要容忍延迟。例如，在邮局寄包裹的人理想情况下应在到达服务柜台
+前填好所有表格和标签。但现实中，有些人会等到柜员告诉他们填哪张表、如何填写。
+柜台前排着长队时，应最大化柜员的工作效率。让一个人在柜台前填写表格、让所有
+其他人等待，并不是好办法；柜员应在此人填写表格时服务下一位顾客。其他顾客
+已经“准备好”，不应被需要更多时间填写表格的人阻塞。
+
+因此，好的柜员会礼貌地请第一位顾客先到一旁填写表格，同时服务其他顾客。通常，
+第一位顾客填完表格、柜员也服务完当前顾客后，就会立即得到服务，而不必重新排到
+队尾。可以把这些顾客看作 warp，把柜员看作硬件执行单元；需要填写表格的顾客
+对应于其后续执行依赖长延迟操作的 warp。
+\end{quote}
+
+warp 调度也可以容忍流水线浮点运算、条件分支等其他类型的操作延迟。只要有足够
+多的 warp，硬件就很可能在任意时刻找到一个可执行 warp，使执行硬件保持充分利用，
+同时让其他 warp 等待长延迟操作的结果。选择准备好的 warp 不会给执行时间线引入
+空闲或浪费时间，这称为\textbf{零开销线程调度（zero-overhead thread scheduling）}。
+
+\begin{quote}
+\textbf{线程、上下文切换与零开销调度}
+
+根据冯·诺依曼模型，现代计算机中的线程是一个程序及其在冯·诺依曼处理器上的
+执行状态。线程包括程序代码、当前执行的指令，以及变量和数据结构的值。程序
+代码保存在内存中，PC 跟踪正在执行的程序指令地址，IR 保存当前指令，寄存器
+和内存保存变量与数据结构的值。
+
+现代处理器支持上下文切换，让多个线程轮流推进。通过保存和恢复 PC、寄存器及
+内存中的状态，可以暂停一个线程并在稍后正确恢复。然而，保存和恢复寄存器内容
+会产生显著的执行时间开销。
+
+零开销调度指 GPU 能够让等待长延迟指令结果的 warp 休眠，同时激活已经准备好的
+warp，而不在处理单元中引入额外空闲周期。传统 CPU 的上下文切换会产生这种空闲
+周期，因为切换线程需要把离开线程的寄存器内容保存到内存，再从内存加载进入线程
+的执行状态。GPU SM 通过把已分配 warp 的所有执行状态保存在硬件寄存器中实现
+零开销调度，因此在 warp 之间切换时不需要保存和恢复状态。
+\end{quote}
+
+warp 调度会把 warp 指令的长等待时间“隐藏”起来：硬件在等待期间执行其他 warp
+的指令。容忍长操作延迟是 GPU 不像 CPU 那样把大量芯片面积用于缓存和分支预测
+机制的主要原因。GPU 因而可以把更多芯片面积用于浮点执行单元和内存访问通道。
+
+要使延迟容忍有效，最好给 SM 分配远多于其执行单元同时支持数量的线程。例如，
+Hopper H100 GPU 的每个 SM 有 128 个流式处理器，但同时最多可以分配 2048 个
+线程。因此，一个 SM 可以拥有多达
+\[
+  2048/128=16
+\]
+倍于当前一个时钟周期可执行数量的线程。这种线程相对于 SM 的过量配置
+（oversubscription）对于延迟容忍非常重要，因为当前 warp 遇到长延迟操作时，
+它提高了找到另一个 warp 执行的概率。
+
+\section{资源划分与占用率}
+\label{sec:resource-partitioning}
+
+为了容忍较高的操作延迟，给 SM 分配很多 warp 是有利的；但 SM 不一定总能分配
+它所支持的最大 warp 数。分配给 SM 的 warp 数与 SM 支持的最大 warp 数之比，
+称为\textbf{占用率（occupancy）}。
+
+除了流式处理器，SM 的执行资源还包括寄存器、共享内存（第五章讨论）、线程块
+槽位和线程槽位。这些资源会在线程之间动态划分。例如，Hopper H100 GPU 每个
+SM 最多支持 32 个线程块、64 个 warp（即 2048 个线程），每个线程块最多 1024
+个线程。如果线程块大小为 1024，SM 的 2048 个线程槽位会分给 2 个线程块；
+如果线程块大小分别为 512、256、128 或 64，则可分给 4、8、16 或 32 个线程块。
+
+\begin{center}
+\small
+\begin{tabular}{r|r|r}
+  \toprule
+  线程块大小 & 每个 SM 可同时容纳的块数 & 线程总数\\
+  \midrule
+  1024 & 2 & 2048\\
+  512 & 4 & 2048\\
+  256 & 8 & 2048\\
+  128 & 16 & 2048\\
+  64 & 32 & 2048\\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+线程槽位可以在不同线程块之间动态划分，使 SM 既能执行许多小线程块，也能执行
+少量大线程块。这与固定划分形成对比：固定划分会在线程块需求小于固定资源时
+浪费槽位，也无法支持需要更多槽位的线程块。
+
+动态资源划分可能使不同资源限制之间产生微妙交互，造成资源利用不足。以 H100
+为例，线程块大小从 1024 变化到 64 时，每个 SM 的线程块数从 2 变化到 32，
+这些情况下分配给 SM 的线程总数都是 2048，占用率最大。但如果每个线程块只有
+32 个线程，填满 2048 个线程槽位需要 64 个块；每个 H100 SM 只有 32 个块槽位，
+最多只能容纳 32 个块，即
+\[
+  32\times32=1024
+\]
+个线程。此时占用率为
+\[
+  1024/2048=50\%.
+\]
+因此，要充分利用线程槽位并达到最大占用率，每个线程块至少需要 64 个线程。
+
+另一种降低占用率的情况是线程槽位数不能被线程块大小整除。H100 每个 SM 最多
+支持 2048 个线程；如果线程块大小为 768，SM 只能容纳 2 个线程块，即 1536 个
+线程，剩余 512 个线程槽位未使用。此时占用率为
+\[
+  1536/2048=75\%.
+\]
+
+前面的讨论没有考虑寄存器和共享内存等资源约束。CUDA 内核中的自动变量会放入
+寄存器；有些内核使用很多自动变量，有些只使用少量变量。因此，有些内核每线程
+需要很多寄存器，有些需要很少寄存器。SM 动态划分寄存器后，可以在每线程寄存器
+需求较少时容纳更多线程块，在需求较多时容纳更少线程块。
+
+H100 GPU 每个 SM 最多有 65,536 个寄存器。若要达到满占用率，2048 个线程需要
+的寄存器数意味着每线程不能超过
+\[
+  65{,}536/2{,}048=32
+\]
+个寄存器。如果内核每线程使用 64 个寄存器，65,536 个寄存器最多支持 1024 个
+线程，因此无论线程块大小如何设置，占用率最多为 50\%。编译器有时可以通过寄存器
+溢出减少每线程寄存器需求并提高占用率，但线程从内存访问溢出寄存器值通常会增加
+执行时间，甚至使整个网格执行时间变长。
+
+假设一个内核每线程使用 31 个寄存器，并配置为每块 512 个线程。SM 同时运行
+\[
+  2048/512=4
+\]
+个块，共使用
+\[
+  2048\times31=63{,}488
+\]
+个寄存器，低于 65,536 的上限。若再声明两个自动变量，使每线程使用 33 个
+寄存器，则 2048 个线程需要 67,584 个寄存器，超过上限。CUDA 运行时可能只给
+每个 SM 分配 3 个块，使寄存器需求降为
+\[
+  3\times512\times33=50{,}688.
+\]
+这样，SM 上的线程数从 2048 降为 1536，占用率从 100\% 降到 75\%。这种资源
+使用略微增加却造成并行度和性能显著下降的现象，有时称为\textbf{性能悬崖
+（performance cliff）} \cite{ryoo-4}。
+
+所有动态划分资源之间会相互作用，因此准确确定每个 SM 上运行的线程数可能很难。
+Occupancy Calculator \cite{occupancy-calculator-4} 可以根据特定设备和内核的资源
+使用情况计算每个 SM 上实际运行的线程数；它是 NVIDIA Nsight Compute profiler
+\cite{nsight-compute-4} 的一部分。主机代码也可以调用 CUDA Occupancy API。一个
+常用的函数是
+\[
+\code{cudaOccupancyMaxActiveBlocksPerMultiprocessor()}
+\]
+它可以在给定 GPU 和网格配置时确定内核占用率。
+
+\section{查询设备属性}
+\label{sec:querying-device-properties}
+
+前面对 SM 资源划分的讨论引出一个重要问题：如何知道某个设备可用的资源数量？
+CUDA 应用运行时，如何知道设备中的 SM 数量，以及每个 SM 可以分配的线程块和
+线程数量？应用通常需要在多种硬件系统上运行，因此需要查询底层硬件可用的资源
+和能力，以便利用更强的系统，同时适配资源较少的系统。
+
+\begin{quote}
+\textbf{资源与能力查询}
+
+日常生活中，我们也会查询环境的资源和能力。例如预订酒店时，可以查看房间配套
+设施。若房间配有吹风机，就不必自己携带；若没有游泳池但有健身房，就可以准备
+跑鞋和运动服。不同地区的酒店提供的牙膏、牙刷、洗发水、护发素、微波炉、冰箱
+和泳池也可能不同。酒店设施就是酒店的属性，或者说资源与能力。经验丰富的旅行者
+会在酒店网站上查询这些属性，选择更符合需求的酒店，并更有效地准备行李。
+\end{quote}
+
+每个 CUDA 设备 SM 的资源数量由设备的计算能力（compute capability）指定。一般
+而言，计算能力级别越高，每个 SM 可用的资源越多，而且 GPU 的计算能力通常会
+随代际增加。A100 GPU 的计算能力为 8.0，H100 GPU 的计算能力为 9.0。
+
+CUDA C++ 提供了让主机代码查询系统中设备属性的内置机制。CUDA 运行时系统
+（设备驱动）提供 \code{cudaGetDeviceCount} API，返回系统中 CUDA-capable
+设备的数量。主机代码可以使用：
+
+\begin{lstlisting}[language=C++,firstnumber=1]
+int devCount;
+cudaGetDeviceCount(&devCount);
+\end{lstlisting}
+
+现代 PC 往往有两个或更多 CUDA-capable 设备，因为许多 PC 带有一个或多个集成
+GPU。集成 GPU 是默认图形单元，提供现代窗口用户界面所需的基本图形能力和硬件
+资源，但大多数 CUDA 应用在这些设备上的性能并不理想。因此，主机代码可以遍历
+所有可用设备，查询其资源和能力，并选择拥有足够资源、能够提供满意性能的设备。
+
+CUDA 运行时把系统中的设备编号为 0 到 \code{devCount-1}。函数
+\[
+\code{cudaGetDeviceProperties}
+\]
+根据设备编号返回设备属性。例如，主机代码可以遍历设备：
+
+\begin{lstlisting}[language=C++,firstnumber=1]
+cudaDeviceProp devProp;
+for (unsigned int i = 0; i < devCount; i++) {
+    cudaGetDeviceProperties(&devProp, i);
+    // Decide if device has sufficient resources/capabilities
+}
+\end{lstlisting}
+
+\code{cudaDeviceProp} 是一个 C 结构体类型，其字段表示 CUDA 设备属性。CUDA C++
+Programming Guide 列出了该类型的全部字段。调用完成后，属性会写入变量
+\code{devProp}。
+
+\code{devProp.maxThreadsPerBlock} 表示查询设备允许的每个线程块最大线程数。有些
+设备允许每块最多 1024 个线程，有些设备允许更少；未来设备也可能允许更多。因此，
+程序最好查询可用设备，判断它们是否允许应用所需的线程块大小。使用线程块集群的
+CUDA 程序还应查询最大集群大小。可以调用
+\[
+\code{cudaOccupancyMaxPotentialClusterSize()}
+\]
+获取。
+
+设备中的 SM 总数由 \code{devProp.multiProcessorCount} 给出。如果应用需要大量
+SM 才能获得满意性能，应检查该属性。设备时钟频率保存在
+\code{devProp.clockRate} 中。时钟频率与 SM 数量的组合，可以较好地表示设备的
+最大硬件执行吞吐量。
+
+主机代码可以通过以下字段查询线程块各维度允许的最大线程数：
+\[
+\begin{aligned}
+&\code{devProp.maxThreadsDim[0]}\quad &&x\text{ 维},\\
+&\code{devProp.maxThreadsDim[1]}\quad &&y\text{ 维},\\
+&\code{devProp.maxThreadsDim[2]}\quad &&z\text{ 维}.
+\end{aligned}
+\]
+例如，自动调优系统可以使用这些信息设置线程块维度的搜索范围。类似地，以下三个
+字段
+\[
+\begin{aligned}
+&\code{devProp.maxGridSize[0]},\quad
+\code{devProp.maxGridSize[1]},\\
+&\code{devProp.maxGridSize[2]}
+\end{aligned}
+\]
+分别给出网格 x、y、z 维允许的最大线程块数。它们
+可以用于判断一个网格是否有足够线程覆盖整个数据集，或者是否需要采用迭代方法。
+
+\code{devProp.regsPerBlock} 给出单个线程块可使用的寄存器上限，可用于判断特定
+设备上的内核是否能达到最大占用率，或者是否受寄存器使用限制。这个字段名称略有
+误导：对于多数计算能力级别，一个线程块可使用的最大寄存器数确实等于 SM 中的
+寄存器总数；但对于某些计算能力级别，一个线程块的寄存器上限小于 SM 的总量。
+
+前文还讨论过 warp 大小取决于硬件。warp 大小可以通过
+\code{devProp.warpSize} 获取。\code{cudaDeviceProp} 还有许多其他字段；随着
+本书介绍相应概念和特征，我们会在后文讨论它们。
+
+\section{小结}
+\label{sec:chapter-4-summary}
+
+CUDA-capable GPU 由流式多处理器（SM）组成，每个 SM 包含多个由流式处理器构成
+的处理分区，并共享控制逻辑和内存资源。启动网格时，网格中的线程块以任意顺序
+分配给 SM，从而使 CUDA 应用具有透明可扩展性。透明可扩展性带来一个约束：不同
+线程块中的线程不应相互同步。从 Hopper 架构开始，SM 被分组为 GPC，线程块还可
+选择分组为线程块集群。同一集群中的线程块在同一 GPC 上执行，可以相互同步并
+访问彼此的分布式共享内存。
+
+线程以线程块为单位分配给 SM。线程块分配到 SM 后，进一步划分为 warp。warp 中
+的线程遵循单指令多数据（SIMD）模型执行。如果同一 warp 中的线程采取不同执行
+路径，处理分区会分遍执行这些路径，每个线程只在与自己所选路径对应的遍中活动。
+
+分配给 SM 的线程数可能远多于 SM 能同时执行的线程数。在任意时刻，SM 只执行
+驻留 warp 子集中的指令，这让其他 warp 可以等待长延迟操作，而不影响大量执行
+单元的总体吞吐量。分配给 SM 的线程数与 SM 支持的最大线程数之比称为占用率。
+更高的占用率通常有助于隐藏长操作延迟并获得较高执行吞吐量。
+
+不同 CUDA-capable 设备对每个 SM 可用资源的限制可能不同。例如，设备会限制每个
+SM 可容纳的线程块数、线程数、寄存器数和其他资源数量。对于每个内核，一个或多个
+资源限制可能成为占用率的决定因素。CUDA C++ 提供占用率计算器和 API，帮助开发者
+为不同 GPU 选择合适的内核与启动配置；它也支持程序员在运行时查询 GPU 可用资源。
+
+\phantomsection
+\section*{练习}
+\addcontentsline{toc}{section}{练习}
+
+\begin{enumerate}[label=\arabic*.,leftmargin=2.7em]
+  \item 考虑下面的 CUDA 内核及调用它的主机函数：
+
+\begin{lstlisting}[language=C++,firstnumber=1]
+__global__ void foo_kernel(int* a, int* b) {
+    unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
+    if (threadIdx.x < 40 || threadIdx.x >= 104) {
+        b[i] = a[i] + 1;
+    }
+    if (i % 2 == 0) {
+        a[i] = b[i] * 2;
+    }
+    for (unsigned int j = 0; j < 5 - (i % 3); ++j) {
+        b[i] += j;
+    }
+}
+void foo(int* a_d, int* b_d) {
+    unsigned int N = 1024;
+    foo_kernel<<<(N + 128 - 1)/128, 128>>>(a_d, b_d);
+}
+\end{lstlisting}
+
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item 每个线程块中有多少个 warp？
+    \item 网格中有多少个 warp？
+    \item 对第 04 行语句：
+      \begin{enumerate}[label=\roman*.,leftmargin=2em]
+        \item 网格中有多少个活动 warp？
+        \item 网格中有多少个分歧 warp？
+        \item 块 0 的 warp 0 的 SIMD 效率（百分比）是多少？
+        \item 块 0 的 warp 1 的 SIMD 效率（百分比）是多少？
+        \item 块 0 的 warp 3 的 SIMD 效率（百分比）是多少？
+      \end{enumerate}
+    \item 对第 07 行语句：
+      \begin{enumerate}[label=\roman*.,leftmargin=2em]
+        \item 网格中有多少个活动 warp？
+        \item 网格中有多少个分歧 warp？
+        \item 块 0 的 warp 0 的 SIMD 效率（百分比）是多少？
+      \end{enumerate}
+    \item 对第 09 行循环：
+      \begin{enumerate}[label=\roman*.,leftmargin=2em]
+        \item 有多少次迭代没有分歧？
+        \item 有多少次迭代产生分歧？
+      \end{enumerate}
+  \end{enumerate}
+
+  \item 对向量加法，假设向量长度为 2000，每个线程计算一个输出元素，线程块
+  大小为 512。网格中有多少个线程？
+
+  \item 对上一题，考虑长度为 2000 的边界检查，预计有多少个 warp 会产生分歧？
+
+  \item 假设一个有 8 个线程的线程块在到达屏障前执行一段代码。8 个线程执行
+  这段代码所需时间（微秒）分别为 2.0、2.3、3.0、2.8、2.4、1.9、2.6 和
+  2.9，其余时间都在等待屏障。线程总执行时间中有百分之多少用于等待屏障？
+
+  \item CUDA 程序员认为，如果每个线程块只启动 32 个线程，那么在需要屏障同步
+  的地方可以省略 \code{__syncthreads()}。你认为这是好主意吗？请解释原因。
+
+  \item 如果 CUDA 设备的 SM（流式多处理器）最多容纳 1536 个线程和 4 个线程块，
+  下列哪一种线程块配置会使 SM 中的线程数最多？
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item 每块 128 个线程；
+    \item 每块 256 个线程；
+    \item 每块 512 个线程；
+    \item 每块 1024 个线程。
+  \end{enumerate}
+
+  \item 假设设备每个 SM 最多允许 64 个线程块和 2048 个线程。指出下列每种
+  每个 SM 的分配是否可行；若可行，给出占用率：
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item 8 个块，每块 128 个线程；
+    \item 16 个块，每块 64 个线程；
+    \item 32 个块，每块 32 个线程；
+    \item 64 个块，每块 32 个线程；
+    \item 32 个块，每块 64 个线程。
+  \end{enumerate}
+
+  \item 某 GPU 的硬件限制为：每个 SM 2048 个线程、32 个线程块和 64 K（65,536）
+  个寄存器。对下列内核特征，判断内核能否达到满占用率；如果不能，指出限制因素：
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item 每块 128 个线程，每线程 30 个寄存器；
+    \item 每块 32 个线程，每线程 29 个寄存器；
+    \item 每块 256 个线程，每线程 34 个寄存器。
+  \end{enumerate}
+
+  \item 一名学生说，他用每块 $32\times32$ 个线程的矩阵乘法内核成功计算了两个
+  $1024\times1024$ 矩阵的乘法。该学生使用的 CUDA 设备每块最多允许 512 个线程、
+  每个 SM 最多允许 8 个线程块；并且每个线程计算结果矩阵的一个元素。你对此有
+  什么反应？为什么？
+\end{enumerate}
+
+\begin{chapterbibliography}{9}
+  \bibitem{cuda-guide-4}
+  NVIDIA, \emph{CUDA C++ Programming Guide}, Release 12.3, 2023.
+  \url{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}.
+  \bibitem{flynn-4}
+  M. Flynn, ``Very high-speed computing systems,'' \emph{Proceedings of the IEEE},
+  54(12), 1966, pp. 1901--1909.
+  \bibitem{volta-4}
+  NVIDIA, \emph{NVIDIA Tesla V100 GPU Architecture}, Version
+  WP-08608-001\_v1.1, 2017.
+  \bibitem{ryoo-4}
+  S. Ryoo, C. I. Rodrigues, S. S. Stone, S. S. Baghsorkhi, S.-Z. Ueng,
+  J. A. Stratton, W.-m. W. Hwu, ``Program optimization space pruning for a
+  multithreaded GPU,'' in \emph{Proceedings of the 6th Annual IEEE/ACM
+  International Symposium on Code Generation and Optimization}, 2008,
+  pp. 195--204.
+  \bibitem{occupancy-calculator-4}
+  NVIDIA, \emph{Nsight Compute: Occupancy Calculator}, 2023.
+  \url{https://docs.nvidia.com/nsight-compute/NsightCompute/index.html#occupancy-calculator}.
+  \bibitem{nsight-compute-4}
+  NVIDIA, \emph{Nsight Compute}, 2023.
+  \url{https://docs.nvidia.com/nsight-compute/index.html}.
+\end{chapterbibliography}

@@ -1,0 +1,1184 @@
+\chapter{内存架构与数据局部性}
+\label{chap:memory-architecture-and-data-locality}
+
+\setcounter{footnote}{0}
+
+到目前为止，我们已经学习了如何编写 CUDA 内核函数，以及如何配置和协调由大量
+线程组成的内核执行。第四章还介绍了 GPU 硬件的计算架构，以及线程如何被调度
+执行。本章重点讨论 GPU 的片上内存架构，并开始研究如何组织和放置数据，使大量
+线程能够高效访问它们。
+
+到目前为止学到的 CUDA 内核，很可能只达到底层硬件潜在速度的一小部分。这是因为
+通常由片外 DRAM 实现的全局内存具有很长的访问延迟（数百个时钟周期）和有限的
+访问带宽。虽然大量可执行线程在理论上能够容忍较长的内存访问延迟，但全局内存
+访问路径上的流量拥塞很容易导致只有极少数线程取得进展，从而使流式多处理器
+（SM）中的一部分核心处于空闲状态。为避免这种拥塞，GPU 提供了多种额外的片上
+内存资源，用来访问数据，并消除往返全局内存的大部分冗余流量。本章将研究如何
+使用不同内存类型提高 CUDA 内核的执行性能。
+
+\section{内存带宽作为性能限制因素}
+\label{sec:memory-bandwidth-performance-limiter}
+
+GPU 的硬件资源是有限的，因此在给定时间内能够完成的工作量也有限。最常被引用
+的两种上限是峰值计算吞吐量和峰值内存带宽。峰值计算吞吐量规定硬件单位时间
+能够执行的算术运算数量。例如，Hopper H100 GPU 的峰值计算吞吐量为
+66.9 万亿次浮点运算每秒（TFLOPS）。对于 32 位整数、64 位整数、双精度浮点数
+等不同数据类型，硬件通常有不同的上限。本章主要关注单精度浮点运算。
+
+峰值内存带宽规定硬件单位时间能够从某种内存结构访问的数据字节数。例如，
+Hopper H100 GPU 的峰值全局内存带宽为 3.35 TB/s。不同内存结构通常具有不同的
+带宽上限；本章主要关注全局内存带宽。
+
+不同内核的性能可能受不同硬件资源限制。如果内核性能受硬件计算吞吐量限制，
+则称其为\textbf{计算受限（compute-bound）}。这类内核的大部分时间都在执行
+单元中忙于执行指令，性能取决于核心执行这些指令的速度。如果内核性能受硬件
+内存带宽限制，则称其为\textbf{内存受限（memory-bound）}。这类内核的大部分
+时间都在使用内存通道，计算核心经常处于等待数据到达的空闲状态，性能取决于
+内存向核心提供数据的速度。
+
+要判断一个内核是计算受限还是内存受限，可以考察它从全局内存访问的每字节数据
+所执行的浮点运算数量，即 FLOP/B。我们把这个比值称为
+\textbf{计算量与全局内存访问量之比（compute-to-global-memory-access ratio）}。
+文献中也常称其为算术强度（arithmetic intensity）或计算强度（computational
+intensity）。计算受限内核通常具有较高比值：相对于访问的内存量，执行了很多
+算术运算；内存受限内核的比值通常较低。
+
+区分两类内核的阈值可以由峰值计算吞吐量除以峰值内存带宽得到。对 H100 GPU，
+\[
+  \frac{66.9\ \mathrm{TFLOPS}}{3.35\ \mathrm{TB/s}}
+  =20.0\ \mathrm{FLOP/B}.
+\]
+因此，在 H100 上，计算量与全局内存访问量之比高于 20.0 FLOP/B 的内核很可能
+是计算受限的，低于该比值的内核很可能是内存受限的。
+
+峰值计算吞吐量和峰值内存带宽是硬件上限，而不是性能保证。计算受限内核不一定
+能达到 66.9 TFLOPS，内存受限内核也不一定能达到 3.35 TB/s。只有高效利用
+硬件资源、经过充分优化的内核，才能接近这些上限。将实际内核性能与硬件上限
+比较，可以评估内核的优化效率。Roofline 模型提供了一种分析方法，用于判断
+内核是计算受限还是内存受限，并评估其相对于硬件峰值的性能。
+
+\begin{quote}
+\textbf{Roofline 模型}
+
+Roofline 模型是一种可视化模型，用于评估应用相对于运行硬件限制所达到的性能。
+基本模型如图 \ref{fig:5-1} 所示。横轴是以 FLOP/B 表示的算术强度或计算强度，
+反映应用每加载一个字节数据所完成的工作量；纵轴是以 GFLOPS 表示的计算吞吐量。
+图中的两条线表示硬件限制：水平线由硬件能够维持的峰值计算吞吐量决定；从原点
+出发、具有正斜率的直线由硬件能够维持的峰值内存带宽决定。两条线的交点表示
+应用从内存受限转为计算受限的计算强度阈值。
+
+计算强度较低的应用属于内存受限，受内存带宽限制，不能达到峰值计算吞吐量。
+在这个区域中，提高计算强度会提高潜在计算吞吐量，正如内存带宽限制线的斜率
+所表示的那样。当计算强度超过阈值后，应用变为计算受限，不再受峰值内存带宽
+限制，而是受峰值计算吞吐量限制。
+
+图中的一个点表示一个应用：横坐标是其计算强度，纵坐标是其达到的计算吞吐量。
+这些点必然位于两条限制线下方，因为应用不可能超过硬件峰值。点相对于两条线
+的位置反映应用效率：靠近限制线的点说明内存带宽或计算单元利用较好，远低于
+限制线的点说明资源使用效率较低。
+
+例如，点 A1 和 A2 都表示内存受限应用，A3 表示计算受限应用。A1 高效使用
+资源，接近峰值内存带宽；A2 没有做到这一点，还有机会通过提高内存带宽利用率
+来改善吞吐量。对 A1 而言，改善吞吐量的唯一方法是提高应用的计算强度。
+\end{quote}
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c}
+    \fbox{\begin{minipage}{0.78\textwidth}
+      \centering
+      \textbf{计算吞吐量（GFLOPS）}\\[-0.2em]
+      \rule{0.65\textwidth}{0.4pt}\\[-0.1em]
+      \hspace*{0.18\textwidth}\textbf{峰值计算吞吐量}\\[0.4em]
+      \hspace*{0.08\textwidth}\rule{0.42\textwidth}{0.4pt}\\[-0.2em]
+      \hspace*{0.06\textwidth}A2\quad A1
+      \hspace{0.12\textwidth}A3\\[0.8em]
+      \rule{0.65\textwidth}{0.4pt}\\[-0.2em]
+      \textbf{计算强度（FLOP/B）}\quad
+      \hfill\textbf{内存受限}\quad\textbf{计算受限}
+    \end{minipage}}
+  \end{tabular}
+  \caption{Roofline 模型的概念示意：两条硬件限制线及应用点
+  （依据原书 Roofline 模型侧栏重绘）}
+  \label{fig:5-1}
+\end{figure}
+
+下面以第二章图 2.10 中的向量加法内核为例。每个线程的主要计算可以写成：
+\[
+  C[i]=A[i]+B[i].
+\]
+每个线程执行一次浮点加法，并从全局内存访问 12 B 数据：读取
+\code{A[i]} 需要 4 B，读取 \code{B[i]} 需要 4 B，写入 \code{C[i]} 需要 4 B。
+因此，内核的计算量与全局内存访问量之比为
+\[
+  \frac{1\ \mathrm{FLOP}}{12\ \mathrm{B}}
+  =0.083\ \mathrm{FLOP/B},
+\]
+远低于 H100 的 20.0 FLOP/B 阈值。如此低的比值说明，在 H100 上执行的向量
+加法内核深处于内存受限区域。
+
+假设内核把两个各含 10 亿个元素的向量相加。它将访问 12 GB 数据：读取第一个
+向量 4 GB，读取第二个向量 4 GB，写入结果向量 4 GB。如果内核执行时间为 4 ms，
+则数据平均访问速率为
+\[
+  \frac{12\ \mathrm{GB}}{4\ \mathrm{ms}}=3\ \mathrm{TB/s}.
+\]
+与硬件峰值内存带宽相比：
+\[
+  \frac{3\ \mathrm{TB/s}}{3.35\ \mathrm{TB/s}}=90\%.
+\]
+这表示内核利用了 90\% 的硬件内存带宽资源。这样的分析称为
+\textbf{光速分析（speed-of-light analysis）}：可以说内核以硬件限制的“光速”
+的 90\% 执行，只有约 10\% 的性能优化空间。对 H100 而言，完成该向量加法的
+最快可能时间约为
+\[
+  \frac{12\ \mathrm{GB}}{3.35\ \mathrm{TB/s}}=3.6\ \mathrm{ms}.
+\]
+
+再看矩阵乘法。假设两个 $N\times N$ 矩阵相乘，得到一个 $N\times N$ 结果矩阵。
+每个输出元素需要对两个长度为 $N$ 的向量求点积，包含 $N$ 次乘法和 $N$ 次
+加法。因此，整个矩阵乘法执行
+\[
+  N^2(N+N)=2N^3\ \mathrm{FLOP}.
+\]
+它需要读取两个各含 $N^2$ 个元素的矩阵，并写入一个同样大小的矩阵；若每个
+元素占 4 B，访问数据总量为 $12N^2$ B。假设理想实现每个数据元素只访问一次，
+则计算量与全局内存访问量之比为
+\[
+  \frac{2N^3}{12N^2}=0.167N\ \mathrm{FLOP/B}.
+\]
+当 $N=1024$ 时，比值为 167 FLOP/B，显著高于 H100 的 20.0 FLOP/B 阈值，
+因此矩阵乘法具有成为高度计算受限计算的潜力。
+
+\noindent\textbf{译者注：}底本此处同时出现 25.1 FLOP/B 和 20.0 FLOP/B 两个
+阈值；本译稿按同一节前文由 66.9 TFLOPS 和 3.35 TB/s 得出的 20.0 FLOP/B
+保留，并将底本的数值差异显式标出。
+
+现在考察第三章图 3.11 中的具体矩阵乘法内核。内核执行时间中最主要的部分是
+对 $M$ 的一行和 $N$ 的一列求点积的 \code{for} 循环：
+
+\begin{lstlisting}[language=C++]
+for (int k = 0; k < Width; ++k) {
+    Pvalue += M[row*Width+k] * N[k*Width+col];
+}
+\end{lstlisting}
+
+循环每次执行两次全局内存访问、一次浮点乘法和一次浮点加法。两次内存访问读取
+$M$、$N$ 中的元素；乘法将两个元素相乘，加法把乘积累加到 \code{Pvalue}。因此，
+计算量与全局内存访问量之比为
+\[
+  \frac{2\ \mathrm{FLOP}}{8\ \mathrm{B}}=0.25\ \mathrm{FLOP/B}.
+\]
+由于线程退出循环后还需要把 \code{Pvalue} 写回全局内存，实际比值略低于此值。
+每个输入元素会被多次访问，所以该比值也低于理想实现的 $0.167N$，并低于 H100
+的 20.0 FLOP/B 阈值。因此，第三章的这个具体实现是内存受限而非计算受限。
+
+由于该矩阵乘法内核受内存带宽限制，其单精度浮点运算吞吐量上限为
+\[
+  (3.35\ \mathrm{TB/s})(0.25\ \mathrm{FLOP/B})
+  =0.84\ \mathrm{TFLOPS}.
+\]
+这只有 H100 峰值单精度吞吐量 66.9 TFLOPS 的约 1\%。H100 还配有可加速矩阵
+乘法的专用张量核心，其峰值吞吐量为 989 TFLOPS；0.84 TFLOPS 只有该峰值的
+约 0.08\%。实际计算量与全局内存访问量之比会高于 0.25 FLOP/B，因为一部分
+全局内存访问可能由片上缓存满足，而不是访问 DRAM。不过，我们仍然可以在内核
+实现层面主动提高该比值。
+
+提高比值需要减少内核执行的全局内存访问次数。矩阵乘法为减少访问提供了很好的
+机会，且可以用相对简单的技术捕获。矩阵乘法函数的执行速度可能随着全局内存
+访问减少程度的不同而相差几个数量级，因此它是介绍这些技术的优秀初始例子。
+本章将介绍一种常用的减少全局内存访问的方法，并用矩阵乘法展示该方法。
+
+\section{CUDA 内存类型}
+\label{sec:cuda-memory-types}
+
+CUDA 设备包含多种内存，可以帮助程序员提高内核的计算量与全局内存访问量之比。
+通过把 CUDA 变量声明为某种内存类型，程序员可以指定变量的可见范围和访问速度。
+图 \ref{fig:5-2} 展示了 CUDA 设备内存。图底部是全局内存和常量内存。这两种
+内存都可以由主机写入（W）和读取（R）；全局内存还可以由设备读写，而常量内存
+支持设备端低延迟、高带宽的只读访问。第二章已经介绍全局内存，第七章将详细
+讨论常量内存。
+
+局部内存也可以读写。声明为局部内存的 CUDA 变量实际上放在全局内存中，具有
+类似的访问延迟，但不会在线程之间共享。每个线程拥有全局内存中的一段私有局部
+内存，用来保存局部变量和无法分配到寄存器的数据，例如静态分配的数组、溢出的
+寄存器值以及线程调用栈中的其他元素。不过，规模较小、大小固定并且只使用常量
+索引访问的静态数组，可能被分配到寄存器中；第六章将进一步讨论。
+
+图中的寄存器是片上内存的一种。寄存器中的变量可以以极高速度、高并行度访问。
+寄存器分配给单独线程，每个线程只能访问自己的寄存器。内核通常使用寄存器保存
+线程私有且频繁访问的变量。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c}
+    \fbox{\begin{minipage}{0.78\textwidth}\centering
+      \textbf{CUDA 设备}\\[0.3em]
+      \begin{tabular}{c@{\hspace{0.6em}}c@{\hspace{0.6em}}c}
+        \fbox{\begin{minipage}{0.20\textwidth}\centering
+          \textbf{SM}\\
+          寄存器\\
+          共享内存
+        \end{minipage}}
+        &
+        \fbox{\begin{minipage}{0.20\textwidth}\centering
+          \textbf{SM}\\
+          寄存器\\
+          共享内存
+        \end{minipage}}
+        &
+        $\cdots$ 多个 SM
+      \end{tabular}\\[0.4em]
+      \rule{0.65\textwidth}{0.4pt}\\[-0.1em]
+      \begin{tabular}{c@{\hspace{1.0em}}c}
+        \fbox{\parbox[c][0.45cm][c]{0.27\textwidth}{\centering
+          常量内存（主机/设备读，设备只读）}}
+        &
+        \fbox{\parbox[c][0.45cm][c]{0.27\textwidth}{\centering
+          全局内存（主机/设备读写）}}
+      \end{tabular}\\[-0.1em]
+      \scriptsize 纹理内存未在本图中展开
+    \end{minipage}}
+  \end{tabular}
+  \caption{CUDA 设备内存模型的不完整概览（依据原书图 5.1 重绘）}
+  \label{fig:5-2}
+\end{figure}
+
+\begin{quote}
+\textbf{CPU 与 GPU 的寄存器架构}
+
+CPU 和 GPU 的不同设计目标导致它们采用不同的寄存器架构。CPU 在不同线程之间
+进行上下文切换时，会把离开线程的寄存器保存到内存，再从内存恢复进入线程的
+寄存器。GPU 则通过把分配给处理分区的所有线程寄存器保存在处理分区的寄存器
+文件中，实现零开销调度。因此，在线程 warp 之间切换是瞬时的，因为进入线程
+的寄存器已经在寄存器文件中。
+
+GPU 寄存器文件需要明显大于 CPU 寄存器文件。第四章还介绍过 GPU 支持动态资源
+划分：SM 可以给每线程配置较少寄存器并执行大量线程，也可以给每线程配置较多
+寄存器并执行较少线程。因此，GPU 寄存器文件必须支持寄存器的动态划分；CPU
+寄存器架构则为每个线程预留固定寄存器集合，不考虑线程实际需求。
+\end{quote}
+
+共享内存是另一种片上内存。共享内存中的数据访问速度相对于全局内存很高，但
+不如寄存器。共享内存分配给线程块；块中所有线程都能访问为该块声明的共享内存
+变量。共享内存是同一线程块中的线程共享输入数据和中间结果的高效手段。
+
+要充分理解寄存器、共享内存和全局内存之间的差异，需要进一步了解它们在现代
+处理器中的实现和使用方式。几乎所有现代处理器都可以追溯到 John von Neumann
+在 1945 年提出的模型（图 \ref{fig:5-3}）。CUDA 设备也不例外。CUDA 设备的
+全局内存对应冯·诺依曼模型中的 Memory；处理器框对应今天通常看到的处理器
+芯片边界。全局内存在芯片外，由 DRAM 实现，因此访问延迟长、带宽相对低。寄存器
+对应冯·诺依曼模型中的 Register File，位于处理器芯片上，访问延迟很短，带宽
+远高于全局内存。在典型设备中，所有 SM 寄存器文件的聚合访问带宽至少比全局
+内存高两个数量级。变量放入寄存器后，其访问不再消耗片外全局内存带宽，也会
+提高计算量与全局内存访问量之比。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c@{\hspace{1.0em}}c}
+    \fbox{\begin{minipage}{0.29\textwidth}\centering
+      \textbf{处理器芯片}\\
+      控制单元\\
+      ALU\\
+      Register File
+    \end{minipage}}
+    & $\longleftrightarrow$ \fbox{\begin{minipage}{0.29\textwidth}\centering
+      \textbf{片外内存}\\
+      DRAM\\
+      较高延迟、较低带宽
+    \end{minipage}}
+  \end{tabular}
+  \caption{基于冯·诺依曼模型的现代计算机中内存与寄存器的关系
+  （依据原书图 5.2 重绘）}
+  \label{fig:5-3}
+\end{figure}
+
+寄存器访问还涉及较少指令。多数现代处理器的算术指令具有内建寄存器操作数。
+例如，浮点加法指令可能写成：
+
+\begin{lstlisting}[language={[x86masm]Assembler}]
+fadd r1, r2, r3
+\end{lstlisting}
+
+\code{r2} 和 \code{r3} 是寄存器编号，指定输入操作数在寄存器文件中的位置；
+结果保存在 \code{r1}。当算术指令的操作数位于寄存器中时，不需要额外指令把
+操作数提供给执行算术计算的算术逻辑单元（ALU）。
+
+如果操作数位于全局内存，处理器必须执行内存加载操作，把操作数提供给 ALU。例
+如，若浮点加法的第一个操作数在全局内存中，相关指令可能是：
+
+\begin{lstlisting}[language={[x86masm]Assembler}]
+load r2, r4, offset
+fadd r1, r2, r3
+\end{lstlisting}
+
+\code{load} 指令把 \code{r4} 内容与偏移相加形成地址，访问全局内存，并把值放入
+\code{r2}；随后 \code{fadd} 使用 \code{r2} 和 \code{r3} 中的值完成加法并把结果
+写入 \code{r1}。由于处理器每个时钟周期只能取出和执行有限数量的指令，增加
+\code{load} 通常会增加处理时间，这也是把操作数放入寄存器可以提高执行速度的
+原因。
+
+把操作数放入寄存器还有能源效率方面的优势。现代计算机中，从寄存器文件访问
+一个值所消耗的能量至少比从全局内存访问低一个数量级。不过，今天的 GPU 中
+每个线程可用的寄存器数量相当有限；如果寄存器使用量超过满占用率场景的限制，
+应用占用率可能降低。因此，在可能的情况下，也要避免过度使用这一有限资源。
+
+共享内存和寄存器都在芯片上，但功能和访问成本不同。访问共享内存中的数据仍然
+需要执行内存加载指令，和访问全局内存类似；但共享内存位于芯片上，因此延迟
+低得多、吞吐量高得多。由于需要加载指令，共享内存的延迟高于寄存器、带宽低于
+寄存器。在计算机体系结构术语中，共享内存是一种暂存存储器（scratchpad memory）。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c}
+    \fbox{\begin{minipage}{0.72\textwidth}\centering
+      \textbf{一个 SM}\\[0.2em]
+      \begin{tabular}{c@{\hspace{0.8em}}c}
+        \fbox{\parbox[c][0.65cm][c]{0.24\textwidth}{\centering
+          处理分区 0\\寄存器文件}}
+        &
+        \fbox{\parbox[c][0.65cm][c]{0.24\textwidth}{\centering
+          处理分区 1\\寄存器文件}}
+      \end{tabular}\\[0.4em]
+      \fbox{\parbox[c][0.65cm][c]{0.55\textwidth}{\centering
+        共享内存（块中线程共同访问）}}
+    \end{minipage}}
+  \end{tabular}
+  \caption{CUDA 设备 SM 中的共享内存与寄存器（依据原书图 5.3 重绘）}
+  \label{fig:5-4}
+\end{figure}
+
+CUDA 中共享内存和寄存器的一个重要区别是，共享内存中的变量可由线程块中的所有
+线程访问，而寄存器数据对单个线程私有。共享内存专门用于支持同一线程块中线程
+之间高效、高带宽的数据共享。由于一个线程块中的线程可以分布在多个处理单元上，
+共享内存硬件通常被设计为允许多个处理单元同时访问其内容。
+
+从 Hopper 架构开始，同一线程块集群中的线程可以访问集群中任意线程块的共享
+内存，这一特性称为\textbf{分布式共享内存}。它扩大了线程无需访问全局内存
+即可协作的范围，并提供了更大的快速内存池。
+
+寄存器、局部内存、共享内存和全局内存具有不同功能、延迟和带宽。因此，必须理解
+如何声明变量，使变量位于预期的内存类型中。图 \ref{fig:5-5} 总结了 CUDA
+变量声明语法及其属性。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{l|c|c|c}
+    \toprule
+    声明形式 & 内存位置 & 作用域 & 生命周期\\
+    \midrule
+    自动标量变量 & 寄存器 & 单个线程 & 内核执行期间\\
+    自动数组变量 & 局部内存（可能优化到寄存器） & 单个线程 & 内核执行期间\\
+    \code{__shared__} & 共享内存 & 一个线程块 & 内核执行期间\\
+    \code{__constant__} & 全局内存/常量缓存 & 所有网格 & 整个应用\\
+    \code{__device__} & 全局内存 & 所有网格 & 整个应用\\
+    \bottomrule
+  \end{tabular}
+  \caption{CUDA 变量声明限定符及其属性（依据原书图 5.4 重绘）}
+  \label{fig:5-5}
+\end{figure}
+
+变量的作用域表示可以访问该变量的线程集合：单个线程、一个线程块中的所有线程，
+或者所有网格中的所有线程。如果作用域是单个线程，则会为每个线程创建私有版本，
+每个线程只能访问自己的版本。例如，一个内核用 100 万个线程启动，并声明了
+线程作用域变量，就会创建该变量的 100 万个版本。
+
+生命周期表示变量在程序执行期间可用的时间范围：网格执行期间，或整个应用执行
+期间。若生命周期在网格执行期间，变量必须在内核函数体内声明，只能由内核代码
+使用；多次调用内核时，变量值不会在调用之间保持，每次调用都必须初始化。若
+生命周期贯穿整个应用，变量必须在函数体外声明，其内容会在整个应用执行期间
+保持，并可供所有内核访问。
+
+不属于数组的变量称为标量变量。内核函数和设备函数中声明的所有自动标量变量
+都会放入寄存器，作用域是单个线程。内核声明自动变量时，执行该内核的每个线程
+都会获得一份私有副本；线程终止时，其自动变量也随之消失。第三章图 3.8 中的
+\code{blurRow}、\code{blurCol}、\code{curRow}、\code{curCol}、\code{pixels}
+和 \code{pixVal} 都是自动变量。这些变量访问极快且高度并行，但必须小心不要
+超过硬件寄存器容量；寄存器使用过多会降低 SM 占用率。
+
+自动数组变量默认不会放入寄存器，而是放入线程局部内存，可能产生较长访问延迟
+和访问拥塞。如果自动数组的所有访问都使用常量索引，编译器可能决定把它放入
+寄存器。自动数组的作用域与自动标量相同，为单个线程；每个线程拥有一份私有
+数组，线程终止时数组内容也消失。
+
+在声明前加 \code{__shared__} 会声明 CUDA 共享内存变量，也可以在
+\code{__shared__} 前加可选的 \code{__device__}，效果相同。此类声明通常位于
+内核函数或设备函数中。共享内存变量的作用域是线程块：块中所有线程看到同一
+版本；内核执行期间每个线程块拥有一份副本。内核结束时，共享内存变量的内容
+消失。共享内存常用于保存内核某一阶段频繁使用和重复使用的全局内存数据；第五章
+的矩阵乘法将展示这一用法。
+
+在声明前加 \code{__constant__} 会声明 CUDA 常量变量，也可以在它前面加可选的
+\code{__device__}。常量变量必须在函数体外声明，作用域是所有网格，生命周期是
+整个应用执行期间。常量变量通常用于向内核提供输入值，内核代码不能修改其值。
+常量变量存放在全局内存中，但会被缓存以便高效访问；访问模式合适时，常量内存
+访问可以非常快速且高度并行。目前一个应用中常量变量总大小限制为 65,536 B；
+必要时应把输入数据拆分以适应该限制。第七章将展示常量内存的使用。
+
+只使用 \code{__device__} 限定符的变量是全局变量，会放入全局内存。访问全局
+变量较慢；全局变量对所有内核的所有线程可见，内容在整个应用执行期间保持。
+全局变量常用于在多次内核调用之间传递信息，而无需把信息作为内核参数传入。
+通常认为全局变量是不好的编程风格，应谨慎使用，因为它们可能导致错误并降低
+代码模块化程度。
+
+\section{通过分块减少内存流量}
+\label{sec:tiling-reduced-memory-traffic}
+
+CUDA 设备内存的使用存在内在权衡：全局内存容量大但速度慢，共享内存容量小但
+速度快。常见策略是把数据划分为称为\textbf{瓦片（tile）}的子集，使每个子集
+能够放入共享内存。“瓦片”一词来自铺墙类比：大型墙面对应全局内存数据，小瓦片
+对应能够放入共享内存的子集。一个重要条件是，内核对这些瓦片的计算能够彼此
+独立；并非所有数据结构和任意内核都能任意分块。
+
+分块概念可以用第三章的矩阵乘法说明。第三章图 3.13 对应图 3.11 的内核。为
+方便读者，图 \ref{fig:5-6} 重新给出一个小型例子。为简洁起见，我们把
+\code{P[y*Width+x]}、\code{M[y*Width+x]} 和 \code{N[y*Width+x]} 分别记作
+$P_{y,x}$、$M_{y,x}$ 和 $N_{y,x}$。例子使用四个 $2\times2$ 线程块计算矩阵
+$P$；P 矩阵中的粗框表示每个块负责计算的输出瓦片。图中突出显示块 $(0,0)$
+的四个线程，它们计算 $P_{0,0}$、$P_{0,1}$、$P_{1,0}$ 和 $P_{1,1}$。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c|c|c|c}
+    \hline
+    \fbox{$P_{0,0}$} & \fbox{$P_{0,1}$} & $P_{0,2}$ & $P_{0,3}$\\ \hline
+    \fbox{$P_{1,0}$} & \fbox{$P_{1,1}$} & $P_{1,2}$ & $P_{1,3}$\\ \hline\hline
+    $P_{2,0}$ & $P_{2,1}$ & $P_{2,2}$ & $P_{2,3}$\\ \hline
+    $P_{3,0}$ & $P_{3,1}$ & $P_{3,2}$ & $P_{3,3}$\\ \hline
+  \end{tabular}\\[0.4em]
+  \scriptsize 粗框：块 $(0,0)$ 的输出瓦片；每个线程计算一个 $P$ 元素。
+  \caption{矩阵乘法的小型示例（为简洁起见使用线性化索引记号，
+  依据原书图 5.5 重绘）}
+  \label{fig:5-6}
+\end{figure}
+
+图 \ref{fig:5-6} 中，块 $(0,0)$ 的线程访问 $M$ 和 $N$ 元素。线程
+$(0,0)$ 依次读取 $M_{0,0}$ 和 $N_{0,0}$、$M_{0,1}$ 和 $N_{1,0}$、
+$M_{0,2}$ 和 $N_{2,0}$、$M_{0,3}$ 和 $N_{3,0}$。图 \ref{fig:5-7} 展示块
+$(0,0)$ 中所有线程的全局内存访问：线程沿垂直方向排列，访问时间从左向右推进。
+每个线程在执行期间访问 $M$ 的四个元素和 $N$ 的四个元素；不同线程访问的
+$M$、$N$ 元素存在显著重叠。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c|cccc}
+    \toprule
+    线程 & \multicolumn{4}{c}{随时间发生的全局内存访问}\\
+    \midrule
+    $(0,0)$ & $M_{0,0},N_{0,0}$ & $M_{0,1},N_{1,0}$ &
+      $M_{0,2},N_{2,0}$ & $M_{0,3},N_{3,0}$\\
+    $(0,1)$ & $M_{0,0},N_{0,1}$ & $M_{0,1},N_{1,1}$ &
+      $M_{0,2},N_{2,1}$ & $M_{0,3},N_{3,1}$\\
+    $(1,0)$ & $M_{1,0},N_{0,0}$ & $M_{1,1},N_{1,0}$ &
+      $M_{1,2},N_{2,0}$ & $M_{1,3},N_{3,0}$\\
+    $(1,1)$ & $M_{1,0},N_{0,1}$ & $M_{1,1},N_{1,1}$ &
+      $M_{1,2},N_{2,1}$ & $M_{1,3},N_{3,1}$\\
+    \bottomrule
+  \end{tabular}
+  \caption{块 $(0,0)$ 中所有线程执行的全局内存访问
+  （依据原书图 5.6 重绘）}
+  \label{fig:5-7}
+\end{figure}
+
+例如，线程 $(0,0)$ 和 $(0,1)$ 都访问 $M_{0,0}$ 以及 $M$ 第 0 行的其余元素；
+线程 $(0,1)$ 和 $(1,1)$ 都访问 $N_{0,1}$ 以及 $N$ 第 1 列的其余元素。第三章
+图 3.13 的内核让这两个线程分别从全局内存读取 $M$ 第 0 行。如果能让它们
+协作，使这些 $M$ 元素只从全局内存加载一次，就能把访问次数减半。事实上，
+块 $(0,0)$ 中每个 $M$ 和 $N$ 元素都被访问恰好两次；若四个线程协作访问全局
+内存，整体流量可以减半。
+
+读者可以验证，矩阵乘法中全局内存流量的潜在减少量与线程块负责的输出瓦片大小
+成正比。如果瓦片大小为 \code{TILE_WIDTH}$\times$\code{TILE_WIDTH}，潜在
+减少因子就是 \code{TILE_WIDTH}。例如，使用 $32\times32$ 输出瓦片，通过线程
+协作，理论上可以把全局内存流量减少到原来的 $1/32$。
+
+现在介绍分块矩阵乘法算法。基本思想是：在线程分别使用输入元素计算点积之前，
+由线程协作把 $M$ 和 $N$ 的子集加载到共享内存。共享内存容量很小，把输入元素
+加载到其中时必须小心不要超过容量。解决方法是把 $M$ 和 $N$ 矩阵划分成更小
+输入瓦片，并选择能够放入共享内存的瓦片大小。最简单的形式是，输入瓦片和输出
+瓦片的维度都等于线程块维度，如图 \ref{fig:5-8} 所示。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c@{\hspace{0.8em}}c@{\hspace{0.8em}}c}
+    \fbox{\begin{minipage}{0.22\textwidth}\centering
+      $M$\\[0.2em]
+      \fbox{$2\times2$}\\
+      \fbox{$2\times2$}
+    \end{minipage}}
+    & $\longrightarrow$ &
+    \fbox{\begin{minipage}{0.22\textwidth}\centering
+      $N$\\[0.2em]
+      \fbox{$2\times2$}\\
+      \fbox{$2\times2$}
+    \end{minipage}}\\[0.5em]
+    \multicolumn{3}{c}{每个阶段加载一个 $M$ 瓦片和一个 $N$ 瓦片到共享内存，
+    再用于点积计算}
+  \end{tabular}
+  \caption{对 $M$ 和 $N$ 分块以利用共享内存（依据原书图 5.7 重绘）}
+  \label{fig:5-8}
+\end{figure}
+
+图 \ref{fig:5-8} 中，粗线把 $M$、$N$ 划分为 $2\times2$ 输入瓦片。每个线程的
+点积计算被分为多个阶段；每个阶段中，线程块协作把一个 $M$ 瓦片和一个 $N$
+瓦片加载到共享内存。可以让块中每个线程各加载一个 $M$ 元素和一个 $N$ 元素。
+存放 $M$ 元素的共享内存数组称为 \code{Mds}，存放 $N$ 元素的数组称为
+\code{Nds}。
+
+在阶段 1 开始时，块 $(0,0)$ 的四个线程协作加载 $M$ 瓦片：
+\code{thread(0,0)} 把 $M_{0,0}$ 加载到 \code{Mds[0][0]}，
+\code{thread(0,1)} 把 $M_{0,1}$ 加载到 \code{Mds[0][1]}，
+\code{thread(1,0)} 把 $M_{1,0}$ 加载到 \code{Mds[1][0]}，
+\code{thread(1,1)} 把 $M_{1,1}$ 加载到 \code{Mds[1][1]}。$N$ 瓦片以相同
+方式加载。
+
+两个瓦片加载到共享内存后，就可以用于点积计算。共享内存中的每个值会被使用
+两次。例如，线程 $(1,1)$ 加载到 \code{Mds[1][1]} 的 $M_{1,1}$，会被线程
+$(1,0)$ 和线程 $(1,1)$ 各使用一次。让每个全局内存值加载到共享内存并被重复
+使用，可以把全局内存访问次数减少两倍；若瓦片为 $N\times N$，减少因子就是 $N$。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c|c|c|c|c|c|c}
+    \toprule
+    阶段 & 活动 & 活动 & 活动 & 计算 & 活动 & 计算\\
+    \midrule
+    Phase 1 & 加载 $M$ 瓦片 & 加载 $N$ 瓦片 & \code{__syncthreads()} &
+      使用 \code{Mds}/\code{Nds} & \code{__syncthreads()} &\\
+    Phase 2 & 加载下一 $M$ 瓦片 & 加载下一 $N$ 瓦片 & \code{__syncthreads()} &
+      使用 \code{Mds}/\code{Nds} & \code{__syncthreads()} &\\
+    \bottomrule
+  \end{tabular}
+  \caption{分块矩阵乘法的执行阶段（依据原书图 5.8 重绘）}
+  \label{fig:5-9}
+\end{figure}
+
+每个点积现在分为两个阶段。每个阶段中，每个线程把两对输入矩阵元素的乘积
+累加到 \code{Pvalue}。\code{Pvalue} 是自动变量，因此每个线程都有自己的私有
+版本。一般而言，如果输入矩阵维度为 \code{Width}、瓦片大小为
+\code{TILE_WIDTH}，点积会分为
+\[
+  \frac{\code{Width}}{\code{TILE_WIDTH}}
+\]
+个阶段。创建这些阶段是减少全局内存访问的关键：每个阶段只关注输入矩阵的一小
+部分，线程可以协作把该子集加载到共享内存，再用共享内存满足重叠的输入需求。
+
+\code{Mds} 和 \code{Nds} 会在不同阶段重复使用。每个阶段都用同一组共享内存
+数组保存当前阶段的 $M$、$N$ 子集，因此小容量共享内存能够服务大部分全局内存
+访问。这样的集中访问行为称为\textbf{局部性（locality）}。当算法具有局部性
+时，就有机会使用小而快速的内存服务大部分访问，并把这些访问从全局内存中移除。
+局部性对于多核 CPU 和多线程 GPU 的高性能都很重要；第六章将再次讨论。
+
+\section{分块矩阵乘法内核}
+\label{sec:tiled-matrix-multiplication-kernel}
+
+现在可以给出使用共享内存减少全局内存流量的分块矩阵乘法内核。图
+\ref{fig:5-10} 中的内核实现了图 \ref{fig:5-9} 所示的阶段。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,firstnumber=1]
+#define TILE_WIDTH 16
+__global__ void matrixMulKernel(float* M, float* N, float* P, int Width) {
+
+    __shared__ float Mds[TILE_WIDTH][TILE_WIDTH];
+    __shared__ float Nds[TILE_WIDTH][TILE_WIDTH];
+
+    int bx = blockIdx.x; int by = blockIdx.y;
+    int tx = threadIdx.x; int ty = threadIdx.y;
+
+    // Determine the row and column of the P element to work on
+    int Row = by * TILE_WIDTH + ty;
+    int Col = bx * TILE_WIDTH + tx;
+
+    // Loop over the M and N tiles required to compute P element
+    float Pvalue = 0;
+    for (int ph = 0; ph < Width/TILE_WIDTH; ++ph) {
+
+        // Collaborative loading of M and N tiles into shared memory
+        Mds[ty][tx] = M[Row*Width + ph*TILE_WIDTH + tx];
+        Nds[ty][tx] = N[(ph*TILE_WIDTH + ty)*Width + Col];
+        __syncthreads();
+
+        for (int k = 0; k < TILE_WIDTH; ++k) {
+            Pvalue += Mds[ty][k] * Nds[k][tx];
+        }
+        __syncthreads();
+
+    }
+    P[Row*Width + Col] = Pvalue;
+}
+  \end{lstlisting}
+  \caption{使用共享内存的分块矩阵乘法内核（依据原书图 5.9 重绘）}
+  \label{fig:5-10}
+\end{figure}
+
+第 04、05 行把 \code{Mds} 和 \code{Nds} 声明为共享内存数组。共享内存变量的
+作用域是线程块，所以每个线程块都有一份 \code{Mds} 和 \code{Nds}，块中所有
+线程都可以访问同一份数组。这一点很重要，因为块中每个线程都必须能够访问由
+其他线程加载到共享内存中的 $M$、$N$ 元素。
+
+第 07、08 行把 \code{threadIdx} 和 \code{blockIdx} 保存到较短的自动变量中，
+使代码更简洁。自动标量变量位于寄存器，作用域是单个线程；每个线程都有私有的
+\code{tx}、\code{ty}、\code{bx} 和 \code{by}，存放在该线程可访问的寄存器中。
+线程结束时，这些变量也随之消失。
+
+第 11、12 行确定线程负责生成的 $P$ 元素的行列索引。每个线程负责一个 $P$
+元素。水平方向（x 方向）的列索引为
+\[
+  \code{Col}=\code{bx}\times\code{TILE_WIDTH}+\code{tx}.
+\]
+每个块在水平方向覆盖 \code{TILE_WIDTH} 个 $P$ 元素；位于块 \code{bx} 中的
+线程前面有 \code{bx} 个块，即 \code{bx*TILE_WIDTH} 个线程，它们覆盖同样多
+的 $P$ 元素；当前块中再向前数 \code{tx} 个线程，因此得到上述索引。图
+\ref{fig:5-11} 展示了这一映射。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c@{\hspace{0.8em}}c@{\hspace{0.8em}}c}
+    \fbox{\begin{minipage}{0.22\textwidth}\centering
+      块 $(1,0)$\\线程 $(0,1)$
+    \end{minipage}}
+    & $\longrightarrow$ &
+    \fbox{\begin{minipage}{0.22\textwidth}\centering
+      $\code{Col}=0\times2+1=1$\\
+      $\code{Row}=1\times2+0=2$
+    \end{minipage}}\\[0.5em]
+    \multicolumn{3}{c}{$P_{2,1}$：该线程计算的输出元素}
+  \end{tabular}
+  \caption{分块乘法中的矩阵索引计算（依据原书图 5.10 重绘）}
+  \label{fig:5-11}
+\end{figure}
+
+同理，垂直方向（y 方向）的行索引为
+\[
+  \code{Row}=\code{by}\times\code{TILE_WIDTH}+\code{ty}.
+\]
+在图 \ref{fig:5-11} 的例子中，块 $(1,0)$ 的线程 $(0,1)$ 负责的 x 索引为
+$0\times2+1=1$，y 索引为 $1\times2+0=2$，因此它负责 $P_{2,1}$。
+
+图 \ref{fig:5-10} 第 16 行开始的循环遍历计算 $P$ 元素所需的所有阶段。
+循环变量 \code{ph} 表示已经完成的阶段数量；每个阶段使用一个 $M$ 瓦片和一个
+$N$ 瓦片，因此在阶段开始时，前面阶段已经处理了
+\code{ph*TILE_WIDTH} 对 $M$、$N$ 元素。
+
+每个阶段中，第 19、20 行把适当的 $M$、$N$ 元素加载到共享内存。线程已经知道
+自己要处理的 $M$ 行和 $N$ 列，现在需要确定要加载的 $M$ 列和 $N$ 行。每个块
+有 \code{TILE_WIDTH^2} 个线程，它们共同加载同样数量的 $M$、$N$ 元素；让
+每个线程各加载一个 $M$ 元素和一个 $N$ 元素即可。要加载的 $M$ 区域起始列为
+\code{ph*TILE_WIDTH}，因此每个线程加载距离起点 \code{tx} 的元素；$N$ 区域
+起始行为 \code{ph*TILE_WIDTH}，每个线程加载距离起点 \code{ty} 的元素。
+
+第 19 行的访问是
+\[
+  \code{M[Row*Width + ph*TILE_WIDTH + tx]},
+\]
+线性化索引由行 \code{Row} 和列
+\code{ph*TILE_WIDTH+tx} 构成。由于 \code{Row} 是 \code{ty} 的线性函数，
+\code{TILE_WIDTH^2} 个线程凭借不同的 \code{tx}、\code{ty} 组合各加载一个
+不同的 $M$ 元素。第 20 行以类似方式使用
+\[
+  \code{(ph*TILE_WIDTH + ty)*Width + Col}
+\]
+访问 $N$ 元素。读者可以用图 \ref{fig:5-8} 和图 \ref{fig:5-9} 的小例子验证
+单个线程的地址计算。
+
+第 21 行的 \code{__syncthreads()} 确保所有线程都完成把 $M$、$N$ 瓦片加载到
+共享内存，然后任何线程才可以继续。因为一个线程要使用的元素可能由其他线程
+加载，所以必须确保共享内存中的所有元素都已准备好。第 23 行的循环使用瓦片
+元素执行一个点积阶段。图 \ref{fig:5-11} 中的箭头表示 $M$、$N$ 元素的访问
+方向，循环变量 \code{k} 对应第 23 行；这些访问发生在保存当前瓦片的
+\code{Mds}、\code{Nds} 中。第 26 行的第二个 \code{__syncthreads()} 确保所有
+线程都用完共享内存中的元素后，才进入下一次迭代并加载下一组瓦片，避免某些
+线程过早覆盖其他线程仍在使用的输入值。
+
+两个 \code{__syncthreads()} 展示了并行程序员经常需要分析的两种数据依赖。第一
+种是读后写依赖（read-after-write dependence）：线程必须等待其他线程把数据
+写入正确位置后才能读取。第二种是写后读依赖（write-after-read dependence）：
+线程必须等待所有需要数据的线程读完后才能覆盖它。二者也分别称为真实依赖和
+伪依赖；后者是因为复用同一内存位置产生的，如果使用不同位置就不会存在。
+
+第 16–28 行的循环嵌套展示了\textbf{条带化（strip-mining）}技术：把一个长
+循环拆成多个阶段。每个阶段是一个只执行原循环少量连续迭代的内层循环；原循环
+变成外层循环，负责按原有顺序反复调用内层循环，从而完成所有迭代。在内层循环
+前后加入屏障同步，可以强制同一线程块中的线程在每个阶段集中处理输入数据的一
+个片段。条带化是数据并行程序创建分块阶段的重要方法。
+
+\footnote{条带化长期用于 CPU 编程。为了在顺序程序中改善局部性，条带化之后
+常常还会进行循环交换；它也是向量化编译器为 CPU 程序生成向量或 SIMD 指令的
+主要手段。}
+
+所有点积阶段完成后，线程退出外层循环，在第 29 行使用由 \code{Row} 和
+\code{Col} 计算出的线性化索引，把结果写入自己的 $P$ 元素。
+
+分块算法的收益很大。矩阵乘法的全局内存访问可以减少
+\code{TILE_WIDTH} 倍；使用 $32\times32$ 瓦片时，访问量可减少 32 倍，计算量
+与全局内存访问量之比从 0.25 FLOP/B 提高到 8 FLOP/B。虽然仍低于 H100 的
+20 FLOP/B 阈值，内存带宽现在可以支持更高的计算速率。H100 的全局内存带宽为
+3.35 TB/s，因此理论吞吐量为
+\[
+  (3.35\ \mathrm{TB/s})(8\ \mathrm{FLOP/B})
+  =26.8\ \mathrm{TFLOPS},
+\]
+显著高于未分块内核的 0.84 TFLOPS。实际比值和计算吞吐量可能更高，因为片上
+缓存也会提供帮助。
+
+26.8 TFLOPS 仍只有设备峰值 66.9 TFLOPS 的 40\%。
+
+要把比值提高到 20 FLOP/B 以上、进入计算受限区域，还需要进一步减少全局内存
+访问。第十五章将介绍其中一些优化。矩阵乘法在很多领域都很重要，因此已经有
+高度优化的库可供直接使用。
+
+例如，cuBLAS \cite{cublas-5} 包含许多高级优化，可以帮助数值线性代数应用获得
+接近峰值的性能。CUTLASS \cite{cutlass-5} 也提供了类似的优化能力。
+
+分块并不只表示把频繁访问的数据放入共享内存，它是一种更一般的优化：把频繁
+访问的数据子集放入比原位置更快的内存。在分块矩阵乘法中，$M$、$N$ 因为被同一
+线程块中的不同线程重复访问而放入共享内存；$P$ 也进行了分块，因为同一个线程
+会重复访问同一个元素，所以把它放入寄存器 \code{Pvalue}。这种方式称为
+\textbf{寄存器分块（register tiling）}。本例中的寄存器分块看起来很简单，
+第八、十一和十五章会介绍更复杂的例子。
+
+分块提高矩阵乘法性能并非 GPU 独有。CPU 也长期使用分块（或 blocking）技术，
+确保 CPU 线程在特定时间窗口内复用的数据位于片上缓存。区别在于，CPU 分块依赖
+CPU 缓存隐式地把复用数据保留在片上，而 GPU 分块显式使用共享内存和寄存器。
+CPU 核心通常一次运行一两个线程，线程可以依赖缓存保留最近访问的数据；GPU SM
+同时运行大量线程以隐藏延迟，这些线程可能争用缓存槽位，使 GPU 缓存不够可靠。
+因此，对于需要复用的重要数据，GPU 往往必须使用共享内存。
+
+前面的分块矩阵乘法内核作了两个简化假设：矩阵宽度是线程块宽度的倍数，因此
+不能正确处理任意宽度；矩阵是方阵，而实际应用不一定如此。下一节通过边界检查
+去除这两个假设中的第一个，并为处理一般矩阵奠定基础。
+
+\section{边界检查}
+\label{sec:boundary-checks}
+
+现在扩展分块矩阵乘法内核，使其能够处理不是瓦片宽度倍数的矩阵宽度。把图
+\ref{fig:5-8} 的小例子改为 $3\times3$ 的 $M$、$N$、$P$ 矩阵，瓦片宽度仍为 2，
+得到图 \ref{fig:5-12}。图中展示块 $(0,0)$ 在第二阶段的内存访问模式：
+\code{thread(0,1)} 和 \code{thread(1,1)} 试图加载不存在的 $M$ 元素；
+\code{thread(1,0)} 和 \code{thread(1,1)} 试图访问不存在的 $N$ 元素。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c|c|c}
+    \toprule
+    & $M$ 的第二阶段访问 & $N$ 的第二阶段访问\\
+    \midrule
+    $(0,0)$ & $M_{0,2}$ & $N_{2,0}$\\
+    $(0,1)$ & $M_{0,3}$（越界） & $N_{2,1}$\\
+    $(1,0)$ & $M_{1,2}$ & $N_{3,0}$（越界）\\
+    $(1,1)$ & $M_{1,3}$（越界） & $N_{3,1}$（越界）\\
+    \bottomrule
+  \end{tabular}
+  \caption{加载靠近边缘的输入矩阵元素：块 $(0,0)$ 的一个阶段
+  （依据原书图 5.11 重绘）}
+  \label{fig:5-12}
+\end{figure}
+
+访问不存在的元素有两类问题。访问行末之后的元素（图中线程 $(0,1)$ 和
+$(1,1)$ 对 $M$ 的访问）会访问错误元素。在线性化二维矩阵中，$M_{0,2}$ 后面
+是 $M_{1,0}$；因此线程试图访问 $M_{0,3}$ 时，实际上会得到 $M_{1,0}$，随后
+用于点积计算会破坏输出结果。
+
+访问列末之后的 $N$ 元素则会访问数组分配区域之外的内存。在某些系统中，这些
+访问会返回其他数据结构中的随机值；在另一些系统中，系统会拒绝访问并终止程序。
+无论哪种结果都不可接受。
+
+问题并不只出现在执行的最后阶段。图 \ref{fig:5-13} 展示块 $(1,1)$ 在阶段 0
+的访问模式：线程 $(1,0)$ 和 $(1,1)$ 试图加载不存在的 $M_{3,0}$、$M_{3,1}$；
+线程 $(0,1)$ 和 $(1,1)$ 试图访问不存在的 $N_{0,3}$、$N_{1,3}$。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c|c|c}
+    \toprule
+    & $M$ 的阶段 0 访问 & $N$ 的阶段 0 访问\\
+    \midrule
+    $(0,0)$ & $M_{2,0}$ & $N_{0,2}$\\
+    $(0,1)$ & $M_{2,1}$ & $N_{0,3}$（越界）\\
+    $(1,0)$ & $M_{3,0}$（越界） & $N_{1,2}$\\
+    $(1,1)$ & $M_{3,1}$（越界） & $N_{1,3}$（越界）\\
+    \bottomrule
+  \end{tabular}
+  \caption{块 $(1,1)$ 在阶段 0 加载输入元素（依据原书图 5.12 重绘）}
+  \label{fig:5-13}
+\end{figure}
+
+不能简单地禁止不负责有效 $P$ 元素的线程，因为这些线程仍可能需要为块中其他
+线程加载数据。例如，块 $(1,1)$ 中的线程 $(1,0)$ 不计算有效 $P$ 元素，但在
+阶段 0 仍需加载 $M_{2,1}$，供块中其他线程使用。反过来，负责有效 $P$ 元素
+的线程也可能访问不存在的 $M$ 或 $N$ 元素，例如图 \ref{fig:5-12} 中负责
+$P_{0,1}$ 的线程 $(0,1)$ 仍会访问不存在的 $M_{0,3}$。
+
+因此，加载 $M$ 瓦片、加载 $N$ 瓦片以及计算/存储 $P$ 元素需要不同的边界条件。
+一个实用规则是：每次内存访问都应有对应的检查，确保访问所使用的索引在被访问
+数组的范围内。
+
+加载输入瓦片时，线程应检查要加载的输入元素是否有效。图 \ref{fig:5-10} 第
+19 行的线性化索引由 y 索引 \code{Row} 和 x 索引
+\code{ph*TILE_WIDTH+tx} 构成，因此边界条件是
+\[
+  \code{Row < Width && (ph*TILE_WIDTH+tx) < Width}.
+\]
+条件为真时，线程才加载 $M$ 元素；加载 $N$ 元素的条件是
+\[
+  \code{(ph*TILE_WIDTH+ty) < Width && Col < Width}.
+\]
+若条件为假，线程不加载元素，而是把共享内存位置设为 0.0f。这个值用于点积
+时不会改变结果。最后，线程只有在负责有效 $P$ 元素时才存储最终点积，条件是
+\[
+  \code{(Row < Width) && (Col < Width)}.
+\]
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,firstnumber=1]
+#define TILE_WIDTH 16
+__global__ void matrixMulKernel(float* M, float* N, float* P, int Width) {
+
+    __shared__ float Mds[TILE_WIDTH][TILE_WIDTH];
+    __shared__ float Nds[TILE_WIDTH][TILE_WIDTH];
+
+    int bx = blockIdx.x; int by = blockIdx.y;
+    int tx = threadIdx.x; int ty = threadIdx.y;
+
+    int Row = by * TILE_WIDTH + ty;
+    int Col = bx * TILE_WIDTH + tx;
+    float Pvalue = 0;
+    for (int ph = 0; ph < ceil(Width/(float)TILE_WIDTH); ++ph) {
+        if ((Row < Width) && (ph*TILE_WIDTH+tx) < Width)
+            Mds[ty][tx] = M[Row*Width + ph*TILE_WIDTH + tx];
+        else Mds[ty][tx] = 0.0f;
+        if ((ph*TILE_WIDTH+ty) < Width && Col < Width)
+            Nds[ty][tx] = N[(ph*TILE_WIDTH + ty)*Width + Col];
+        else Nds[ty][tx] = 0.0f;
+        __syncthreads();
+        for (int k = 0; k < TILE_WIDTH; ++k) {
+            Pvalue += Mds[ty][k] * Nds[k][tx];
+        }
+        __syncthreads();
+    }
+    if (Row < Width && Col < Width)
+        P[Row*Width + Col] = Pvalue;
+}
+  \end{lstlisting}
+  \caption{带边界条件检查的分块矩阵乘法内核（依据原书图 5.13 重绘）}
+  \label{fig:5-14}
+\end{figure}
+
+加入边界检查后，分块矩阵乘法内核只需再修改一步，就能处理一般矩阵乘法。
+一般矩阵乘法定义为：$j\times k$ 矩阵 $M$ 与 $k\times l$ 矩阵 $N$ 相乘，得到
+$j\times l$ 矩阵 $P$。目前的内核只能处理方阵。要扩展为一般矩阵乘法，只需
+把 \code{Width} 参数替换为三个无符号整数参数 \code{j}、\code{k}、\code{l}：
+
+\begin{itemize}
+  \item \code{Width} 表示 $M$ 高度或 $P$ 高度时，替换为 \code{j}；
+  \item \code{Width} 表示 $M$ 宽度或 $N$ 高度时，替换为 \code{k}；
+  \item \code{Width} 表示 $N$ 宽度或 $P$ 宽度时，替换为 \code{l}。
+\end{itemize}
+
+这三个修改留给读者作为练习。
+
+\section{内存使用对占用率的影响}
+\label{sec:memory-usage-occupancy}
+
+第四章讨论过，为容忍长延迟操作，需要尽量提高 SM 上线程的占用率。内核的内存
+使用在占用率调优中发挥重要作用。CUDA 寄存器和共享内存可以有效减少全局内存
+访问，但必须注意 SM 对这些内存的容量限制。每个 CUDA 设备都提供有限的内存
+资源，这些资源限制了给定应用中能够同时驻留在 SM 上的线程数。一般而言，每个
+线程需要的资源越多，每个 SM 能驻留的线程就越少。程序员必须在两种收益之间
+谨慎平衡：使用片上内存提高计算强度，以及保持高占用率以改善延迟容忍。
+
+共享内存也会限制分配给每个 SM 的线程数。H100 GPU 每个 SM 最多可配置 228 KB
+共享内存，同时每个 SM 最多支持 2048 个线程。若要使用全部 2048 个线程槽位，
+每线程平均共享内存使用量不应超过
+\[
+  \frac{228\ \mathrm{KB}}{2048\ \mathrm{threads}}
+  =114\ \mathrm{B/thread}.
+\]
+在分块矩阵乘法例子中，每个块有 \code{TILE_WIDTH^2} 个线程，并为
+\code{Mds}、\code{Nds} 各使用 \code{TILE_WIDTH^2*4 B} 共享内存。因此，每线程
+平均使用
+\[
+  \frac{\code{TILE_WIDTH^2}\times4\ \mathrm{B}
+       +\code{TILE_WIDTH^2}\times4\ \mathrm{B}}
+       {\code{TILE_WIDTH^2}\ \mathrm{threads}}
+  =8\ \mathrm{B/thread}.
+\]
+所以，分块矩阵乘法内核的占用率不会受共享内存限制。
+
+另一方面，假设一个内核的线程块使用 38 KB 共享内存，每个块有 256 个线程。
+平均每线程使用
+\[
+  \frac{38\ \mathrm{KB}}{256\ \mathrm{threads}}
+  =152\ \mathrm{B/thread}.
+\]
+在这种使用量下，内核无法达到满占用率；每个 SM 最多容纳
+\[
+  \frac{228\ \mathrm{KB}}{152\ \mathrm{B/thread}}
+  =1536\ \mathrm{threads}.
+\]
+因此，该内核可达到的最大占用率为
+\[
+  \frac{1536}{2048}=75\%.
+\]
+
+对于需要大量共享内存的内核，CUDA 允许重新配置 SM，把更多片上资源用于共享
+内存，代价是减少其他片上内存资源，尤其是缓存。这种可配置性让可预测和不太
+可预测的访问模式都能利用片上内存，程序员可以根据应用需求分配片上资源。
+
+每个设备允许线程块使用的共享内存上限也可能不同。通常希望内核根据硬件可用
+共享内存或程序需求动态确定使用量。主机代码可以调用
+\[
+\code{cudaGetDeviceProperties}
+\]
+查询设备属性。假设属性写入变量 \code{devProp}，
+则字段
+\code{devProp.sharedMemPerBlock}
+给出单个线程块可使用的共享内存上限，程序员可以据此确定每个线程块应使用的
+共享内存。这个字段不等同于 SM 的共享内存总量；后者还会受到具体架构和运行时
+配置的影响。
+
+图 \ref{fig:5-10} 和图 \ref{fig:5-14} 的内核不支持主机代码动态调整共享内存
+使用量。图 5.9 的声明把大小固定为编译期常量：
+
+\begin{lstlisting}[language=C++]
+__shared__ float Mds[TILE_WIDTH][TILE_WIDTH];
+__shared__ float Nds[TILE_WIDTH][TILE_WIDTH];
+\end{lstlisting}
+
+若代码包含：
+
+\begin{lstlisting}[language=C++]
+#define TILE_WIDTH 32
+\end{lstlisting}
+
+则 \code{Mds} 和 \code{Nds} 都有 $32^2=1024$ 个元素。若要改变大小，必须
+修改 \code{TILE_WIDTH} 并重新编译，内核不能轻易在运行时调整共享内存用量。
+
+CUDA 可以用另一种声明方式动态调整共享内存：在共享内存声明前加
+\code{extern}，并省略数组大小。这样，\code{Mds} 和 \code{Nds} 必须合并为
+一个动态分配的一维数组：
+
+\begin{lstlisting}[language=C++]
+extern __shared__ char Mds_Nds[];
+\end{lstlisting}
+
+因为只有一个合并数组，还需要手动定义 \code{Mds} 区域和 \code{Nds} 区域的
+起始位置，并根据行列索引使用线性化索引访问它们。
+
+调用内核时，可以把每个块使用的动态共享内存字节数作为内核调用的第三个执行
+配置参数：
+
+\begin{lstlisting}[language=C++]
+size_t size = ...;
+matrixMulKernel<<<dimGrid, dimBlock, size>>>
+    (Md, Nd, Pd, Width, size/2, size/2);
+\end{lstlisting}
+
+\code{size_t} 是用于保存动态分配数据结构大小信息的内置类型，\code{size} 以
+字节数表示。对 $32\times32$ 瓦片，需要
+\[
+  2\times32\times32\times4=8192\ \mathrm{B}
+\]
+来容纳 \code{Mds} 和 \code{Nds}。底本将运行时设置 \code{size} 的细节留作
+练习。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,firstnumber=1]
+#define TILE_WIDTH 32
+__global__ void matrixMulKernel(float* M, float* N, float* P, int Width,
+                                unsigned Mds_sz, unsigned Nds_sz) {
+
+    extern __shared__ char Mds_Nds[];
+
+    float *Mds = (float *) Mds_Nds;
+    float *Nds = (float *) Mds_Nds + Mds_sz;
+  \end{lstlisting}
+  \caption{使用动态大小共享内存的分块矩阵乘法内核关键片段
+  （依据原书图 5.14 重绘；区域大小参数按底本以字节传递）}
+  \label{fig:5-15}
+\end{figure}
+
+图 \ref{fig:5-15} 展示了如何修改图 5.9 和图 5.13 的内核，使
+\code{Mds}、\code{Nds} 使用动态大小共享内存。也可以把数组各区域大小作为
+内核参数传入；本例增加两个参数，分别表示 \code{Mds} 区域和 \code{Nds} 区域
+的大小，单位为字节。主机代码传入 \code{size/2} 作为两个参数。
+
+\noindent\textbf{译者注：}上图保留底本的代码写法，但这里必须明确单位。若
+\code{Mds_sz} 表示字节数，\code{Nds} 的起始地址应按字节偏移计算，例如
+\code{(float *)(Mds_Nds + Mds_sz)}；若保留代码中的指针加法形式，
+\code{Mds_sz} 就必须表示 \code{float} 元素数。启动参数 \code{size/2} 也必须
+与所采用的单位保持一致。
+
+\section{小结}
+\label{sec:chapter-5-summary}
+
+现代处理器中，程序执行速度取决于内核代码的计算量与全局内存访问量之比。比值
+较高时，内核是计算受限的，执行速度可以接近硬件峰值计算吞吐量；比值较低时，
+内核是内存受限的，执行速度受操作数从内存取得的速率限制。
+
+CUDA 提供寄存器、共享内存和常量内存。这些内存比全局内存小得多，但访问速度
+高得多。把数据放入这些内存，可以在不消耗全局内存带宽的情况下访问数据，从而
+提高内核的计算量与全局内存访问量之比。不过，有效使用这些内存通常需要重新
+设计算法。本章以矩阵乘法为例介绍了分块这一提高数据访问局部性、有效使用共享
+内存的常用策略。在并行编程中，分块使用屏障同步，让多个线程在执行的每个阶段
+共同关注输入数据的一个子集，并把该子集放入特殊内存以获得更高访问速度。
+
+CUDA 程序员必须注意这些特殊内存的容量有限，且容量取决于硬件实现。一旦超过
+容量，内存限制会减少每个 SM 中能够同时执行的线程数，降低 GPU 计算吞吐量和
+延迟容忍能力。开发应用时分析硬件限制，是并行编程的重要能力。
+
+虽然本章在 GPU 的 CUDA 编程背景下介绍了分块算法，但分块同样适用于几乎所有
+并行计算系统。应用必须具有数据访问局部性，才能有效利用这些系统中的高速内存。
+例如，在多核 CPU 系统中，数据局部性可以帮助应用有效使用片上数据缓存，降低
+内存访问延迟并获得高性能。片上缓存容量同样有限，也要求计算具有局部性。因此，
+在其他编程模型下开发其他并行计算系统的应用时，分块算法同样有用。
+
+本章的目标是介绍局部性、分块和不同 CUDA 内存类型。我们用共享内存实现了一个
+分块矩阵乘法内核；还研究了在使用分块技术时为什么需要边界条件检查，以支持
+任意数据维度；最后简要讨论了动态大小共享内存，使内核可以根据硬件能力调整
+每个线程块使用的共享内存大小。
+
+\phantomsection
+\section*{练习}
+\addcontentsline{toc}{section}{练习}
+
+\begin{enumerate}[label=\arabic*.,leftmargin=2.7em]
+  \item 考虑矩阵加法。能否使用共享内存减少全局内存带宽消耗？提示：分析每个
+  线程访问的元素，看看不同线程之间是否存在共同访问。
+
+  \item 分别为使用 $2\times2$ 瓦片和 $4\times4$ 瓦片的 $8\times8$ 矩阵乘法，
+  画出图 5.7 的等价图。验证全局内存带宽的减少量确实与瓦片的维度成正比。
+
+  \item 如果忘记在图 5.9 的内核中使用一个或两个
+  \code{__syncthreads()}，可能发生什么类型的错误执行行为？
+
+  \item 假设寄存器和共享内存容量都不是问题，使用共享内存而不是寄存器保存
+  从全局内存取出的值，一个重要原因是什么？请解释。
+
+  \item 对分块矩阵乘法内核，如果使用 $32\times32$ 瓦片，输入矩阵 $M$ 和 $N$
+  的内存带宽使用量减少多少？
+
+  \item 假设启动一个 CUDA 内核，网格有 1000 个线程块，每块有 512 个线程。
+  如果在内核中声明一个局部变量，在该内核的整个执行生命周期中会创建多少个
+  该变量的版本？
+
+  \item 对上一题，如果声明一个共享内存变量，在该内核的整个执行生命周期中会
+  创建多少个该变量的版本？
+
+  \item 考虑把两个 $N\times N$ 输入矩阵相乘。输入矩阵中的每个元素从全局内存
+  请求多少次？
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item 不使用分块时；
+    \item 使用大小为 $T\times T$ 的瓦片时。
+  \end{enumerate}
+
+  \item 一个内核每线程执行 36 次浮点运算，并进行 7 次 32 位全局内存访问。
+  对下面每组设备属性，判断该内核是计算受限还是内存受限：
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item 峰值 FLOPS = 200 GFLOPS，峰值内存带宽 = 100 GB/s；
+    \item 峰值 FLOPS = 300 GFLOPS，峰值内存带宽 = 250 GB/s。
+  \end{enumerate}
+
+  \item 为操作瓦片，一名 CUDA 新手编写了下面的设备内核，用于转置矩阵中的
+  每个瓦片。瓦片大小为 \code{BLOCK_WIDTH}，矩阵各维度都是
+  \code{BLOCK_WIDTH} 的倍数。内核调用和代码如下；\code{BLOCK_WIDTH} 在编译
+  时已知，可以取 1 到 20 之间的任意值。
+
+\begin{lstlisting}[language=C++,firstnumber=1]
+dim3 blockDim(BLOCK_WIDTH, BLOCK_WIDTH);
+dim3 gridDim(A_width/blockDim.x, A_height/blockDim.y);
+BlockTranspose<<<gridDim, blockDim>>>(A, A_width, A_height);
+__global__ void
+BlockTranspose(float* A_elements, int A_width, int A_height)
+{
+    __shared__ float blockA[BLOCK_WIDTH][BLOCK_WIDTH];
+    int baseIdx = blockIdx.x * BLOCK_SIZE + threadIdx.x;
+    baseIdx += (blockIdx.y * BLOCK_SIZE + threadIdx.y) * A_width;
+    blockA[threadIdx.y][threadIdx.x] = A_elements[baseIdx];
+    A_elements[baseIdx] = blockA[threadIdx.x][threadIdx.y];
+}
+\end{lstlisting}
+
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item 在 \code{BLOCK_SIZE} 的可能取值范围内，哪些值能让该内核在设备上
+    正确执行？
+    \item 如果不是所有值都能正确执行，错误执行行为的根本原因是什么？如何
+    修改代码，使其对所有 \code{BLOCK_SIZE} 值都能工作？
+  \end{enumerate}
+
+  \noindent\textbf{译者注：}\\
+  底本的声明使用 \code{BLOCK_WIDTH}。
+  索引表达式和小题文字则使用 \code{BLOCK_SIZE}。\par
+  这是底本内部命名不一致。本译稿保留这一差异。\par
+  正确实现应统一使用同一个宏名。
+
+  \item 考虑下面的 CUDA 内核及调用它的主机函数：
+
+\begin{lstlisting}[language=C++,firstnumber=1]
+__global__ void foo_kernel(float* a, float* b) {
+    unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
+    float x[4];
+    __shared__ float y_s;
+    __shared__ float b_s[128];
+    for (unsigned int j = 0; j < 4; ++j) {
+        x[j] = a[j*blockDim.x*gridDim.x + i];
+    }
+    if (threadIdx.x == 0) {
+        y_s = 7.4f;
+    }
+    b_s[threadIdx.x] = b[i];
+    __syncthreads();
+    b[i] = 2.5f*x[0] + 3.7f*x[1] + 6.3f*x[2] + 8.5f*x[3]
+         + y_s*b_s[threadIdx.x] + b_s[(threadIdx.x + 3)%128];
+}
+void foo(int* a_d, int* b_d) {
+    unsigned int N = 1024;
+    foo_kernel<<<(N + 128 - 1)/128, 128>>>(a_d, b_d);
+}
+\end{lstlisting}
+
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item 变量 \code{i} 有多少个版本？
+    \item 数组 \code{x[]} 有多少个版本？
+    \item 变量 \code{y_s} 有多少个版本？
+    \item 数组 \code{b_s[]} 有多少个版本？
+    \item 每个线程块使用多少字节共享内存？
+    \item 该内核的浮点运算量与全局内存访问量之比是多少（OP/B）？
+  \end{enumerate}
+
+  \noindent\textbf{译者注：}底本的主机函数参数类型写成 \code{int*}，而内核
+  形参为 \code{float*}；本译稿保留题目代码并提醒读者，实际编译时应统一类型。
+
+  \item 某 GPU 的硬件限制为：每个 SM 2048 个线程、32 个线程块、65,536 个
+  寄存器和 96 KB 共享内存。对下列内核特征，判断内核能否达到满占用率；如果
+  不能，指出限制因素：
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item 每块 64 个线程，每线程 27 个寄存器，每个 SM 4 KB 共享内存；
+    \item 每块 256 个线程，每线程 31 个寄存器，每个 SM 8 KB 共享内存。
+  \end{enumerate}
+\end{enumerate}
+
+\begin{chapterbibliography}{9}
+  \bibitem{cublas-5}
+  NVIDIA, \emph{cuBLAS}, 2025.
+  \url{https://docs.nvidia.com/cuda/cublas/}.
+  \bibitem{cutlass-5}
+  NVIDIA, \emph{CUTLASS}, 2025.
+  \url{https://docs.nvidia.com/cutlass/}.
+\end{chapterbibliography}

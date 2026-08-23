@@ -1,0 +1,146 @@
+\documentclass[UTF8,zihao=-4,openany,fontset=fandol]{ctexbook}
+
+\usepackage[a4paper,top=2.4cm,bottom=2.4cm,left=2.7cm,right=2.7cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage{bookmark}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!55!black,
+  citecolor=green!40!black,
+  urlcolor=blue!65!black,
+  pdftitle={大规模并行处理器编程（第5版）中文学习译稿},
+  pdfauthor={个人学习译稿},
+}
+
+\setcounter{tocdepth}{2}
+\setlist{itemsep=0.25em,topsep=0.35em}
+\setlength{\parskip}{0.35em}
+\setlength{\parindent}{2em}
+\raggedbottom
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  columns=fullflexible,
+  keepspaces=true,
+  breaklines=true,
+  showstringspaces=false,
+  frame=single,
+  numbers=left,
+  numberstyle=\scriptsize\color{gray},
+  numbersep=6pt,
+  xleftmargin=2em,
+  framexleftmargin=2em,
+}
+
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+
+\newcommand{\placeholderfigure}[2]{%
+  \begin{figure}[htbp]
+    \centering
+    \fbox{%
+      \begin{minipage}{0.86\textwidth}
+        \centering
+        \vspace{1.2cm}
+        \textbf{原书图 #1：插图待重绘或在获得许可后补入}\par
+        \vspace{0.6em}
+        \small #2
+        \vspace{1.2cm}
+      \end{minipage}%
+    }
+    \caption{#2}
+    \label{fig:#1}
+  \end{figure}%
+}
+
+\renewcommand{\bibname}{参考文献}
+\newenvironment{chapterbibliography}[1]{%
+  \let\chapter\section
+  \begin{thebibliography}{#1}
+  \phantomsection
+  \addcontentsline{toc}{section}{\bibname}
+}{%
+  \end{thebibliography}
+}
+
+\begin{document}
+
+\frontmatter
+
+\begin{titlepage}
+  \centering
+  \vspace*{2.5cm}
+  {\Huge\bfseries 大规模并行处理器编程\par}
+  \vspace{0.6cm}
+  {\Large 实践导向（第 5 版）\par}
+  \vspace{1.4cm}
+  {\large Wen-mei W. Hwu、David B. Kirk、Izzat El Hajj 著\par}
+  \vspace{1.2cm}
+  {\Large 中文学习译稿\par}
+  \vfill
+  {\large 非官方个人学习版本\par}
+  \vspace{0.5cm}
+  {\small 原书版权归 Elsevier Inc. 及相关权利人所有\par}
+  \vspace{0.8cm}
+  {\small \today\par}
+\end{titlepage}
+
+\chapter*{译稿说明}
+\addcontentsline{toc}{chapter}{译稿说明}
+
+本译稿以原书第五版为底本，目标是为中文读者提供一份便于阅读、编译和逐章校对的
+学习材料。它不是出版社授权的中文译本，也不替代原书。
+
+本版本首先验证排版、术语和章节组织方式；正文翻译将按章节逐步完成。原书中的代码
+标识符、API 名称、公式和参考文献尽量保持原貌，必要时添加译者注。图表在没有适合
+的可再分发源文件时先以中文概念示意重绘。
+
+\tableofcontents
+
+\mainmatter
+
+\include{chapters/01-introduction}
+
+\part{基础概念}
+\include{chapters/02-heterogeneous-data-parallel-computing}
+\include{chapters/03-multidimensional-grids-and-data}
+\include{chapters/04-compute-architecture-and-scheduling}
+\include{chapters/05-memory-architecture-and-data-locality}
+
+% 后续章节完成后依次启用：
+% \include{chapters/06-performance-considerations}
+
+\backmatter
+
+\chapter*{术语表（待扩充）}
+\addcontentsline{toc}{chapter}{术语表（待扩充）}
+
+\begin{description}[leftmargin=5em,style=nextline]
+  \item[GPU] 图形处理器（Graphics Processing Unit）
+  \item[CPU] 中央处理器（Central Processing Unit）
+  \item[CUDA] NVIDIA 的通用并行计算编程平台与模型
+  \item[throughput] 吞吐量
+  \item[latency] 延迟
+  \item[data parallelism] 数据并行
+  \item[memory bandwidth] 内存带宽
+  \item[speedup] 加速比
+  \item[SM] 流式多处理器（Streaming Multiprocessor）
+  \item[GPC] GPU 处理集群（GPU Processing Cluster）
+  \item[warp] CUDA 中以 32 个线程为常见实现大小的线程调度单元
+  \item[occupancy] 占用率
+  \item[global memory] 全局内存
+  \item[shared memory] 共享内存
+  \item[arithmetic intensity] 算术强度
+  \item[tiling] 分块
+  \item[Roofline model] Roofline 模型
+\end{description}
+
+\end{document}
