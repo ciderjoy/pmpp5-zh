@@ -1,0 +1,1248 @@
+\chapter{卷积}
+\label{chap:convolution}
+
+\setcounter{footnote}{0}
+
+\newcommand{\convcell}[1]{%
+  \fbox{\rule{0pt}{1.35em}\makebox[1.55em][c]{\scriptsize $#1$}}%
+}
+\newcommand{\convshade}[1]{%
+  \fcolorbox{black}{gray!25}{%
+    \rule{0pt}{1.35em}\makebox[1.55em][c]{\scriptsize $#1$}}%
+}
+\newcommand{\tilecell}[1]{%
+  \fbox{\rule{0pt}{0.8em}\makebox[0.85em][c]{\scriptsize $#1$}}%
+}
+\newcommand{\tileshade}[1]{%
+  \fcolorbox{black}{gray!25}{%
+    \rule{0pt}{0.8em}\makebox[0.85em][c]{\scriptsize $#1$}}%
+}
+
+接下来的几章将讨论一组重要的并行计算模式。这些模式是许多并行应用中大量并行
+算法的基础。我们从卷积开始。卷积是一种常见的数组运算，广泛用于信号处理、数字
+录音、图像处理、视频处理和计算机视觉。在这些应用领域中，卷积通常作为一种滤波器，
+把信号和像素转换为更理想的值。本书前面介绍过的图像模糊内核就是一种滤波器，它
+平滑信号值，使人能够看清整体趋势。另一个例子是高斯滤波器：它们是卷积滤波器，
+可用于增强图像中物体的边界和边缘。
+
+卷积通常需要执行大量算术运算，才能生成一个输出元素。对于高分辨率图像和视频
+等大型数据集，输出元素（像素）数量很多，因此计算量可能非常大。一方面，卷积
+计算中的输出数据元素可以彼此独立地计算，这是并行计算所希望看到的特征。另一
+方面，在处理不同输出数据元素时，输入数据之间存在大量共享，而且边界条件相对
+棘手。这些性质使卷积成为应用复杂分块方法和输入数据暂存方法的重要场景，而这正
+是本章的重点。
+
+\section{背景}
+\label{sec:convolution-background}
+
+卷积是一种数组运算：每个输出元素都是相应输入元素与其周围一组输入元素的加权和。
+加权求和所使用的权重由一个滤波器数组定义，通常称为卷积核。由于 CUDA 内核函数
+和卷积核之间存在一个容易混淆的名称冲突，下面将这些滤波器数组统一称为卷积滤波器
+（convolution filter），以避免混淆。
+
+卷积可以作用于不同维度的输入数据：一维数据（例如音频）、二维数据（例如照片）、
+三维数据（例如视频）等。在音频数字信号处理中，一维数组元素是随时间采样得到的
+信号幅度；也就是说，输入数据元素 $x_i$ 是音频信号幅度的第 $i$ 个样本。对一维
+数据执行的卷积称为一维卷积，其数学定义是：给定一个含有 $n$ 个元素的输入数组
+\[
+  [x_0,x_1,\ldots,x_{n-1}]
+\]
+和一个含有 $2r+1$ 个元素的滤波器数组
+\[
+  [f_0,f_1,\ldots,f_{2r}],
+\]
+返回输出数组 $y$，其中
+\[
+  y_i=\sum_{j=-r}^{r} f_{j+r}\times x_{i+j}.
+\]
+
+由于滤波器的大小是奇数 $2r+1$，加权求和相对于正在计算的元素对称。也就是说，
+加权求和会包含计算位置两侧各 $r$ 个输入元素；这也是把 $r$ 称为滤波器半径
+（filter radius）的原因。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c}
+    \textbf{$x$}\quad
+    \convshade{8}\ \convshade{2}\ \convshade{5}\ \convshade{4}\
+    \convshade{1}\ \convshade{7}\ \convcell{3}\\[-0.1em]
+    \multicolumn{1}{c}{\scriptsize
+      $x[0]\quad x[1]\quad x[2]\quad x[3]\quad x[4]\quad x[5]\quad x[6]$}\\[0.5em]
+    \textbf{$f$}\quad
+    \convcell{1}\ \convshade{3}\ \convshade{5}\ \convshade{3}\ \convcell{1}\\[-0.1em]
+    \multicolumn{1}{c}{\scriptsize
+      $f[0]\quad f[1]\quad f[2]\quad f[3]\quad f[4]$}\\[0.5em]
+    \multicolumn{1}{c}{$\downarrow\quad\text{逐元素相乘并求和}\quad\downarrow$}\\[0.5em]
+    \convshade{8}\ \convshade{6}\ \convshade{25}\ \convshade{12}\ \convshade{1}
+    $\quad\longrightarrow\quad$
+    \textbf{$y$}\quad
+    \convcell{}\ \convcell{}\ \convshade{52}\ \convcell{}\
+    \convcell{}\ \convcell{}\ \convcell{}
+  \end{tabular}
+  \caption{一维卷积的内部元素示例（依据原书图 7.1 重绘）}
+  \label{fig:7-1}
+\end{figure}
+
+图 \ref{fig:7-1} 展示了一个一维卷积示例：把含有 5 个元素（$r=2$）的卷积滤波器
+$f$ 应用于含有 7 个元素的输入数组 $x$。下面遵循 C++ 语言约定：$x$ 和 $y$ 的元素
+索引从 0 到 6，$f$ 的元素索引从 0 到 4。由于滤波器半径为 2，每个输出元素都是
+相应输入元素、左侧两个元素和右侧两个元素的加权和。
+
+例如，$y[2]$ 的值是 $x[0]$（即 $x[2+(-2)]$）到 $x[4]$（即 $x[2+2]$）的加权和。
+在这个例子中，输入数组元素的值任意取为
+\[
+  [8,2,5,4,1,7,3],
+\]
+滤波器元素给出的权重为
+\[
+  [1,3,5,3,1].
+\]
+每个滤波器元素先与对应的 $x$ 元素相乘，再把乘积相加。如图 \ref{fig:7-1} 所示，
+$y[2]$ 的计算为
+\[
+\begin{aligned}
+y[2] &=
+ f[0]\times x[0]+f[1]\times x[1]+f[2]\times x[2]\\
+&\quad+f[3]\times x[3]+f[4]\times x[4]\\
+&=1\times8+3\times2+5\times5+3\times4+1\times1\\
+&=52.
+\end{aligned}
+\]
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c}
+    \textbf{$x$}\quad
+    \convcell{8}\ \convshade{2}\ \convshade{5}\ \convshade{4}\
+    \convshade{1}\ \convshade{7}\ \convcell{3}\\[-0.1em]
+    \multicolumn{1}{c}{\scriptsize
+      $x[0]\quad x[1]\quad x[2]\quad x[3]\quad x[4]\quad x[5]\quad x[6]$}\\[0.5em]
+    \textbf{$f$}\quad
+    \convcell{1}\ \convshade{3}\ \convshade{5}\ \convshade{3}\ \convcell{1}\\[-0.1em]
+    \multicolumn{1}{c}{\scriptsize
+      $f[0]\quad f[1]\quad f[2]\quad f[3]\quad f[4]$}\\[0.5em]
+    \convshade{2}\ \convshade{15}\ \convshade{20}\ \convshade{3}\ \convshade{7}
+    $\quad\longrightarrow\quad$
+    \textbf{$y$}\quad
+    \convcell{}\ \convcell{}\ \convcell{}\ \convshade{47}\
+    \convcell{}\ \convcell{}\ \convcell{}
+  \end{tabular}
+  \caption{一维卷积中 $y[3]$ 的计算（依据原书图 7.2 重绘）}
+  \label{fig:7-2}
+\end{figure}
+
+在图 \ref{fig:7-1} 中，$y[i]$ 的计算可以看成从 $x[i-2]$ 开始的 $x$ 子数组与
+$f$ 数组之间的内积\footnote{由于卷积的每个输出元素都可以看成 $x$ 的一个子数组
+与 $f$ 数组之间的内积，读者可能会思考能否用矩阵乘法表述卷积。确实存在这种表述，
+第 19 章（卷积神经网络）会对此进行讨论。}。图 \ref{fig:7-2} 展示了 $y[3]$ 的
+计算。与图 \ref{fig:7-1} 相比，这次计算沿 $x$ 数组移动了一个元素，即 $y[3]$ 是
+$x[1]$（即 $x[3+(-2)]$）到 $x[5]$（即 $x[3+2]$）的加权和。可以把它写成如下内积：
+\[
+\begin{aligned}
+y[3] &=
+ f[0]\times x[1]+f[1]\times x[2]+f[2]\times x[3]\\
+&\quad+f[3]\times x[4]+f[4]\times x[5]\\
+&=1\times2+3\times5+5\times4+3\times1+1\times7\\
+&=47.
+\end{aligned}
+\]
+
+由于卷积是根据相邻元素定义的，在计算靠近数组两端的输出元素时，自然会出现边界
+条件。如图 \ref{fig:7-3} 所示，当计算 $y[1]$ 时，$x[1]$ 左侧只有一个 $x$ 元素。
+按照卷积定义，输入元素数量不足。处理这种边界条件的典型方法，是为缺失的 $x$ 元素
+定义一个默认值。在大多数应用中，默认值是 0；图 \ref{fig:7-3} 也采用这一约定。
+例如，在音频信号处理中，可以假设录音开始前和结束后的信号幅度为 0。此时
+\[
+\begin{aligned}
+y[1] &= f[0]\times0+f[1]\times x[0]+f[2]\times x[1]\\
+&\quad+f[3]\times x[2]+f[4]\times x[3]\\
+&=1\times0+3\times8+5\times2+3\times5+1\times4\\
+&=53.
+\end{aligned}
+\]
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c}
+    \textbf{$x$}\quad
+    \convshade{0}\ \convshade{8}\ \convshade{2}\ \convshade{5}\
+    \convshade{4}\ \convcell{1}\ \convcell{7}\ \convcell{3}\\[-0.1em]
+    \multicolumn{1}{c}{\scriptsize
+      $\text{虚线框：填入的 ghost cell}\qquad
+      x[0]\quad x[1]\quad x[2]\quad x[3]\quad x[4]\quad x[5]\quad x[6]$}\\[0.5em]
+    \textbf{$f$}\quad
+    \convcell{1}\ \convshade{3}\ \convshade{5}\ \convshade{3}\ \convcell{1}\\[0.5em]
+    \convshade{0}\ \convshade{24}\ \convshade{10}\ \convshade{15}\ \convshade{4}
+    $\quad\longrightarrow\quad$
+    \textbf{$y$}\quad
+    \convshade{53}\ \convcell{}\ \convcell{}\ \convcell{}\
+    \convcell{}\ \convcell{}\ \convcell{}
+  \end{tabular}
+  \caption{一维卷积的边界条件（依据原书图 7.3 重绘）}
+  \label{fig:7-3}
+\end{figure}
+
+图 \ref{fig:7-3} 中不存在的 $x$ 元素用虚线框表示。显然，计算 $y[0]$ 时会涉及
+两个缺失的 $x$ 元素，在本例中二者都假设为 0；$y[0]$ 的计算留给读者作为练习。
+这些缺失元素在文献中通常称为“幽灵单元”（ghost cell）。并行计算中使用分块时，
+还会因为其他原因产生 ghost cell。这些 ghost cell 可能显著影响分块的有效性和
+效率，稍后还会回到这一点。
+
+并非所有应用都假设 ghost cell 的值为 0。有些应用可能假设每个 ghost cell 都包含
+边缘最近的有效数据元素的值；另一些应用可能通过把输入数组的副本与原数组首尾
+连接起来，构造输入数组的循环视图，从而推导 ghost cell 的值。
+
+在图像处理和计算机视觉中，输入数据通常表示为 $x$-$y$ 空间中的二维数组，像素
+位于其中。因此，图像卷积是二维卷积，如图 \ref{fig:7-4} 所示。二维卷积中的
+滤波器 $f$ 也是二维数组。滤波器在 $x$ 和 $y$ 方向上的尺寸，决定了加权和中包含
+的邻居范围。假设滤波器在 $x$ 方向的尺寸为 $2r_x+1$，在 $y$ 方向的尺寸为
+$2r_y+1$，则每个 $P$ 元素的计算为
+\[
+  P_{y,x}
+  =
+  \sum_{j=-r_y}^{r_y}
+  \sum_{k=-r_x}^{r_x}
+  f_{j+r_y,k+r_x}\times N_{y+j,x+k}.
+\]
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c}
+    \textbf{$N$}\\[-0.2em]
+    \begin{tabular}{*{7}{c}}
+      1&2&3&4&5&6&7\\
+      2&3&4&5&6&7&8\\
+      3&4&\convshade{5}&6&7&8&9\\
+      4&5&6&7&8&9&0\\
+      5&6&7&8&9&0&1\\
+      6&7&8&9&0&1&2\\
+      7&8&9&0&1&2&3
+    \end{tabular}\\[0.4em]
+    \textbf{$f$}\quad
+    \begin{tabular}{*{5}{c}}
+      1&2&3&2&1\\
+      2&3&4&3&2\\
+      3&4&5&4&3\\
+      2&3&4&3&2\\
+      1&2&3&2&1
+    \end{tabular}
+    \quad
+    \begin{tabular}{*{5}{c}}
+      1&4&9&8&5\\
+      4&9&16&15&12\\
+      9&16&25&24&21\\
+      8&15&24&21&16\\
+      5&12&21&16&5
+    \end{tabular}
+    $\quad\longrightarrow\quad$
+    \textbf{$P$}\quad
+    \convcell{}\ \convcell{}\ \convcell{}\ \convcell{}\ \convcell{}\
+    \convcell{}\ \convcell{}
+  \end{tabular}
+  \caption{二维卷积示例（依据原书图 7.4 重绘）}
+  \label{fig:7-4}
+\end{figure}
+
+为简洁起见，下面用 $N_{y,x}$ 表示 C++ 数组寻址中的 $N[y][x]$。由于 $N$ 和 $P$
+很可能是动态分配的数组，实际代码示例将使用线性化索引。图 \ref{fig:7-4} 展示
+$P_{2,2}$ 的计算。计算结果如下：
+\[
+\begin{aligned}
+P_{2,2}
+={}&N_{0,0}\times f_{0,0}+N_{0,1}\times f_{0,1}
++N_{0,2}\times f_{0,2}+N_{0,3}\times f_{0,3}+N_{0,4}\times f_{0,4}\\
+&+N_{1,0}\times f_{1,0}+N_{1,1}\times f_{1,1}
++N_{1,2}\times f_{1,2}+N_{1,3}\times f_{1,3}+N_{1,4}\times f_{1,4}\\
+&+N_{2,0}\times f_{2,0}+N_{2,1}\times f_{2,1}
++N_{2,2}\times f_{2,2}+N_{2,3}\times f_{2,3}+N_{2,4}\times f_{2,4}\\
+&+N_{3,0}\times f_{3,0}+N_{3,1}\times f_{3,1}
++N_{3,2}\times f_{3,2}+N_{3,3}\times f_{3,3}+N_{3,4}\times f_{3,4}\\
+&+N_{4,0}\times f_{4,0}+N_{4,1}\times f_{4,1}
++N_{4,2}\times f_{4,2}+N_{4,3}\times f_{4,3}+N_{4,4}\times f_{4,4}\\
+={}&1\times1+2\times2+3\times3+4\times2+5\times1\\
+&+2\times2+3\times3+4\times4+5\times3+6\times2\\
+&+3\times3+4\times4+5\times5+6\times4+7\times3\\
+&+4\times2+5\times3+6\times4+7\times3+8\times2\\
+&+5\times1+6\times2+7\times3+8\times2+5\times1\\
+={}&321.
+\end{aligned}
+\]
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c}
+    \textbf{$N$（边界外为 ghost cell）}\qquad\qquad\textbf{$P$}\\[-0.2em]
+    \begin{tabular}{*{7}{c}}
+      0&0&1&2&3&4&5\\
+      0&0&2&3&4&5&6\\
+      0&0&3&4&5&6&7\\
+      0&0&4&5&6&7&8\\
+      0&0&5&6&7&8&9
+    \end{tabular}
+    \qquad
+    \begin{tabular}{*{7}{c}}
+      \convshade{112}&\convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}\\
+      \convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}\\
+      \convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}\\
+      \convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}\\
+      \convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}
+    \end{tabular}\\[0.5em]
+    \textbf{$f$}\quad
+    \begin{tabular}{*{5}{c}}
+      1&2&3&2&1\\
+      2&3&4&3&2\\
+      3&4&5&4&3\\
+      2&3&4&3&2\\
+      1&2&3&2&1
+    \end{tabular}
+    \quad
+    \begin{tabular}{*{5}{c}}
+      0&0&0&0&0\\
+      0&0&4&6&6\\
+      0&0&10&12&12\\
+      0&0&12&12&10\\
+      0&0&12&10&6
+    \end{tabular}
+  \end{tabular}
+  \caption{二维卷积的边界条件（依据原书图 7.5 重绘）}
+  \label{fig:7-5}
+\end{figure}
+
+图 \ref{fig:7-4} 中的例子使用一个 $5\times5$ 滤波器，即 $r_y=2$、$r_x=2$。
+一般而言，滤波器不一定是方阵，但通常是方阵。为了生成一个输出元素，我们取输入
+数组 $N$ 中以对应位置为中心的子数组，然后把滤波器数组元素与图像数组元素逐一
+相乘。图 \ref{fig:7-4} 中 $N$ 和 $P$ 下方给出了 $5\times5$ 乘积数组；输出元素
+就是乘积数组中所有元素之和。
+
+图 \ref{fig:7-5} 展示了二维卷积的边界条件。与一维卷积类似，二维卷积也必须处理
+边界；但由于 $x$ 和 $y$ 两个方向都有边界，情况更复杂：输出元素的计算可能涉及
+水平边界、垂直边界，或同时涉及二者。图 \ref{fig:7-5} 中 $P_{1,0}$ 的计算涉及
+输入子数组中缺失的两列和一行。与一维卷积一样，不同应用会对缺失的 $N$ 元素采用
+不同默认值；本例假设默认值为 0。这些边界条件也会影响分块的效率，稍后还会回到
+这一点。
+
+\section{并行卷积——一个基本内核}
+\label{sec:parallel-convolution-basic}
+
+卷积的所有输出元素都可以并行计算，因此卷积非常适合数据并行计算。借鉴矩阵乘法
+中的经验，我们可以快速写出一个简单的并行卷积内核。下面给出二维卷积的代码示例；
+读者可以把这些代码改写为一维和三维版本，作为练习。为简单起见，假设卷积滤波器
+是方阵。
+
+第一步是定义内核的主要输入参数。我们假设二维卷积内核接收：输入数组 $N$ 的指针、
+滤波器 $F$ 的指针、输出数组 $P$ 的指针、方形滤波器的半径 $r$，以及输入和输出数组
+的宽度 \code{width} 和高度 \code{height}。因此，内核签名为：
+
+\begin{lstlisting}[language=C++,basicstyle=\ttfamily\small]
+__global__ void
+convolution_2D_basic_kernel(float *N, float *F, float *P, int r,
+                            int width, int height) {
+    // kernel body
+}
+\end{lstlisting}
+
+\noindent
+\textbf{译者注：}底本在这段话中说内核接收五个参数，但随后列出的形参实际为
+$N$、$F$、$P$、$r$、\code{width} 和 \code{height} 六项；译文按代码保留六个
+形参。
+
+第二步是确定并实现线程到输出元素的映射。由于输出数组是二维的，一个简单而合理的
+方法是把线程组织成二维网格，让网格中的每个线程计算一个输出元素。每个线程块最多
+可以包含 1024 个线程，因此最多可以计算 1024 个输出元素，通常组织成 $32\times32$
+的方形。图 \ref{fig:7-6} 展示了一个玩具示例：输入和输出都是 $16\times16$ 图像，
+每个线程块组织成 $4\times4$ 的线程数组，即 x 方向 4 个线程、y 方向 4 个线程；
+整个网格组织成 $4\times4$ 的线程块数组。
+
+在这个例子中，线程到输出元素（这里就是输出像素）的分配很简单：每个线程负责计算
+一个输出像素，其 $x$ 和 $y$ 索引分别与线程的 x、y 索引相同。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c@{\hspace{0.5em}}c}
+    \fbox{\begin{minipage}{0.36\textwidth}\centering
+      \textbf{输入（全局内存）}\\[0.3em]
+      \resizebox{\linewidth}{!}{%
+      \begin{tabular}{*{8}{c}}
+        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fcolorbox{black}{blue!15}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fcolorbox{black}{blue!15}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fcolorbox{black}{blue!15}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}\\
+        \multicolumn{8}{c}{\scriptsize 输出线程所需的输入 patch}\\
+        \multicolumn{8}{c}{\scriptsize $outRow-r\qquad\qquad outCol-r$}
+      \end{tabular}
+      }%
+    \end{minipage}}
+    &
+    \fbox{\begin{minipage}{0.36\textwidth}\centering
+      \textbf{输出}\\[0.3em]
+      \resizebox{\linewidth}{!}{%
+      \begin{tabular}{*{8}{c}}
+        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fcolorbox{black}{green!25}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}\\
+        \multicolumn{8}{c}{\scriptsize $outRow\qquad outCol$}
+      \end{tabular}
+      }%
+    \end{minipage}}
+  \end{tabular}
+  \caption{二维卷积的并行化与线程组织（依据原书图 7.6 重绘）}
+  \label{fig:7-6}
+\end{figure}
+
+读者应该能认出，图 \ref{fig:7-6} 中的并行化安排与第三章
+\code{ColorToGrayScaleConversion} 示例相同。因此，可以使用图 \ref{fig:7-7} 内核
+第 2、3 行中的语句，根据每个线程的块索引、块维度和线程索引计算输出元素索引。
+例如，块 $(1,1)$ 中的线程 $(1,1)$ 被映射到输出元素
+\[
+  P_{1\times4+1,\;1\times4+1}=P_{5,5},
+\]
+该元素在图 \ref{fig:7-6} 右侧以阴影标出。
+
+确定每个线程负责的输出元素索引后，就可以找出计算该输出元素所需的输入 $N$ 元素。
+如图 \ref{fig:7-6} 所示，块 $(1,1)$ 中的线程 $(1,1)$ 计算 $P_{5,5}$ 时，使用的
+输入元素的 x 索引范围为
+\[
+  outCol-r=5-2=3
+  \quad\text{到}\quad
+  outCol+r=5+2=7,
+\]
+y 索引范围同样为 3 到 7。对所有线程而言，$outCol-r$ 和 $outRow-r$ 定义了计算
+$P_{outRow,outCol}$ 所需输入元素 patch（图 \ref{fig:7-6} 左侧阴影方块）的左上角。
+因此，可以用双重嵌套循环遍历这些索引值并完成计算，即图 \ref{fig:7-7} 第 05–13 行
+的代码。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__global__ void convolution_2D_basic_kernel(float *N, float *F, float *P,
+                                            int r, int width, int height) {
+    int outCol = blockIdx.x*blockDim.x + threadIdx.x;
+    int outRow = blockIdx.y*blockDim.y + threadIdx.y;
+    float Pvalue = 0.0f;
+    for (int fRow = 0; fRow < 2*r+1; fRow++) {
+        for (int fCol = 0; fCol < 2*r+1; fCol++) {
+            int inRow = outRow - r + fRow;
+            int inCol = outCol - r + fCol;
+            if (inRow >= 0 && inRow < height &&
+                inCol >= 0 && inCol < width) {
+                Pvalue += F[fRow*(2*r+1) + fCol]*
+                    N[inRow*width + inCol];
+            }
+        }
+    }
+    if (outRow < height && outCol < width) {
+        P[outRow*width + outCol] = Pvalue;
+    }
+}
+  \end{lstlisting}
+  \caption{带边界条件处理的二维卷积内核（依据原书图 7.7 重绘）}
+  \label{fig:7-7}
+\end{figure}
+
+\noindent\textbf{译者注：}底本图 7.7 的参数 $F$ 和 $P$ 声明为一维指针，
+但代码体中使用了二维下标；本译稿按线性化存储约定改为一维索引。同时，为了适应
+宽度或高度不是线程块尺寸整数倍的输入，在图 7.7 和图 7.9 的输出写回前都增加了
+范围检查。
+
+寄存器变量 \code{Pvalue} 累积所有中间结果，从而避免反复写回 DRAM。内层 for 循环
+中的 if 语句（第 09 行）检查所使用的输入 $N$ 元素是否是 $N$ 数组左、右、上、
+下边界之外的 ghost cell。由于假设 ghost cell 的值为 0，可以直接跳过该 ghost cell
+元素及其对应滤波器元素的乘加操作。循环结束后，把 \code{Pvalue} 写入输出元素 $P$
+（第 15 行）。
+
+从图 \ref{fig:7-7} 的内核可以得到两个观察。第一，第 09–10 行存在控制流分歧。
+负责计算靠近 $P$ 数组四条边缘的输出元素的线程，需要处理 ghost cell；如第 7.1 节
+所示，这些线程遇到的 ghost cell 数量各不相同，因此会在 if 语句中作出不同决定。
+计算 $P_{0,0}$ 的线程大部分时间都会跳过乘加语句，而计算 $P_{0,1}$ 的线程跳过的
+次数较少，其他线程依此类推。控制流分歧的代价取决于输入数组的宽度和高度，以及
+滤波器半径。对于大型输入数组和相对较小的滤波器，控制流分歧只发生在少量输出
+元素的计算中，因此影响较小。由于卷积经常用于大图像，我们预计控制流分歧的影响
+从中等到可以忽略不计。更重要的性能考量是内存带宽。
+
+\section{内存带宽考量}
+\label{sec:convolution-memory-bandwidth}
+
+沿用第五章分析矩阵乘法时采用的方法，我们分析卷积的算术强度，并推理其对内存
+带宽的需求。为简单起见，假设输入数组是尺寸为 $n\times n$ 的方阵，滤波器是尺寸
+为 $m\times m$ 的方阵，其中
+\[
+  m=2r+1
+\]
+且 $r$ 是滤波器半径。假设数组和滤波器元素都是 32 位（4 B）单精度浮点值。
+
+先计算卷积执行的算术运算数量。对于 $n\times n$ 个输出元素中的每一个，卷积操作
+都会遍历 $m\times m$ 滤波器，并对每个滤波器元素执行两次算术运算：一次乘法和
+一次加法。因此，卷积操作执行的算术运算总数为
+\[
+  2\cdot n^2\cdot m^2\ \mathrm{FLOP}.
+\]
+
+再计算卷积操作需要访问的内存数据量。至少需要加载卷积滤波器和输入数组，并存储
+输出数组。滤波器包含 $m^2$ 个元素，输入和输出数组各包含 $n^2$ 个元素。由于
+每个元素占 4 B，卷积需要访问的字节总数为
+\[
+  8\cdot n^2+4\cdot m^2.
+\]
+由于滤波器通常远小于数组（$m\ll n$），可以忽略对滤波器的访问，把访问字节数
+近似为 $8\cdot n^2$ B。
+
+用算术运算数量除以内存访问字节数，可得卷积的算术强度：
+\[
+  \frac{2\cdot n^2\cdot m^2}{8\cdot n^2}
+  =\frac{1}{4}m^2\ \mathrm{FLOP/B}.
+\]
+换句话说，一个完美的卷积实现只访问每个输入和输出元素一次；它每访问一个字节
+内存，就执行 $\frac14m^2$ 次浮点运算。
+
+一个有趣的观察是，卷积的算术强度取决于卷积滤波器大小 $m$。小滤波器的卷积算术
+强度低，因此属于内存受限。例如，使用 $3\times3$ 滤波器的卷积，其算术强度为
+\[
+  \frac14\cdot3^2=2.25\ \mathrm{FLOP/B},
+\]
+在 H100 GPU 上属于内存受限。由于性能受内存带宽限制，这种计算不可能达到 GPU 的
+峰值计算吞吐量。另一方面，大滤波器的卷积具有较高算术强度，因此属于计算受限。
+例如，使用 $11\times11$ 滤波器的卷积，其算术强度为
+\[
+  \frac14\cdot11^2=30.25\ \mathrm{FLOP/B},
+\]
+在 H100 GPU 上属于计算受限。如果采用合适的优化，这种计算的性能可以接近 GPU
+峰值计算吞吐量。
+
+现在回到第 7.2 节图 \ref{fig:7-7} 中的基本卷积内核。在图中第 10 行，每个线程
+在每次循环迭代中从全局内存加载两个元素（8 B），并对它们执行两次算术运算。
+忽略第 14 行的存储操作，因为它位于循环嵌套之外，在这个内核中影响很小。因此，
+该实现的算术强度为
+\[
+  \frac{2\ \mathrm{FLOP}}{8\ \mathrm{B}}
+  =0.25\ \mathrm{FLOP/B}.
+\]
+无论滤波器大小如何，这个算术强度都非常低。
+
+实际算术强度会因为片上缓存而更高。相同的滤波器元素和输入元素会被多个线程访问，
+很可能已经位于 L1 或 L2 缓存中。不过，为了更可靠地获得较高算术强度、更接近设备
+峰值吞吐量，程序员还可以使用共享内存或常量缓存等其他片上内存结构。第 7.4 节将
+讨论常量内存和常量缓存，第 7.5 节将讨论共享内存分块。
+
+\section{常量内存与缓存}
+\label{sec:constant-memory-caching}
+
+卷积中滤波器数组 $F$ 的使用方式有三个值得注意的方面。第一，$F$ 通常很小；大多数
+卷积滤波器的半径不超过 7。即使在三维卷积中，滤波器通常也只包含不超过
+\[
+  7^3=343
+\]
+个元素。第二，在卷积内核执行期间，$F$ 的内容不会改变。第三，所有线程都会访问
+滤波器元素；更好的是，所有线程都以相同顺序访问，从 $F_{0,0}$ 开始，在图
+\ref{fig:7-7} 的双重嵌套 for 循环中每次向前移动一个元素。这三个方面使滤波器
+非常适合放入常量内存并使用缓存，如图 \ref{fig:7-8} 所示。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \fbox{\begin{minipage}{0.82\textwidth}
+    \centering
+    \textbf{网格（Grid）}\\[0.3em]
+    \begin{tabular}{c@{\hspace{0.8em}}c}
+      \fbox{\begin{minipage}{0.28\textwidth}\centering
+        \textbf{块 $(0,0)$}\\
+        共享内存 / L1 缓存\\
+        寄存器\quad 寄存器\\
+        线程 $(0,0)$\quad 线程 $(1,0)$
+      \end{minipage}}
+      &
+      \fbox{\begin{minipage}{0.28\textwidth}\centering
+        \textbf{块 $(1,0)$}\\
+        共享内存 / L1 缓存\\
+        寄存器\quad 寄存器\\
+        线程 $(0,0)$\quad 线程 $(1,0)$
+      \end{minipage}}
+    \end{tabular}\\[0.4em]
+    \rule{0.75\textwidth}{0.5pt}\\[-0.1em]
+    \textbf{全局内存}\qquad\textbf{常量内存}\\[-0.1em]
+    \hfill$\updownarrow$\hfill\qquad\hfill$\updownarrow$\hfill\\[-0.1em]
+    \textbf{主机（Host）}
+  \end{minipage}}
+  \caption{CUDA 内存模型回顾（依据原书图 7.8 重绘）}
+  \label{fig:7-8}
+\end{figure}
+
+如第五章（图 5.4）所述，CUDA 允许程序员把变量声明为位于常量内存中。与全局内存
+变量一样，常量内存变量对所有线程块可见。主要区别是：在内核执行期间，线程不能
+修改常量内存变量的值。此外，常量内存的容量很小，目前为 64 KB。
+
+使用常量内存时，主机代码需要以不同于全局内存变量的方式分配和复制常量内存变量。
+假设滤波器半径由编译期常量 \code{FILTER_RADIUS} 指定。要把滤波器数组 $F$ 声明
+在常量内存中，主机代码把它声明为一个全局变量：
+
+\begin{lstlisting}[language=C++]
+#define FILTER_RADIUS 2
+__constant__ float F[2*FILTER_RADIUS+1][2*FILTER_RADIUS+1];
+\end{lstlisting}
+
+这个全局变量声明应当位于源文件中任何函数之外。关键字
+\code{__constant__}（两侧各有两个下划线）告诉编译器，应当把数组 $F$ 放入设备
+常量内存。
+
+假设主机代码已经在主机内存数组 \code{F_h} 中分配并初始化了滤波器，其中包含
+\[
+  (2\times\code{FILTER_RADIUS}+1)^2
+\]
+个元素。可以按如下方式把 \code{F_h} 的内容从主机内存传输到设备常量内存中的 $F$：
+
+\begin{lstlisting}[language=C++]
+cudaMemcpyToSymbol(F, F_h,
+    (2*FILTER_RADIUS + 1) *
+    (2*FILTER_RADIUS + 1) * sizeof(float));
+\end{lstlisting}
+
+这个 API 函数是一种特殊的内存复制函数，它告知 CUDA 运行时，复制到常量内存中的
+数据在内核执行期间不会改变。一般而言，它的用法是：
+
+\begin{lstlisting}[language=C++]
+cudaMemcpyToSymbol(dest, src, size)
+\end{lstlisting}
+
+其中，\code{dest} 是常量内存中目标位置的指针，\code{src} 是主机内存中源数据的指针，
+\code{size} 是要复制的字节数。该函数还可以接受 \code{offset} 和 \code{kind} 两个
+参数，但它们很少使用，通常省略；详情请参阅 CUDA C++ 编程指南。
+
+内核函数像访问全局变量一样访问常量内存变量，因此不需要把它们的指针作为参数传给
+内核。我们可以把内核修改为使用常量内存，如图 \ref{fig:7-9} 所示。注意，该内核
+看起来几乎与图 \ref{fig:7-7} 中的内核完全相同；唯一差别是，$F$ 不再通过传入的
+指针访问，而是作为全局变量访问。这里仍然适用 C++ 语言关于全局变量作用域的规则。
+如果主机代码和内核代码位于不同文件中，内核代码文件必须包含相应的外部声明信息，
+以确保内核能够看见 $F$ 的声明。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__global__ void convolution_2D_const_mem_kernel(float *N, float *P, int r,
+                                                int width, int height) {
+    int outCol = blockIdx.x*blockDim.x + threadIdx.x;
+    int outRow = blockIdx.y*blockDim.y + threadIdx.y;
+    float Pvalue = 0.0f;
+    for (int fRow = 0; fRow < 2*r+1; fRow++) {
+        for (int fCol = 0; fCol < 2*r+1; fCol++) {
+            int inRow = outRow - r + fRow;
+            int inCol = outCol - r + fCol;
+            if (inRow >= 0 && inRow < height &&
+                inCol >= 0 && inCol < width) {
+                Pvalue += F[fRow][fCol]*N[inRow*width + inCol];
+            }
+        }
+    }
+    if (outRow < height && outCol < width) {
+        P[outRow*width + outCol] = Pvalue;
+    }
+}
+  \end{lstlisting}
+  \caption{使用常量内存存放 $F$ 的二维卷积内核（依据原书图 7.9 重绘）}
+  \label{fig:7-9}
+\end{figure}
+
+与全局内存变量一样，常量内存变量实际上也位于 DRAM 中。不过，由于 CUDA 运行时
+知道常量内存变量不会在内核执行期间被修改，因此会指导硬件在内核执行期间积极缓存
+这些变量。要理解使用常量内存的好处，需要先更多了解现代处理器的内存和缓存层次。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \fbox{\begin{minipage}{0.72\textwidth}\centering
+    \textbf{处理器}\\[0.3em]
+    \begin{tabular}{c@{\hspace{0.3em}}c@{\hspace{0.3em}}c}
+      \fbox{\begin{minipage}{0.16\textwidth}\centering 核心\\寄存器\\L1 缓存\end{minipage}}
+      &
+      \fbox{\begin{minipage}{0.16\textwidth}\centering 核心\\寄存器\\L1 缓存\end{minipage}}
+      &
+      \fbox{\begin{minipage}{0.16\textwidth}\centering 核心\\寄存器\\L1 缓存\end{minipage}}
+    \end{tabular}\\[0.4em]
+    \fbox{\begin{minipage}{0.58\textwidth}\centering L2 缓存\end{minipage}}\\[0.4em]
+    \fbox{\begin{minipage}{0.58\textwidth}\centering 主内存（DRAM）\end{minipage}}
+  \end{minipage}}
+  \caption{现代处理器缓存层次结构的简化视图（依据原书图 7.10 重绘）}
+  \label{fig:7-10}
+\end{figure}
+
+正如第五章和第六章所讨论的，DRAM 的长延迟和有限带宽几乎在所有现代处理器中都
+构成瓶颈。为了缓解这一内存瓶颈，现代处理器通常采用片上缓存（cache），减少需要
+从主内存（DRAM）访问的变量数量，如图 \ref{fig:7-10} 所示。
+
+与 CUDA 共享内存，或者一般意义上的 scratchpad 内存不同，缓存对程序是“透明的”。
+要使用 CUDA 共享内存保存全局变量的值，程序需要把变量声明为
+\code{__shared__}，并显式地把全局内存变量的值复制到共享内存变量中。使用缓存时，
+程序只需访问原始的全局内存变量。处理器硬件会自动把最近或最频繁使用的变量保留在
+缓存中，并记住它们原来的全局内存地址。之后再次使用某个保留的变量时，硬件会根据
+地址检测出缓存中存在该变量的副本，于是从缓存提供变量值，避免访问 DRAM。
+
+内存的容量与速度之间存在权衡。因此，现代处理器通常采用多级缓存。缓存级别的编号
+反映了缓存与处理器之间的距离。最低级别，即一级缓存（L1），直接连接到处理器核心，
+如图 \ref{fig:7-10} 所示；它在延迟和带宽方面都以接近处理器的速度运行。不过，L1
+缓存容量很小，通常不超过 128 KB。二级缓存（L2）更大，容量从几百 KB 到几十 MB
+不等，但访问可能需要几十到几百个时钟周期。L2 通常由多个 CPU 核心或 CUDA 设备的
+多个 SM 共享，因此访问带宽也由多个 SM 共享。如今一些高端处理器甚至还有三级缓存
+（L3），容量可以达到数百 MB。
+
+常量内存变量在大规模并行处理器的内存设计和使用中扮演着有趣的角色。由于常量内存
+变量在内核执行期间不会被修改，SM 在缓存它们时不需要支持线程写入。为通用缓存支持
+高吞吐量写入，需要复杂的硬件逻辑，并且会消耗大量芯片面积和功耗。不需要支持写入，
+就可以设计出在芯片面积和功耗方面都非常高效的常量专用缓存。此外，由于常量内存
+很小（64 KB），小型专用缓存就能有效捕获每个内核频繁使用的常量内存变量。这种
+专用缓存称为现代 GPU 中的常量缓存（constant cache）。
+
+当一个 warp 中的所有线程访问同一个常量内存变量时，例如图 \ref{fig:7-9} 中对 $F$
+的访问（索引与线程索引无关），常量缓存能够提供极高带宽来满足这些线程的数据需求。
+而且，由于 $F$ 通常很小，可以假设所有 $F$ 元素实际上始终来自常量缓存。因此，
+可以简单地认为访问 $F$ 元素不消耗 DRAM 带宽。
+
+基于这一点，计算图 \ref{fig:7-9} 内核的算术强度。图中第 10 行，每个线程在每次
+循环迭代中从全局内存加载一个元素（4 B），并对它们执行两次算术运算。常量内存中
+对 $F$ 的加载没有计入，因为它几乎总能命中常量缓存。忽略循环嵌套之外的第 14 行
+存储操作。因此，该实现的算术强度为
+\[
+  \frac{2\ \mathrm{FLOP}}{4\ \mathrm{B}}
+  =0.5\ \mathrm{FLOP/B}.
+\]
+换句话说，这是图 \ref{fig:7-7} 基本内核的两倍。实际算术强度还会更高，因为多个
+线程访问的 $N$ 元素有时也能在 L1 或 L2 缓存中找到。不过，仍然可以用共享内存
+分块更可靠地优化对 $N$ 的访问，第 7.5 节将对此进行介绍。
+
+还有一种把滤波器权重放入常量内存的方法，不需要声明全局数组变量。CUDA 编译器也会
+把内核参数放在常量内存中。因此，如果把滤波器权重作为内核参数传入，它们同样会被
+放在常量内存中。一种简洁的传参方式，是把滤波器权重放入 C++ 结构体，并按值传递
+该结构体。这样，内核可以用不同滤波器权重被多次调用，而不需要每次都用
+\code{cudaMemcpyToSymbol} 显式复制权重。CUDA 运行时仍然需要在内核启动过程中复制
+这些权重，但复制操作对程序员是透明的。
+
+利用滤波器权重恒定性质的另一种方法，是避免从全局内存访问它们。如果滤波器权重在
+不同程序执行之间不变，并且在编译期已知，就可以把权重值直接硬编码到代码中。不过，
+这样做会使内核无法复用于其他滤波器权重。
+
+\section{带 halo 单元的分块卷积}
+\label{sec:tiled-convolution-halo}
+
+可以通过共享内存分块优化来缓解卷积的内存带宽瓶颈。回顾第五章，共享内存分块让
+线程协作，把输入元素加载到片上内存，以便后续重复使用。首先需要定义输入瓦片和
+输出瓦片，因为理解这些定义对于理解优化实现非常重要。
+
+把每个线程块处理的输出元素集合称为输出瓦片（output tile）。回忆图
+\ref{fig:7-6} 中 $16\times16$ 二维卷积的玩具示例：使用 $4\times4=16$ 个块，
+每个块含有 $4\times4=16$ 个线程。在该例中有 16 个输出瓦片。这里使用每块 16 个
+线程只是为了让示例足够小；实际应用中每块至少应有 32 个线程，即一个 warp，通常
+还要更多线程，才能获得较好的占用率和数据重用。
+
+输入瓦片（input tile）是计算一个输出瓦片中的元素所需的输入元素集合。图
+\ref{fig:7-11} 展示了块 $(1,1)$ 处理的输出瓦片及其对应的输入瓦片（左侧阴影区域）。
+注意，输入瓦片在每个方向上都需要扩展滤波器半径（本例中为 2），以确保包含计算
+输出瓦片边缘元素所需的所有 halo 输入元素。这个扩展会使输入瓦片显著大于输出瓦片。
+在本例中，每个输出瓦片包含
+\[
+  4^2=16
+\]
+个元素，而每个输入瓦片包含
+\[
+  (4+2+2)^2=8^2=64
+\]
+个元素；输入瓦片是输出瓦片的 4 倍。不过，这个比例很大，是因为为了便于可视化，
+示例使用了很小的输出瓦片。实际应用中，输出瓦片尺寸会大得多，输入瓦片与输出
+瓦片的比例也会更小。例如，若输出瓦片大小为 $16\times16=256$，使用同一个
+$5\times5$ 滤波器，则输入瓦片大小为
+\[
+  (16+2+2)^2=400,
+\]
+此时输入瓦片与输出瓦片的比例约为 1.6。虽然这个比例远小于 4，但仍说明即使采用
+实际输出瓦片尺寸，输入瓦片也可能显著大于输出瓦片。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c@{\hspace{0.5em}}c@{\hspace{0.5em}}c}
+    \fbox{\begin{minipage}{0.25\textwidth}\centering
+      \textbf{输入}\\[0.3em]
+      \resizebox{\linewidth}{!}{%
+      \begin{tabular}{*{8}{c}}
+        \fcolorbox{black}{blue!10}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fcolorbox{black}{blue!10}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fcolorbox{black}{blue!10}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fcolorbox{black}{blue!25}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fcolorbox{black}{blue!25}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fcolorbox{black}{blue!10}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}\\
+        \multicolumn{8}{c}{\scriptsize 输入瓦片（共享内存）}\\
+        \multicolumn{8}{c}{\scriptsize 中心深色区域：输出瓦片}
+      \end{tabular}
+      }%
+    \end{minipage}}
+    &
+    \begin{minipage}{0.18\textwidth}\centering
+      \textbf{滤波器}\\[0.3em]
+      \begin{tabular}{*{5}{c}}
+        1&2&3&2&1\\
+        2&3&4&3&2\\
+        3&4&5&4&3\\
+        2&3&4&3&2\\
+        1&2&3&2&1
+      \end{tabular}\\[-0.2em]
+      \scriptsize 常量内存
+    \end{minipage}
+    &
+    \fbox{\begin{minipage}{0.25\textwidth}\centering
+      \textbf{输出瓦片}\\[0.3em]
+      \resizebox{\linewidth}{!}{%
+      \begin{tabular}{*{6}{c}}
+        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fcolorbox{black}{green!25}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fcolorbox{black}{green!25}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
+        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}\\
+        \multicolumn{6}{c}{\scriptsize $t\times t$}
+      \end{tabular}
+      }%
+    \end{minipage}}
+  \end{tabular}
+  \caption{二维卷积中的输入瓦片与输出瓦片（依据原书图 7.11 重绘）}
+  \label{fig:7-11}
+\end{figure}
+
+本节介绍一种把共享内存分块应用于卷积的方法：线程块中的所有线程协作，把整个
+输入瓦片加载到共享内存，然后从共享内存访问输入元素，计算输出瓦片元素。这种
+策略应该让读者想起第五章讨论的分块矩阵乘法。主要区别在于，第五章的分块矩阵
+乘法假设输入瓦片与输出瓦片尺寸相同，而卷积的输入瓦片大于输出瓦片。输入瓦片
+尺寸和输出瓦片尺寸的差异，使分块卷积内核的设计更复杂。
+
+有两种简单的线程组织方式可以处理这种尺寸差异。第一种方式启动尺寸与输入瓦片
+相匹配的线程块。这样加载输入瓦片很简单，因为每个线程只需加载一个输入元素。
+不过，由于块尺寸大于输出瓦片尺寸，计算输出元素时必须禁用一部分线程。第二种
+方式启动尺寸与输出瓦片相匹配的线程块。这一策略使输入瓦片加载更复杂，因为线程
+需要迭代，才能确保所有输入瓦片元素都被加载；但它简化了输出元素的计算，因为块
+尺寸与输出瓦片相同，不需要禁用线程。本节给出基于第一种线程组织方式的内核，
+第二种方式留给读者作为练习。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\tiny]
+#define IN_TILE_DIM 32
+#define OUT_TILE_DIM ((IN_TILE_DIM) - 2*(FILTER_RADIUS))
+__constant__ float F[2*FILTER_RADIUS+1][2*FILTER_RADIUS+1];
+__global__ void convolution_tiled_2D_const_mem_kernel(float *N, float *P,
+                                                       int width, int height) {
+    int col = blockIdx.x*OUT_TILE_DIM + threadIdx.x - FILTER_RADIUS;
+    int row = blockIdx.y*OUT_TILE_DIM + threadIdx.y - FILTER_RADIUS;
+    // loading input tile
+    __shared__ float N_s[IN_TILE_DIM][IN_TILE_DIM];
+    if(row>=0 && row<height && col>=0 && col<width) {
+        N_s[threadIdx.y][threadIdx.x] = N[row*width + col];
+    } else {
+        N_s[threadIdx.y][threadIdx.x] = 0.0;
+    }
+    __syncthreads();
+    // Calculating output elements
+    int tileCol = threadIdx.x - FILTER_RADIUS;
+    int tileRow = threadIdx.y - FILTER_RADIUS;
+    // turning off the threads at the edges of the block
+    if (col >= 0 && col < width && row >=0 && row < height) {
+      if (tileCol >=0 && tileCol<OUT_TILE_DIM &&
+          tileRow>=0 && tileRow<OUT_TILE_DIM){
+        float Pvalue = 0.0f;
+        for (int fRow = 0; fRow < 2*FILTER_RADIUS+1; fRow++) {
+          for (int fCol = 0; fCol < 2*FILTER_RADIUS+1; fCol++) {
+            Pvalue += F[fRow][fCol]*N_s[tileRow+fRow][tileCol+fCol];
+          }
+        }
+        P[row*width+col] = Pvalue;
+      }
+    }
+}
+  \end{lstlisting}
+  \caption{使用常量内存的分块二维卷积内核（依据原书图 7.12 重绘）}
+  \label{fig:7-12}
+\end{figure}
+
+\noindent\textbf{译者注：}底本图 7.12 的共享内存数组声明缺少元素类型；本译稿
+按输入数据类型补为 \code{float} 数组。
+
+图 \ref{fig:7-12} 所示内核采用第一种线程组织方式。每个线程首先计算自己负责
+加载/计算的输入/输出元素的列索引（\code{col}）和行索引（\code{row}）（第 06–07 行）。
+内核分配了一个与输入瓦片大小相同的共享内存数组 \code{N_s}（第 09 行），并把
+输入瓦片加载到该数组（第 10–15 行）。第 10 行的条件用于检查线程尝试加载的输入
+瓦片元素是否是 ghost cell。如果是，线程不执行内存加载，而是把 0 放入共享内存。
+所有线程都执行屏障同步（第 15 行），确保整个输入瓦片已经位于共享内存中，之后
+任何线程才能继续计算输出元素。
+
+现在，所有输入瓦片元素都位于 \code{N_s} 数组中，每个线程都可以使用
+\code{N_s} 元素计算自己的输出 $P$ 元素值。注意，输出瓦片小于输入瓦片，而线程块
+尺寸与输入瓦片相同。因此，每个块中只有一部分线程用于计算输出瓦片元素。
+
+选择块中线程子集有多种方式。我们的实现禁用位于边缘的一层线程，如图
+\ref{fig:7-13} 所示。图中给出了一个小型卷积示例：使用 $3\times3$ 滤波器
+（滤波器半径为 1）、$8\times8$ 输入瓦片、$8\times8$ 线程块和 $6\times6$ 输出
+瓦片。图 \ref{fig:7-13} 左侧展示输入瓦片和线程块；由于二者尺寸相同，它们重叠
+绘制。左侧中央的粗线框包围了用于计算输出瓦片元素的活动线程。本例中，活动线程
+的 x、y 坐标都从 1 到 6。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c@{\hspace{0.5em}}c}
+    \fbox{\begin{minipage}{0.38\textwidth}\centering
+      \textbf{输入瓦片与线程块}\\[0.3em]
+      \resizebox{\linewidth}{!}{%
+      \begin{tabular}{*{8}{c}}
+        \fbox{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
+        \fbox{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
+        \fbox{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
+        \fbox{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
+        \fbox{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
+        \fbox{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
+        \fbox{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
+        \fbox{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}\\
+        \fbox{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
+        \fcolorbox{black}{black!60}{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
+        \fcolorbox{black}{blue!20}{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
+        \fcolorbox{black}{blue!20}{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
+        \fcolorbox{black}{blue!20}{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
+        \fcolorbox{black}{blue!20}{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
+        \fcolorbox{black}{blue!20}{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
+        \fbox{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}\\
+        \multicolumn{8}{c}{\scriptsize 中央 $6\times6$ 区域：活动线程}\\
+        \multicolumn{8}{c}{\scriptsize 线程 $(1,1)$ $\longrightarrow$ 输出 $(0,0)$}\\
+        \multicolumn{8}{c}{\scriptsize 线程 $(6,6)$ $\longrightarrow$ 输出 $(5,5)$}
+      \end{tabular}
+      }%
+    \end{minipage}}
+    &
+    \fbox{\begin{minipage}{0.24\textwidth}\centering
+      \textbf{输出瓦片}\\[0.3em]
+      \resizebox{\linewidth}{!}{%
+      \begin{tabular}{*{6}{c}}
+        \tileshade{0}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}\\
+        \tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}\\
+        \tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}\\
+        \tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}\\
+        \tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}\\
+        \tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tileshade{5}
+      \end{tabular}
+      }%
+    \end{minipage}}
+  \end{tabular}
+  \caption{利用共享内存输入瓦片计算输出瓦片时的线程组织示例（依据原书图 7.13 重绘）}
+  \label{fig:7-13}
+\end{figure}
+
+图 \ref{fig:7-13} 还展示了活动线程到输出瓦片元素的映射。活动线程
+$(t_x,t_y)$ 使用输入瓦片中的一个 patch，计算输出元素
+\[
+  (t_x-\code{FILTER_RADIUS},\;
+   t_y-\code{FILTER_RADIUS}).
+\]
+该 patch 的左上角是输入瓦片中的元素
+$(t_x-\code{FILTER_RADIUS},t_y-\code{FILTER_RADIUS})$。这对应图
+\ref{fig:7-12} 第 17–18 行：输入 patch 起始位置的列索引 \code{tileCol} 和行
+索引 \code{tileRow} 分别被设置为 \code{threadIdx.x-FILTER_RADIUS} 和
+\code{threadIdx.y-FILTER_RADIUS}。
+
+在图 \ref{fig:7-13} 的小例子中，线程 $(1,1)$ 的 \code{tileCol} 和
+\code{tileRow} 分别为 0。因此，线程 $(1,1)$ 使用输入瓦片左上角虚线框标出的
+$3\times3$ 输入 patch，计算输出瓦片的 $(0,0)$ 元素。图 \ref{fig:7-12} 第 24–28
+行的循环嵌套遍历输入 patch 并生成输出元素。块中的线程 $(1,1)$ 遍历左上角为
+\code{N_s[0][0]} 的 patch，而线程 $(5,5)$ 遍历左上角为 \code{N_s[5][5]} 的 patch。
+
+第 06–07 行先用块索引乘以输出瓦片尺寸，得到块负责的输出瓦片在 $P$ 数组中的
+水平和垂直起始位置；再加上线程索引减去滤波器半径得到瓦片内偏移。因此，
+\code{row} 和 \code{col} 变量提供了活动线程负责的输出元素索引。每个线程使用
+这两个索引，在第 29 行写入最终输出元素。
+
+图 \ref{fig:7-12} 中的分块二维卷积内核明显比图 \ref{fig:7-9} 中的基本内核更长、
+更复杂。增加这些复杂性，是为了减少对 $N$ 元素的 DRAM 访问次数。目标是提高内核
+算术强度，使最终性能不受内存带宽限制，或者降低其受内存带宽限制的程度。第 7.4 节
+中已经得到图 \ref{fig:7-9} 内核的算术强度为 0.5 FLOP/B。下面推导图
+\ref{fig:7-12} 内核的算术强度。
+
+处理数据边缘瓦片的块中，处理 ghost cell 的线程不会为这些 ghost cell 执行内存
+访问，因此这些块的内存访问次数会减少。可以通过枚举使用每个 ghost cell 的线程
+数量来计算减少的访问次数。不过，对于大型输入数组和小滤波器，ghost cell 的影响
+显然很小。因此，在计算分块卷积内核的算术强度时忽略 ghost cell 的影响，只考虑
+内部线程块，即其 halo cell 不是 ghost cell 的线程块。
+
+令 $t$ 表示方形输出瓦片沿一个维度的大小（即 \code{OUT_TILE_DIM}），令 $m$
+表示滤波器维度（即 $2\times\code{FILTER_RADIUS}+1$）。分配给输出瓦片元素的每个
+线程，对滤波器的每个元素执行一次乘法和一次加法。因此，一个内部块中的线程总共
+执行
+\[
+  t^2\cdot m^2\cdot2
+\]
+次算术运算。
+
+对于全局内存访问，所有全局内存加载都已从循环嵌套中移出，放入把输入元素加载到
+共享内存的代码中。每个分配给输入瓦片元素的线程加载一个 4 B 的输入值。由于输入
+瓦片维度 \code{IN_TILE_DIM} 为 $t+m-1$，每个内部块加载的总字节数为
+\[
+  (t+m-1)^2\cdot4.
+\]
+由于加载已经移出循环嵌套，其数量不再显著多于存储，所以分析时还必须考虑存储。
+内部线程块中的线程总共存储一个 $t\times t$ 输出瓦片，每个元素占 4 B。因此，
+总存储字节数为
+\[
+  t^2\cdot4.
+\]
+
+用内部块执行的算术运算量除以该块加载和存储的字节数，可以得到图
+\ref{fig:7-12} 分块卷积内核的算术强度：
+\[
+\begin{aligned}
+  \frac{t^2\cdot m^2\cdot2}
+  {\bigl((t+m-1)^2+t^2\bigr)\cdot4}
+  &=
+  \frac14\cdot m^2\cdot
+  \frac{1}{\frac12\left(1+\frac{m-1}{t}\right)^2+\frac12}.
+\end{aligned}
+\]
+
+值得注意的是，这个算术强度更接近第 7.3 节推导的理想算术强度
+$\frac14m^2$。随着输出瓦片维度 $t$ 增大，衰减因子趋近于 1.0。直观地说，更大的
+输出瓦片使我们能够重用加载到共享内存中的输入瓦片元素，计算更多输出瓦片元素；
+因此，更大的 $t$ 会带来更高的算术强度。当然，内核实现中的 $t$ 受到多种硬件资源
+限制，例如线程块大小上限和共享内存容量上限。第 8 章将介绍克服这些挑战的优化技术。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c}
+    \textbf{算术强度（FLOP/B）}\\[0.3em]
+    \begin{tabular}{c|cccccc}
+      \textbf{滤波器维度 $m$}\textbackslash\textbf{输出瓦片维度 $t$}
+      &8&16&28&32&64&理想\\ \hline
+      3  &1.76&1.99&2.10&2.11&2.18&2.25\\
+      5  &3.85&4.88&5.42&5.52&5.87&6.25\\
+      7  &6.03&8.48&9.90&10.17&11.16&12.25\\
+      9  &8.10&12.46&15.27&15.80&17.88&20.25\\
+      11 &9.98&16.62&21.29&22.22&25.89&30.25\\
+      13 &11.66&20.80&27.79&29.23&35.06&42.25
+    \end{tabular}\\[0.4em]
+    \scriptsize 左上区域通常更可能内存受限；右下区域通常更可能计算受限
+  \end{tabular}
+  \caption{二维分块卷积中算术强度随瓦片尺寸和滤波器尺寸的变化（依据原书图 7.14 重绘）}
+  \label{fig:7-14}
+\end{figure}
+
+图 \ref{fig:7-14} 展示了上面推导的分块卷积内核算术强度表达式，如何随不同滤波器
+尺寸和瓦片尺寸变化。可以清楚看到，小滤波器和小瓦片尺寸时计算属于内存受限，
+大滤波器和大瓦片尺寸时属于计算受限。以 $5\times5$ 滤波器和 $28\times28$ 输出
+瓦片（$32\times32$ 输入瓦片）为例，算术强度为 5.42 FLOP/B。实际值可能更高，
+因为不同线程块使用的某些值可以在缓存中找到。这个值已经相当接近 $5\times5$
+滤波器的理想算术强度 6.25 FLOP/B。
+
+图 \ref{fig:7-12} 中实现的分块卷积内核存在一些低效之处。许多低效都源于：为了
+加载 halo cell，输入瓦片尺寸和块尺寸大于输出瓦片尺寸。第一个低效之处是，内核
+启动了一些线程，它们只把数据从全局内存加载到共享内存，并不参与计算阶段，因而
+浪费了计算资源。对于内存受限内核，在访问内存时拥有更多并行性可能有益；但对于
+计算受限内核，被排除线程浪费的资源可能更有价值，因此这种做法可能成为缺点。
+
+第二个低效之处是，输出瓦片尺寸不是 2 的幂，这可能导致把最终结果存储到全局内存
+时出现未对齐的内存访问。由于线程块（以及输入瓦片）的最大尺寸为 $32\times32$，
+对于 $5\times5$ 滤波器，输出瓦片为 $28\times28$。因此，每个线程块存储的输出
+瓦片在内存中并非完全对齐，写入时可能产生低效。第三个低效之处是，支持更大的
+滤波器尺寸需要缩小输出瓦片，因为输入瓦片尺寸无法继续扩大。正如前面看到的，
+缩小输出瓦片会降低内核算术强度，还会加剧前面提到的两个低效之处。
+
+为克服这些问题，可以让块大小与输出瓦片尺寸相同，并让线程在加载输入瓦片时迭代，
+从而把更大的输入瓦片加载到共享内存。这就是本节前面提到、留作练习的第二种线程
+组织方式。另一种可能是完全不把 halo cell 加载到共享内存，而依赖缓存快速访问
+它们。第 7.6 节介绍后一种方法。
+
+\section{使用缓存处理 halo 单元的分块卷积}
+\label{sec:tiled-convolution-cached-halo}
+
+一个线程块输入瓦片中的 halo cell，同时也是相邻瓦片输入瓦片中的内部元素。例如，
+在图 \ref{fig:7-11} 中，一个输入瓦片浅色标出的 halo cell 也是相邻线程块输入
+瓦片的内部元素。线程块需要这些 halo cell 时，它们很可能已经因为相邻线程块的
+访问而位于 L2 缓存中。因此，对 halo cell 的内存访问可能自然地由 L2 缓存满足，
+不会产生额外的 DRAM 流量。也就是说，可以让这些 halo cell 继续通过原始 $N$ 元素
+访问，而不是加载到 \code{N_s} 中。这样，共享内存输入瓦片和输出瓦片可以采用相同
+尺寸，只需把每个输入瓦片的内部元素加载到共享内存。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\tiny]
+#define TILE_DIM 32
+__constant__ float F_c[2*FILTER_RADIUS+1][2*FILTER_RADIUS+1];
+__global__ void convolution_cached_tiled_2D_const_mem_kernel(float *N,
+                                                              float *P,
+                                                              int width, int height) {
+    int col = blockIdx.x*TILE_DIM + threadIdx.x;
+    int row = blockIdx.y*TILE_DIM + threadIdx.y;
+    // loading input tile
+    __shared__ float N_s[TILE_DIM][TILE_DIM];
+    if(row<height && col<width) {
+        N_s[threadIdx.y][threadIdx.x] = N[row*width + col];
+    } else {
+        N_s[threadIdx.y][threadIdx.x] = 0.0;
+    }
+    __syncthreads();
+    // Calculating output elements
+    // turning off the threads at the edges of the block
+    if (col < width && row < height) {
+        float Pvalue = 0.0f;
+        for (int fRow = 0; fRow < 2*FILTER_RADIUS+1; fRow++) {
+            for (int fCol = 0; fCol < 2*FILTER_RADIUS+1; fCol++) {
+                if (threadIdx.x-FILTER_RADIUS+fCol >= 0 &&
+                    threadIdx.x-FILTER_RADIUS+fCol < TILE_DIM &&
+                    threadIdx.y-FILTER_RADIUS+fRow >= 0 &&
+                    threadIdx.y-FILTER_RADIUS+fRow < TILE_DIM){
+                    Pvalue += F_c[fRow][fCol]*
+                        N_s[threadIdx.y-FILTER_RADIUS+fRow]
+                           [threadIdx.x-FILTER_RADIUS+fCol];
+                } else {
+                    if (row-FILTER_RADIUS+fRow >= 0 &&
+                        row-FILTER_RADIUS+fRow < height &&
+                        col-FILTER_RADIUS+fCol >= 0 &&
+                        col-FILTER_RADIUS+fCol < width) {
+                        Pvalue += F_c[fRow][fCol] *
+                            N[(row-FILTER_RADIUS+fRow)*width+
+                              col-FILTER_RADIUS+fCol];
+                    }
+                }
+            }
+        }
+        P[row*width+col] = Pvalue;
+    }
+}
+  \end{lstlisting}
+  \caption{使用缓存处理 halo 并使用常量内存存放 $F$ 的分块二维卷积内核
+  （依据原书图 7.15 重绘）}
+  \label{fig:7-15}
+\end{figure}
+
+图 \ref{fig:7-15} 展示了使用缓存处理 halo cell 的二维卷积内核。在这个分块内核中，
+共享内存数组 \code{N_s} 只需保存瓦片的内部元素。因此，输入瓦片和输出瓦片尺寸
+相同，都由常量 \code{TILE_DIM}（第 01 行）定义。这样，\code{N_s} 在 x、y 两个
+维度上都声明为 \code{TILE_DIM} 大小（第 06 行）。
+
+由于输入瓦片和输出瓦片大小相同，线程块可以按输入/输出瓦片的相同大小启动。
+加载 \code{N_s} 元素也更简单，因为每个线程只需加载与自己负责的输出元素具有相同
+行列索引的输入元素（第 04–05、07–11 行）。加载输入元素的条件在第 07 行也得到
+简化：内核不再把 halo cell 加载到共享内存，因此不存在加载 ghost cell 的危险；
+条件只需检查瓦片是否超出输入数据的有效范围。
+
+不过，计算 $P$ 元素的循环体变得更复杂。它需要增加条件，同时检查 halo cell 和
+ghost cell。第 17–20 行的条件处理 halo cell，检查输入元素是否落在输入瓦片内部；
+如果是，就从共享内存访问该元素。否则，第 24–27 行的条件检查 halo cell 是否是
+ghost cell。如果是，由于假设 ghost 值为 0，因此不执行任何操作；否则从全局内存
+访问该元素。读者应当验证，这里处理 ghost cell 的条件与图 \ref{fig:7-7} 中使用
+的条件相似。
+
+\noindent\textbf{译者注：}底本图 7.15 的常量内存变量声明为 \code{F_c}，但乘加
+语句中有一处仍写作 \code{F}。为使代码示例自洽，本译稿统一使用 \code{F_c}；
+若严格按底本转录，应把该处视为变量名笔误。此外，底本访问共享内存时漏掉了
+\code{FILTER_RADIUS} 偏移；本译稿依据前面的边界条件和瓦片坐标定义补齐该偏移，
+使共享内存下标与对应的输入元素一致。
+
+与图 \ref{fig:7-12} 中的内核相比，图 \ref{fig:7-15} 中内核还有一个细微优势：
+块大小、输入瓦片大小和输出瓦片大小可以相同，并且可以取 2 的幂。由于图
+\ref{fig:7-12} 中输入瓦片和输出瓦片大小不同，该内核执行期间很可能存在更多内存
+分歧和控制分歧。
+
+\section{小结}
+\label{sec:convolution-summary}
+
+本章研究了卷积这一重要的并行计算模式。卷积广泛用于计算机视觉和视频处理等应用，
+同时也是许多并行算法所基于的一般模式。例如，可以把偏微分方程（PDE）求解器中的
+模板算法看成卷积的特殊情况，这将是第 8 章的主题。第 19 章讨论卷积神经网络时，
+还会大量应用本章学到的内容。
+
+我们介绍了一个基本的并行卷积实现，其性能受访问输入和滤波器元素时的 DRAM 带宽
+限制。随后介绍了常量内存，并对内核和主机代码做了简单修改，以利用常量缓存，几乎
+消除访问滤波器元素时的所有 DRAM 流量。接着介绍了使用共享内存的分块并行卷积实现；
+它减少了 DRAM 带宽消耗，但引入了更多控制流分歧和编程复杂性。最后介绍了利用
+L1 和 L2 缓存处理 halo cell 的分块并行卷积实现。
+
+我们还用提高算术强度的方式分析了分块的收益。这项分析是第五章引入的一项重要技能，
+也有助于理解其他模式中分块的收益。通过分析，我们认识到小滤波器和小瓦片尺寸的
+局限性。
+
+虽然本章只展示了一维和二维卷积示例，但这些技术同样可以直接应用于三维卷积。一般
+而言，由于维度更高，输入和输出数组的索引计算更复杂；加载瓦片和/或计算输出值时，
+每个线程也需要更多层循环来遍历多个维度。建议读者把这些高维内核作为课后练习完成。
+
+\section*{练习}
+\addcontentsline{toc}{section}{练习}
+
+\begin{enumerate}[label=\arabic*.,leftmargin=2.7em]
+  \item 计算图 \ref{fig:7-3} 中的 $P[0]$ 值。
+
+  \item 对数组
+  \[
+    N=\{4,1,3,2,3\}
+  \]
+  执行一维卷积，滤波器为
+  \[
+    F=\{2,1,4\}.
+  \]
+  求得到的输出数组。
+
+  \item 你认为下面的一维卷积滤波器分别在做什么？
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item $[0,1,0]$
+    \item $[0,0,1]$
+    \item $[1,0,0]$
+    \item $\left[-\frac12,0,\frac12\right]$
+    \item $\left[\frac13,\frac13,\frac13\right]$
+  \end{enumerate}
+
+  \item 对大小为 $N$ 的数组执行一维卷积，滤波器大小为 $M$：
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item 总共有多少个 ghost cell？
+    \item 如果把 ghost cell 视为乘法（乘以 0），会执行多少次乘法？
+    \item 如果不把 ghost cell 视为乘法，会执行多少次乘法？
+  \end{enumerate}
+
+  \item 对大小为 $N\times N$ 的方阵执行二维卷积，方形滤波器大小为 $M\times M$：
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item 总共有多少个 ghost cell？
+    \item 如果把 ghost cell 视为乘法（乘以 0），会执行多少次乘法？
+    \item 如果不把 ghost cell 视为乘法，会执行多少次乘法？
+  \end{enumerate}
+
+  \item 对大小为 $N_1\times N_2$ 的矩形矩阵执行二维卷积，矩形滤波器大小为
+  $M_1\times M_2$：
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item 总共有多少个 ghost cell？
+    \item 如果把 ghost cell 视为乘法（乘以 0），会执行多少次乘法？
+    \item 如果不把 ghost cell 视为乘法，会执行多少次乘法？
+  \end{enumerate}
+
+  \item 对大小为 $N\times N$ 的数组执行二维分块卷积，使用图
+  \ref{fig:7-12} 所示内核，滤波器大小为 $M\times M$，输出瓦片大小为
+  $T\times T$：
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item 需要多少个线程块？
+    \item 每个块需要多少个线程？
+    \item 每个块需要多少共享内存？
+    \item 如果使用图 \ref{fig:7-15} 中的内核，重复回答上述问题。
+  \end{enumerate}
+
+  \item 修改图 \ref{fig:7-7} 中的二维内核，使其执行三维卷积。
+
+  \item 修改图 \ref{fig:7-9} 中的二维内核，使其执行三维卷积。
+
+  \item 修改图 \ref{fig:7-12} 中的二维分块内核，使其执行三维卷积。
+
+  \item 修改图 \ref{fig:7-12} 中的分块二维内核，使每个线程块使用与输出瓦片
+  大小相同数量的线程，并让每个线程在把输入瓦片加载到共享内存时加载多个元素。
+\end{enumerate}
