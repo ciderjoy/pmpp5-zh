@@ -1,0 +1,748 @@
+\chapter{模板计算与线程粗化}
+\label{chap:stencil-computation}
+
+\setcounter{footnote}{0}
+
+模板（stencil）是求解偏微分方程数值方法的基础，广泛用于流体动力学、热传导、
+燃烧、天气预报、气候模拟和电磁学等应用领域。基于模板的算法所处理的数据，是
+质量、速度、力、加速度、温度、电场和能量等具有物理意义的离散量；这些量之间的
+关系由微分方程支配。模板的一种常见用途，是根据函数在一段输入变量范围内的取值，
+近似计算函数的导数值。
+
+模板与卷积十分相似：二者都会根据另一个多维数组中同一位置及其邻域内元素的当前
+值，计算多维数组某个元素的新值。因此，模板同样需要处理光环单元（halo cell）和
+幽灵单元（ghost cell）。与卷积不同，模板计算用于迭代求解关注区域内连续可微函数
+的值。模板邻域中使用的数据元素及其权重系数由待求解的微分方程决定。有些模板
+模式适合采用卷积无法使用的优化。在把初始条件迭代传播到整个区域的求解器中，输出
+值的计算还可能存在依赖，必须遵循一定的次序约束。此外，求解微分方程通常有较高的
+数值精度要求，模板处理的数据往往是高精度浮点数；采用分块技术时，它们会占用更多
+片上内存。正是这些差异，使模板计算催生出不同于卷积的优化方法。
+
+\newcommand{\chEightPoint}[1]{\textcolor{#1}{\ensuremath{\bullet}}}
+
+\section{背景}
+\label{sec:stencil-background}
+
+使用计算机对函数、模型、变量和方程进行数值求值与求解的第一步，是把它们转换成
+离散表示。例如，图 \ref{fig:8-1}(a) 展示了 $0\leq x\leq\pi$ 区间内的正弦函数
+$y=\sin(x)$。图 \ref{fig:8-1}(b) 给出一个一维规则（结构化）网格的设计，其中
+七个网格点对应的 $x$ 值以常量 $\pi/6$ 等间距排列。一般来说，结构化网格使用
+形状相同的平行多面体覆盖 $n$ 维欧氏空间，例如一维中的线段、二维中的矩形和三维
+中的长方体。后文将会看到，在结构化网格上，变量的导数可以方便地表示为有限差分，
+因此结构化网格主要用于有限差分方法。非结构化网格更加复杂，常用于有限元方法和
+有限体积方法。为简单起见，本章只使用规则网格，因而也只讨论有限差分方法。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c}
+    \begin{tabular}{c@{\hspace{4em}}c}
+      \begin{tabular}{c}
+        $y=\sin x$\\[-0.2em]
+        $\chEightPoint{blue!70!black}\;\smile\;
+         \chEightPoint{blue!70!black}\;\smile\;
+         \chEightPoint{red!75!black}\;\frown\;
+         \chEightPoint{blue!70!black}$\\
+        $0\leq x\leq\pi$\\[-0.2em]
+        (a)
+      \end{tabular}
+      &
+      \begin{tabular}{c}
+        等间距 $\pi/6$\\
+        $\circ{-}\circ{-}\circ{-}\circ{-}\circ{-}\circ{-}\circ$\\
+        $0\quad\frac{\pi}{6}\quad\frac{\pi}{3}\quad\frac{\pi}{2}
+         \quad\frac{2\pi}{3}\quad\frac{5\pi}{6}\quad\pi$\\[-0.2em]
+        (b)
+      \end{tabular}
+    \end{tabular}\\[0.8em]
+    \resizebox{0.72\textwidth}{!}{%
+      \begin{tabular}{c|ccccccc}
+        $i$ & 0 & 1 & 2 & 3 & 4 & 5 & 6\\\hline
+        $F[i]$ & 0.00 & 0.50 & 0.87 & 1.00 & 0.87 & 0.50 & 0.00\\
+        \multicolumn{8}{c}{(c)}
+      \end{tabular}%
+    }
+  \end{tabular}
+  \caption{正弦函数的离散化：(a) $0\leq x\leq\pi$ 上连续可微的正弦函数；
+  (b) 以 $\pi/6$ 为固定间距的规则网格；(c) 得到的离散表示（依据原书图 8.1
+  重绘）}
+  \label{fig:8-1}
+\end{figure}
+
+图 \ref{fig:8-1}(c) 展示了得到的离散表示：用正弦函数在七个网格点上的值表示该
+函数，并把这些值存入一维数组 $F$。这里隐含假设 $x=i\cdot\pi/6$，其中 $i$ 是
+数组元素的下标。例如，与元素 $F[2]$ 对应的 $x$ 值为 $2\cdot\pi/6$，而 $F[2]$
+的值为该位置的正弦值 0.87。
+
+在离散表示中，如果某个 $x$ 值不对应任何网格点，就需要使用线性插值或样条插值等
+技术求出函数在该位置的近似值。表示的保真度，也就是这些插值技术给出的近似函数值
+有多准确，取决于网格点之间的间距：间距越小，近似越准确。减小间距可以提高表示的
+精度，代价是需要更多存储空间；而且后文会看到，求解偏微分方程时还需要更多计算。
+
+离散表示的保真度还取决于所用数值的精度。由于要近似连续函数，网格点值通常使用
+浮点数。主流 CPU 和 GPU 支持双精度（64 位）、单精度（32 位）、半精度（16 位）
+及其他表示（见附录 A）。其中，双精度数具有最高精度，能给出保真度最高的离散
+表示。然而，现代 CPU 和 GPU 的单精度、半精度算术吞吐量通常高得多；双精度数
+包含更多位，读写它们会消耗更多内存带宽，存储它们也需要更多内存容量。分块技术
+为了获得较高算术强度，需要在片上内存和寄存器中保存大量网格点值，因此上述问题
+会给分块带来显著挑战，正如第 7 章所讨论的那样。
+
+下面用更形式化的方式讨论模板。在数学中，模板是作用于结构化网格各点的一种权重
+几何模式。它规定如何通过数值近似过程，从关注点的邻点值推导出该点的值。例如，
+模板可以规定如何利用某点及其邻点处函数值的有限差分，近似该点处的函数导数。偏
+微分方程表达函数、变量及其导数之间的关系，而模板为描述有限差分方法如何数值求解
+偏微分方程提供了一种方便的基础。
+
+假设函数 $f(x)$ 已经离散为一维网格数组 $F$，现在希望计算 $f(x)$ 的离散导数
+$f'(x)$。可以采用经典的一阶导数有限差分近似：
+\[
+  f'(x)=\frac{f(x+h)-f(x-h)}{2h}+O(h^2).
+\]
+也就是说，函数在 $x$ 点处的导数，可以用两个相邻点处函数值之差除以这两个邻点的
+$x$ 值之差来近似。$h$ 是网格相邻点之间的间距。误差项 $O(h^2)$ 表示误差与 $h$
+的平方成正比；显然，$h$ 越小，近似越好。在图 \ref{fig:8-1} 的例子中，$h$ 为
+$\pi/6$，即约 0.52。这个间距还不足以使近似误差可以忽略，但应当能够给出相当接近
+的结果。
+
+由于网格间距为 $h$，当前对 $f(x-h)$、$f(x)$ 和 $f(x+h)$ 的估计值分别位于
+$F[i-1]$、$F[i]$ 和 $F[i+1]$，其中 $x=i\cdot h$。于是，可以把各网格点的导数
+值写入输出数组 $FD$：
+\[
+  FD[i]=\frac{F[i+1]-F[i-1]}{2h}.
+\]
+对所有网格点，这个表达式还可以改写为
+\[
+  FD[i]=-\frac{1}{2h}\,F[i-1]+\frac{1}{2h}\,F[i+1].
+\]
+
+因此，计算网格点 $i$ 处的函数导数估计值，会涉及网格点 $[i-1,i,i+1]$ 当前的函数
+估计值，其系数为 $[-1/(2h),0,1/(2h)]$。这定义了图 \ref{fig:8-2}(a) 所示的一维
+三点模板。如果要近似网格点处更高阶的导数，就需要使用更高阶有限差分。例如，如果
+微分方程包含 $f(x)$ 的二阶导数，就会使用涉及 $[i-2,i-1,i,i+1,i+2]$ 的一维
+五点模板，如图 \ref{fig:8-2}(b) 所示。一般来说，如果方程最高包含 $n$ 阶导数，
+模板就会涉及中心网格点每侧的 $n$ 个网格点。图 \ref{fig:8-2}(c) 展示了一维七点
+模板。中心点每侧的网格点数称为模板的阶数，因为它反映了所近似导数的阶数。
+
+\begin{figure}[htbp]
+  \centering
+  \large
+  \begin{tabular}{c@{\hspace{3em}}c@{\hspace{3em}}c}
+    $\circ{-}\chEightPoint{blue!70!black}{-}\circ$ &
+    $\circ{-}\circ{-}\chEightPoint{blue!70!black}{-}\circ{-}\circ$ &
+    $\circ{-}\circ{-}\circ{-}\chEightPoint{blue!70!black}{-}\circ{-}\circ{-}\circ$\\
+    \small (a) 三点，一阶 & \small (b) 五点，二阶 & \small (c) 七点，三阶
+  \end{tabular}
+  \caption{一维模板示例（依据原书图 8.2 重绘）}
+  \label{fig:8-2}
+\end{figure}
+
+求解包含两个变量的偏微分方程时，函数值需要离散到二维网格，并使用二维模板计算
+偏导数的近似值。如果偏微分方程只含分别对某一个变量求得的偏导数，例如
+$\partial f(x,y)/\partial x$ 和 $\partial f(x,y)/\partial y$，而不含混合偏导数
+$\partial^2 f(x,y)/(\partial x\partial y)$，就可以使用只沿 $x$ 轴和 $y$ 轴选择
+网格点的二维模板。例如，只涉及 $x$ 和 $y$ 的一阶偏导数时，可以在中心点沿两条
+坐标轴的每一侧各取一个网格点，得到图 \ref{fig:8-3}(a) 的二维五点模板。如果方程
+最高包含分别对 $x$ 或 $y$ 求得的二阶导数，则使用图 \ref{fig:8-3}(b) 的二维九点
+模板。依照前面的定义，图 \ref{fig:8-3}(a)、(b) 中模板的阶数分别为 1 和 2；
+图 \ref{fig:8-3}(c)、(d) 则分别给出一阶三维七点模板和二阶三维十三点模板。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c@{\hspace{2.5em}}c@{\hspace{2.5em}}c@{\hspace{2.5em}}c}
+    \begin{tabular}{ccc}
+      & $\circ$ & \\[-0.2em]
+      $\circ$ & \chEightPoint{blue!70!black} & $\circ$\\[-0.2em]
+      & $\circ$ &
+    \end{tabular}
+    &
+    \begin{tabular}{ccccc}
+      && $\circ$ &&\\[-0.2em]
+      && $\circ$ &&\\[-0.2em]
+      $\circ$ & $\circ$ & \chEightPoint{blue!70!black} & $\circ$ & $\circ$\\[-0.2em]
+      && $\circ$ &&\\[-0.2em]
+      && $\circ$ &&
+    \end{tabular}
+    &
+    \begin{tabular}{ccc}
+      & $\circ_z$ &\\[-0.2em]
+      $\circ_x$ & \chEightPoint{blue!70!black} & $\circ_x$\\[-0.2em]
+      & $\circ_y$ &\\[-0.2em]
+      \multicolumn{3}{c}{$\circ_{-z}\;\circ_{-y}$}
+    \end{tabular}
+    &
+    \begin{tabular}{ccc}
+      & $\circ_z\;\circ_z$ &\\[-0.2em]
+      $\circ_x\;\circ_x$ & \chEightPoint{blue!70!black} & $\circ_x\;\circ_x$\\[-0.2em]
+      & $\circ_y\;\circ_y$ &\\[-0.2em]
+      \multicolumn{3}{c}{$\circ_{-z}\;\circ_{-z}\quad\circ_{-y}\;\circ_{-y}$}
+    \end{tabular}\\[0.6em]
+    (a) 二维五点 & (b) 二维九点 & (c) 三维七点 & (d) 三维十三点
+  \end{tabular}
+  \caption{二维与三维模板示例（依据原书图 8.3 重绘）}
+  \label{fig:8-3}
+\end{figure}
+
+图 \ref{fig:8-4} 用五点模板说明数值网格及模板在网格点上的应用。函数被离散成存储
+在多维数组中的网格点值。图中，一个二元函数被离散成二维网格，并以二维数组保存。
+二维模板根据某个网格点自身及其邻点处的函数值，计算该网格点处导数的近似值（输出）。
+本章关注这样一种计算模式：把模板应用于所有相关输入网格点，以生成所有网格点的
+输出值。这个过程称为\textbf{模板扫掠（stencil sweep）}。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c@{\hspace{3em}}c@{\hspace{3em}}c}
+    \begin{tabular}{c}
+      输入二维网格\\
+      \fbox{\begin{tabular}{ccccc}
+        $\circ$&$\circ$&$\circ$&$\circ$&$\circ$\\
+        $\circ$&$\circ$&\chEightPoint{blue!70!black}&$\circ$&$\circ$\\
+        $\circ$&\chEightPoint{blue!40}&\chEightPoint{blue!70!black}&\chEightPoint{blue!40}&$\circ$\\
+        $\circ$&$\circ$&\chEightPoint{blue!40}&$\circ$&$\circ$\\
+        $\circ$&$\circ$&$\circ$&$\circ$&$\circ$
+      \end{tabular}}
+    \end{tabular}
+    & $\xrightarrow{\text{五点模板}}$ &
+    \begin{tabular}{c}
+      输出二维网格\\
+      \fbox{\begin{tabular}{ccccc}
+        $\circ$&$\circ$&$\circ$&$\circ$&$\circ$\\
+        $\circ$&$\circ$&$\circ$&$\circ$&$\circ$\\
+        $\circ$&$\circ$&\chEightPoint{green!60!black}&$\circ$&$\circ$\\
+        $\circ$&$\circ$&$\circ$&$\circ$&$\circ$\\
+        $\circ$&$\circ$&$\circ$&$\circ$&$\circ$
+      \end{tabular}}
+    \end{tabular}
+  \end{tabular}
+  \caption{二维网格及用一阶五点模板计算不同网格点处的导数近似值（依据原书图 8.4
+  重绘）}
+  \label{fig:8-4}
+\end{figure}
+
+\section{并行模板：基本内核}
+\label{sec:basic-stencil-kernel}
+
+首先给出一个执行模板扫掠的基本内核。为简单起见，假设一次模板扫掠生成各输出网格
+点值时，输出网格点之间不存在依赖；还假设边界网格点存储边界条件，它们的值从输入
+到输出保持不变，如图 \ref{fig:8-5} 所示。也就是说，只计算输出网格中着色的内部
+区域，不计算未着色的边界单元。由于模板主要用于求解带边界条件的微分方程，这是一
+个合理的假设。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tabular}{c@{\hspace{4em}}c}
+    \begin{tabular}{c}
+      输入\\[0.3em]
+      \fbox{\colorbox{blue!12}{\parbox[c][3.4cm][c]{3.4cm}{\centering
+        \colorbox{blue!48}{\parbox[c][2.6cm][c]{2.6cm}{\centering\color{white}内部网格点}}}}}
+    \end{tabular}
+    &
+    \begin{tabular}{c}
+      输出\\[0.3em]
+      \fbox{\colorbox{white}{\parbox[c][3.4cm][c]{3.4cm}{\centering
+        \colorbox{green!38}{\parbox[c][2.6cm][c]{2.6cm}{\centering 内部输出\par 每次扫掠更新}}}}}
+    \end{tabular}
+  \end{tabular}
+  \caption{简化的边界条件：边界单元保存边界条件，迭代之间不更新；每次模板扫掠只
+  计算内部输出网格点（依据原书图 8.5 重绘）}
+  \label{fig:8-5}
+\end{figure}
+
+图 \ref{fig:8-6} 给出执行一次模板扫掠的基本内核。该内核假设每个线程块负责计算
+一个输出网格值分块，每个线程分配到其中一个输出网格点。图 \ref{fig:8-5} 展示的
+是二维分块示例，其中每个线程块负责一个 $4\times4$ 输出分块。不过，大多数实际
+应用求解三维微分方程，因此图 \ref{fig:8-6} 的内核假设使用三维网格，以及类似图
+\ref{fig:8-3}(c) 的三维七点模板。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.94\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__global__ void stencil_kernel(float* in, float* out, unsigned int N) {
+  unsigned int i = blockIdx.z*blockDim.z + threadIdx.z;
+  unsigned int j = blockIdx.y*blockDim.y + threadIdx.y;
+  unsigned int k = blockIdx.x*blockDim.x + threadIdx.x;
+  if(i >= 1 && i < N - 1 && j >= 1 && j < N - 1 && k >= 1 && k < N - 1) {
+    out[i*N*N + j*N + k] = c0*in[i*N*N + j*N + k]
+                           + c1*in[i*N*N + j*N + (k - 1)]
+                           + c2*in[i*N*N + j*N + (k + 1)]
+                           + c3*in[i*N*N + (j - 1)*N + k]
+                           + c4*in[i*N*N + (j + 1)*N + k]
+                           + c5*in[(i - 1)*N*N + j*N + k]
+                           + c6*in[(i + 1)*N*N + j*N + k];
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{基本模板扫掠内核（依据原书图 8.6 重排）}
+  \label{fig:8-6}
+\end{figure}
+
+线程到网格点的映射使用熟悉的线性表达式完成，其中涉及 \code{blockIdx}、
+\code{blockDim} 和 \code{threadIdx} 的 $x$、$y$、$z$ 字段（第 2--4 行）。每个
+线程映射到一个三维网格点之后，该点及其所有邻点的输入值分别乘以不同的系数，再
+相加得到输出；这些系数就是第 6--12 行的 \code{c0} 到 \code{c6}。根据所需的
+灵活性，可以把系数硬编码在程序中，也可以存入常量内存。正如第
+\ref{sec:stencil-background} 节所述，系数值取决于正在求解的具体微分方程。
+
+\section{内存带宽考量}
+\label{sec:stencil-bandwidth}
+
+下面沿用第 5 章介绍并在第 7 章使用的方法，分析三维七点模板扫掠的算术强度，进而
+推断它对内存带宽的需求。假设网格尺寸为 $n\times n\times n$。由于只对网格内部
+点执行模板计算，需要计算的网格点总数为 $(n-2)^3$。计算每个值要执行 13 次浮点
+运算，即 7 次乘法和 6 次加法，所以算术运算总数为 $13(n-2)^3$ FLOP。
+
+执行这些计算时需要加载输入网格值，并存储输出网格值。对输入网格而言，除了三维
+空间各条棱及各个角上的点之外，其余点都会被访问，总计 $n^3-12n+16$ 个值；对输出
+网格而言，会访问全部内部点，总计 $(n-2)^3$ 个值。每个值都是 4 B 的单精度浮点数，
+因此访问的总字节数为
+\[
+  4\bigl(n^3-12n+16+(n-2)^3\bigr).
+\]
+理想情况下，每个输入网格点只加载一次，三维七点模板计算的总体算术强度为
+\[
+  \frac{13(n-2)^3}{4\bigl(n^3-12n+16+(n-2)^3\bigr)}.
+\]
+当 $n$ 很大时，这个比值趋近于 $13/8=1.625$ FLOP/B。显然，该比值很小，因此
+三维七点模板计算在现代 GPU 上受内存带宽限制。
+
+再计算图 \ref{fig:8-6} 基本模板扫掠内核的算术强度。内核中的每个线程计算一个输出
+元素，执行 13 次浮点运算，加载 7 个 4 B 输入值，并存储 1 个 4 B 输出值。因此，
+该内核的算术强度为
+\[
+  \frac{13}{(7+1)\cdot4}=0.41\ \text{FLOP/B}.
+\]
+这个值显著低于 1.625 FLOP/B 的理想算术强度。实际测得的算术强度可能稍高，因为
+部分元素或许已经存在于 L1 或 L2 缓存中。尽管如此，仍可以通过优化内存带宽利用率，
+更加可靠地提高内核的算术强度。下一节将像第 7 章那样使用共享内存分块来提高模板
+内核的算术强度。
+
+\section{模板扫掠的共享内存分块}
+\label{sec:stencil-shared-tiling}
+
+第 5 章已经看到，共享内存分块可以显著提高计算的算术强度。模板的共享内存分块
+设计几乎与卷积完全相同，不过二者之间存在几个细微却重要的差别。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tabular}{c@{\hspace{4em}}c}
+    \begin{tabular}{c}
+      输入分块（全局内存）\\[0.4em]
+      \fbox{\colorbox{white}{\parbox[c][3.2cm][c]{3.2cm}{\centering
+        \colorbox{blue!42}{\parbox[c][1.8cm][c]{1.8cm}{\centering 输入值与\par 光环}}}}}
+    \end{tabular}
+    &
+    \begin{tabular}{c}
+      输出分块\\[0.4em]
+      \fbox{\colorbox{white}{\parbox[c][3.2cm][c]{3.2cm}{\centering
+        \colorbox{green!42}{\parbox[c][1.4cm][c]{1.4cm}{\centering 输出值}}}}}
+    \end{tabular}
+  \end{tabular}
+  \caption{二维五点模板的输入分块与输出分块（依据原书图 8.7 重绘）}
+  \label{fig:8-7}
+\end{figure}
+
+图 \ref{fig:8-7} 展示在一个小型网格上应用二维五点模板时的输入分块和输出分块。
+与原书图 7.11 对比，可以看到卷积与模板扫掠之间的一个小差别：五点模板的输入分块
+不包含角上的网格点。后文讨论寄存器分块时，这一性质会变得很重要。
+
+就共享内存分块而言，二维五点模板的输入数据复用明显低于 $3\times3$ 卷积。第 7
+章已经讨论过，二维 $3\times3$ 卷积的理想算术强度上界是
+$\tfrac14\cdot3^2=2.25$ FLOP/B，而二维五点模板的理想算术强度只有
+1.125 FLOP/B。这是因为每个输出网格点只使用 5 个输入网格值，而 $3\times3$
+卷积使用 9 个输入像素值。
+
+随着维数和模板阶数增加，二者的差距更加明显。如果把二维模板的阶数从 1（每侧
+1 个网格点，共 5 点）增加到 2（每侧 2 个网格点，共 9 点），算术强度上界是
+2.125 FLOP/B，而对应的二维 $5\times5$ 卷积为 6.25 FLOP/B。若阶数增加到 3
+（每侧 3 个网格点，共 13 点），上界为 3.125 FLOP/B，而对应的二维
+$7\times7$ 卷积为 12.25 FLOP/B。
+
+进入三维后，模板扫掠与卷积之间的算术强度差距更为突出。例如，三阶三维模板（每侧
+3 点，共 19 点）的上界为 4.625 FLOP/B，而对应的三维 $7\times7\times7$ 卷积
+高达 85.75 FLOP/B。也就是说，对模板扫掠而言，把一个输入网格点值加载到共享内存
+所带来的收益可能远低于卷积，尤其是在模板最常使用的三维情形下。这个看似不大的
+差别非常重要，它促使我们在第三维采用线程粗化和寄存器分块。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.96\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__global__ void stencil_kernel(float* in, float* out, unsigned int N) {
+  int i = blockIdx.z*OUT_TILE_DIM + threadIdx.z - 1;
+  int j = blockIdx.y*OUT_TILE_DIM + threadIdx.y - 1;
+  int k = blockIdx.x*OUT_TILE_DIM + threadIdx.x - 1;
+  __shared__ float in_s[IN_TILE_DIM][IN_TILE_DIM][IN_TILE_DIM];
+  if(i >= 0 && i < N && j >= 0 && j < N && k >= 0 && k < N) {
+    in_s[threadIdx.z][threadIdx.y][threadIdx.x] = in[i*N*N + j*N + k];
+  }
+  __syncthreads();
+  if(i >= 1 && i < N-1 && j >= 1 && j < N-1 && k >= 1 && k < N-1) {
+    if(threadIdx.z >= 1 && threadIdx.z < IN_TILE_DIM-1 && threadIdx.y >= 1
+       && threadIdx.y < IN_TILE_DIM-1 && threadIdx.x >= 1 && threadIdx.x < IN_TILE_DIM-1) {
+      out[i*N*N + j*N + k] = c0*in_s[threadIdx.z][threadIdx.y][threadIdx.x]
+                             + c1*in_s[threadIdx.z][threadIdx.y][threadIdx.x-1]
+                             + c2*in_s[threadIdx.z][threadIdx.y][threadIdx.x+1]
+                             + c3*in_s[threadIdx.z][threadIdx.y-1][threadIdx.x]
+                             + c4*in_s[threadIdx.z][threadIdx.y+1][threadIdx.x]
+                             + c5*in_s[threadIdx.z-1][threadIdx.y][threadIdx.x]
+                             + c6*in_s[threadIdx.z+1][threadIdx.y][threadIdx.x];
+    }
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{采用共享内存分块的三维七点模板扫掠内核（依据原书图 8.8 重排）}
+  \label{fig:8-8}
+\end{figure}
+
+卷积中加载输入分块的各种策略都可直接用于模板扫掠，因此图 \ref{fig:8-8} 给出的
+内核与原书图 7.12 的卷积内核类似：线程块与输入分块大小相同，计算输出网格点时会
+停用一部分线程。该内核由图 \ref{fig:8-6} 的基本模板扫掠内核改写而来，下面只关注
+改写之处。
+
+与分块卷积内核一样，分块模板扫掠内核首先计算每个线程负责加载并可能参与计算的
+网格点的 $x$、$y$、$z$ 坐标。因为内核假设采用三维七点模板，即中心点每侧各有一个
+网格点，所以每个表达式都减去 1（第 2--4 行）。一般来说，所减的值应当等于模板
+阶数。
+
+内核在共享内存中分配数组 \code{in_s}，用来保存每个线程块的输入分块（第 5 行）。
+每个线程加载一个输入元素，也就是包含模板网格点模式的立方输入区域的起始元素。
+由于第 2--4 行执行了减法，一些线程可能试图加载网格的幽灵单元；第 6 行的
+\code{i >= 0}、\code{j >= 0} 和 \code{k >= 0} 防止这些越界访问。线程块大于
+输出分块，处于线程块各维末端的一些线程也可能访问超过网格数组各维上界的幽灵
+单元；同一行的 \code{i < N}、\code{j < N} 和 \code{k < N} 防止这些访问。
+线程块中的所有线程协作把输入分块加载到共享内存（第 7 行），再通过屏障同步等待
+所有输入分块网格点都进入共享内存（第 9 行）。
+
+每个线程块在第 10--21 行计算自己的输出分块。第 10 行的条件反映了简化假设：输入
+与输出网格的边界点保存初始条件，不需要由内核逐次迭代更新。因此，输出点落在这些
+边界位置的线程会被停用。边界网格点在三维网格表面形成一层。第 11--12 行的条件则
+停用仅为加载输入分块而额外启动的线程，只允许 $i$、$j$、$k$ 下标落在输出分块内的
+线程计算相应输出点。最后，每个活跃线程使用七点模板指定的输入网格点计算输出值，
+但输入值来自共享内存而非全局内存。
+
+可以用内核达到的算术强度来评估共享内存分块的效果。忽略缓存时，原始模板扫掠内核
+达到 0.41 FLOP/B。对共享内存分块内核，假设每个输入分块是各维包含 $t$ 个网格点
+的立方体，每个输出分块则在各维包含 $t-2$ 个网格点。因此，每个线程块有
+$(t-2)^3$ 个活跃线程计算输出值，每个活跃线程执行 13 次浮点乘法或加法，总计
+$13(t-2)^3$ 次浮点运算。每个线程块还执行 $t^3$ 次加载来读入输入分块，并执行
+$(t-2)^3$ 次 4 B 存储来写出输出分块。分块内核的算术强度为
+\[
+  \frac{13(t-2)^3}{4t^3+4(t-2)^3}
+  =\frac{13}{8}\cdot
+    \frac{1}{\tfrac12\,\dfrac{t^3}{(t-2)^3}+\tfrac12}
+  \quad\text{FLOP/B}.
+\]
+$t$ 越大，算术强度越高；直观上，输出分块越大，输入网格点值的复用次数就越多。
+当 $t$ 渐近增大时，算术强度上界为 $13/8=1.625$ FLOP/B，正是第
+\ref{sec:stencil-bandwidth} 节推导出的理想算术强度。
+
+遗憾的是，当前硬件对线程块大小的 1024 线程限制，使图 \ref{fig:8-8} 的内核难以
+采用很大的 $t$。实际可用的 $t$ 上限是 8，因为 $8\times8\times8$ 线程块已有
+512 个线程。此外，输入分块占用的共享内存与 $t^3$ 成正比，增大 $t$ 会显著增加
+共享内存消耗。这些硬件限制迫使分块模板内核采用较小的分块。
+
+硬件造成的 $t$ 值上限较小有两个主要缺点。第一个缺点是限制算术强度。当 $t=8$
+时，七点模板的算术强度只有 0.96 FLOP/B，远低于 1.625 FLOP/B 的理想值。随着
+$t$ 减小，光环开销占比上升，算术强度还会降低。第 7 章已经讨论过，光环元素的复用
+次数低于非光环元素；$t$ 越小，输入分块中光环元素所占比例越大。例如，对半径为 1
+的卷积滤波器，$32\times32$ 二维输入分块包含 1024 个输入元素，对应的输出分块
+包含 $30\times30=900$ 个元素。因此，输入中有 $1024-900=124$ 个光环元素，约占
+12\%。相比之下，对一阶三维模板，$8\times8\times8$ 输入分块包含 512 个元素，
+对应输出分块只有 $6\times6\times6=216$ 个元素。输入中有 $512-216=296$ 个光环
+元素，约占 58\%！
+
+第二个缺点是小分块会妨碍内存访问合并。对于 $8\times8\times8$ 分块，每个包含
+32 个线程的 warp 要负责加载分块中 4 个不同的行，每行包含 8 个输入值。因此，在
+同一条加载指令上，warp 中的线程会访问全局内存中至少 4 个相距较远的位置。这些
+访问无法合并，DRAM 带宽得不到充分利用。可以采用非立方分块来克服这一缺点：把
+线程块的 $x$ 维设为 32，使同一 warp 中的线程访问连续的 32 个元素。例如，可把
+线程块的 $x$、$y$、$z$ 三维分别设为 32、8、4。与三维均为 8 的立方线程块相比，
+这种设置能改善访问合并，因而性能更好。然而，即使重新排列线程块的维度，输出分块
+总体上仍然很小，算术强度依旧较低。为了提高算术强度而扩大分块的需求，引出了下一
+节的方法。
+
+\section{线程粗化}
+\label{sec:stencil-thread-coarsening}
+
+上一节提到，模板通常用于三维网格，而且模板模式比较稀疏，因此模板扫掠不像卷积
+那样容易从共享内存分块中获益。本节通过线程粗化突破线程块大小的限制：把每个线程
+的工作从计算一个网格点值，粗化为计算一列网格点值，如图 \ref{fig:8-9} 所示。回顾
+第 6 章，线程粗化会把并行工作单元部分串行化到每个线程中，从而降低并行化开销。
+在这里，细粒度并行化的开销，是必须把复用率较低的光环元素加载到更多线程块中。
+
+图 \ref{fig:8-9} 假设每个输入分块包含 $t^3=6^3=216$ 个网格点。为了能看到输入
+分块内部，示意图剥去了其前、左、上三层。每个输出分块包含
+$(t-2)^3=4^3=64$ 个网格点。输入分块的每个 $x$-$y$ 平面包含 $6^2=36$ 个网格点，
+输出分块的每个 $x$-$y$ 平面包含 $4^2=16$ 个网格点。负责该分块的线程块，其线程
+数与输入分块的一个 $x$-$y$ 平面相同，即 $6\times6$；图中只突出显示实际参与输出
+计算的内部 $4\times4$ 线程。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c@{\hspace{2.2em}}c@{\hspace{2.2em}}c}
+    \begin{tabular}{c}
+      输入分块：$6\times6\times6$\\[0.4em]
+      \fbox{\colorbox{blue!38}{\parbox[c][2.4cm][c]{2.4cm}{\centering
+        当前三个输入平面\\[-0.1em]
+        \scriptsize（共享内存）}}}\\[-0.1em]
+      $z\longrightarrow$
+    \end{tabular}
+    & $\Longrightarrow$ &
+    \begin{tabular}{c}
+      输出分块：$4\times4\times4$\\[0.4em]
+      \fbox{\colorbox{white}{\parbox[c][3.2cm][c]{3.2cm}{\centering
+        \colorbox{green!45}{\parbox[c][1.8cm][c]{1.8cm}{\centering
+          $4\times4$ 活跃线程\\逐平面推进}}}}}\\[-0.1em]
+      $z\longrightarrow$
+    \end{tabular}
+  \end{tabular}
+  \caption{三维七点模板扫掠沿 $z$ 方向的线程粗化（依据原书图 8.9 重绘）}
+  \label{fig:8-9}
+\end{figure}
+
+图 \ref{fig:8-10} 给出沿 $z$ 方向粗化线程的三维七点模板扫掠内核。基本思路是让
+线程块沿 $z$ 方向（即图中深入纸面的方向）迭代，每次迭代计算输出分块中一个
+$x$-$y$ 平面的网格点值。内核首先把每个线程分配给输出的一个 $x$-$y$ 平面中的
+网格点（第 3--4 行）。变量 $i$ 是各线程计算的输出分块网格点的 $z$ 下标；每次
+迭代期间，一个线程块的所有线程处理输出分块的同一个 $x$-$y$ 平面，因此它们所
+计算输出点的 $z$ 下标相同。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.96\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__global__ void stencil_kernel(float* in, float* out, unsigned int N) {
+  int iStart = blockIdx.z*OUT_TILE_DIM;
+  int j = blockIdx.y*OUT_TILE_DIM + threadIdx.y - 1;
+  int k = blockIdx.x*OUT_TILE_DIM + threadIdx.x - 1;
+  __shared__ float inPrev_s[IN_TILE_DIM][IN_TILE_DIM];
+  __shared__ float inCurr_s[IN_TILE_DIM][IN_TILE_DIM];
+  __shared__ float inNext_s[IN_TILE_DIM][IN_TILE_DIM];
+  if(iStart-1 >= 0 && iStart-1 < N && j >= 0 && j < N && k >= 0 && k < N) {
+    inPrev_s[threadIdx.y][threadIdx.x] = in[(iStart - 1)*N*N + j*N + k];
+  }
+  if(iStart >= 0 && iStart < N && j >= 0 && j < N && k >= 0 && k < N) {
+    inCurr_s[threadIdx.y][threadIdx.x] = in[iStart*N*N + j*N + k];
+  }
+  for(int i = iStart; i < iStart + OUT_TILE_DIM; ++i) {
+    if(i + 1 >= 0 && i + 1 < N && j >= 0 && j < N && k >= 0 && k < N) {
+      inNext_s[threadIdx.y][threadIdx.x] = in[(i + 1)*N*N + j*N + k];
+    }
+    __syncthreads();
+    if(i >= 1 && i < N - 1 && j >= 1 && j < N - 1 && k >= 1 && k < N - 1) {
+      if(threadIdx.y >= 1 && threadIdx.y < IN_TILE_DIM - 1
+         && threadIdx.x >= 1 && threadIdx.x < IN_TILE_DIM - 1) {
+        out[i*N*N + j*N + k] = c0*inCurr_s[threadIdx.y][threadIdx.x]
+                               + c1*inCurr_s[threadIdx.y][threadIdx.x-1]
+                               + c2*inCurr_s[threadIdx.y][threadIdx.x+1]
+                               + c3*inCurr_s[threadIdx.y+1][threadIdx.x]
+                               + c4*inCurr_s[threadIdx.y-1][threadIdx.x]
+                               + c5*inPrev_s[threadIdx.y][threadIdx.x]
+                               + c6*inNext_s[threadIdx.y][threadIdx.x];
+      }
+    }
+    __syncthreads();
+    inPrev_s[threadIdx.y][threadIdx.x] = inCurr_s[threadIdx.y][threadIdx.x];
+    inCurr_s[threadIdx.y][threadIdx.x] = inNext_s[threadIdx.y][threadIdx.x];
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{沿 $z$ 方向执行线程粗化的三维七点模板扫掠内核（依据原书图 8.10 重排）}
+  \label{fig:8-10}
+\end{figure}
+
+初始时，每个线程块需要把三个输入分块平面加载到共享内存；它们包含计算图
+\ref{fig:8-9} 中最靠近读者、以线程标出的输出平面所需的全部点。所有线程先把第一
+层加载到共享内存数组 \code{inPrev_s}（第 8--10 行），再把第二层加载到
+\code{inCurr_s}（第 11--13 行）。在图中，为了显示内部层，第一层已经从输入分块
+前侧剥离。
+
+第一次迭代期间，线程块中的所有线程协作把当前输出平面所需的第三个输入层加载到
+共享内存数组 \code{inNext_s}（第 15--17 行），然后在屏障处等待所有线程完成加载
+（第 18 行）。第 19--21 行的条件与图 \ref{fig:8-8} 共享内存内核中的对应条件作用
+相同。
+
+随后，每个线程使用 \code{inCurr_s} 中的四个 $x$-$y$ 邻点、\code{inPrev_s} 中的
+一个 $z$ 邻点以及 \code{inNext_s} 中的另一个 $z$ 邻点，计算当前输出分块平面中的
+一个输出网格点。之后线程块中的所有线程再次在屏障处等待，确保每个线程都完成计算，
+再进入下一个输出分块平面。离开屏障后，所有线程协作把 \code{inCurr_s} 的内容移入
+\code{inPrev_s}，再把 \code{inNext_s} 的内容移入 \code{inCurr_s}。这是因为线程
+沿 $z$ 方向前进一个输出平面后，各输入分块平面承担的角色也随之改变。每次迭代结束
+时，线程块已经保存了计算下一输出平面所需的三个输入平面中的两个；进入下一次迭代
+后，只需再加载第三个输入平面。为计算第二个输出平面而更新后的数组映射如图
+\ref{fig:8-11} 所示。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c@{\hspace{0.8em}}c@{\hspace{0.8em}}c@{\hspace{0.8em}}c@{\hspace{0.8em}}c}
+    \fbox{\colorbox{blue!18}{\parbox[c][2.0cm][c]{2.0cm}{\centering
+      \code{inPrev_s}\\上一平面}}}
+    & $\longleftarrow$ &
+    \fbox{\colorbox{blue!38}{\parbox[c][2.0cm][c]{2.0cm}{\centering
+      \code{inCurr_s}\\当前平面}}}
+    & $\longleftarrow$ &
+    \fbox{\colorbox{blue!58}{\parbox[c][2.0cm][c]{2.0cm}{\centering
+      \code{inNext_s}\\新加载平面}}}\\[0.8em]
+    \multicolumn{5}{c}{$z\longrightarrow$：迭代结束后，三个平面的角色整体前移}
+  \end{tabular}
+  \caption{第一次迭代后，共享内存数组到输入分块平面的映射（依据原书图 8.11 重绘）}
+  \label{fig:8-11}
+\end{figure}
+
+线程粗化内核的优点是：无需增加线程数就能扩大分块，也无需让输入分块的所有平面
+同时驻留在共享内存中。此时线程块大小只有 $t^2$，而不是 $t^3$，其中 $t$ 是输入
+分块的维度，因此可以采用大得多的 $t$。例如，$t=32$ 时线程块大小为
+$t^2=1024$。在此 $t$ 值下，内核的算术强度为 1.52 FLOP/B，相比原共享内存分块
+内核采用 $8\times8\times8$ 输入分块时的 0.96 FLOP/B 有显著提升，也更接近
+1.625 FLOP/B 的理想值。
+
+此外，任意时刻只需把输入分块的三个层放入共享内存。共享内存容量需求从 $t^3$ 个
+元素降为 $3t^2$ 个元素。对于 $t=32$，每个线程块的共享内存消耗为
+$3\cdot32^2\cdot4=12$ KB，处于合理范围内。
+
+\section{寄存器分块}
+\label{sec:stencil-register-tiling}
+
+某些模板模式的特殊性质会带来新的优化机会。这里介绍一种对如下模板尤其有效的优化：
+模板只涉及中心点沿 $x$、$y$、$z$ 方向的邻点。图 \ref{fig:8-3} 中的所有模板都
+符合这一描述，图 \ref{fig:8-10} 的三维七点模板扫掠内核也体现了该性质。
+
+在计算具有相同 $x$-$y$ 下标的输出分块网格点时，每个 \code{inPrev_s} 和
+\code{inNext_s} 元素都只由一个线程使用。只有 \code{inCurr_s} 元素会被多个线程
+访问，真正需要放在共享内存中。因此，\code{inPrev_s} 和 \code{inNext_s} 中的
+$z$ 邻点可以改为保存在唯一使用它们的线程的寄存器中。第 5、6 章已经讨论过，这种
+把数据留在寄存器中以减少共享内存或全局内存访问的技术称为\textbf{寄存器分块
+（register tiling）}。
+
+图 \ref{fig:8-12} 在输入分块的上一平面和下一平面上应用寄存器分块。该内核以图
+\ref{fig:8-10} 的线程粗化内核为基础，只做了几处简单但重要的修改。首先建立三个
+寄存器变量 \code{inPrev}、\code{inCurr} 和 \code{inNext}（第 5、7、8 行）。
+寄存器变量 \code{inPrev} 和 \code{inNext} 分别替代共享内存数组
+\code{inPrev_s} 和 \code{inNext_s}，但仍保留 \code{inCurr_s}，使线程能够共享
+$x$-$y$ 邻点值。因此，该内核使用的共享内存降至图 \ref{fig:8-10} 内核的三分之一。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.96\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__global__ void stencil_kernel(float* in, float* out, unsigned int N) {
+  int iStart = blockIdx.z*OUT_TILE_DIM;
+  int j = blockIdx.y*OUT_TILE_DIM + threadIdx.y - 1;
+  int k = blockIdx.x*OUT_TILE_DIM + threadIdx.x - 1;
+  float inPrev;
+  __shared__ float inCurr_s[IN_TILE_DIM][IN_TILE_DIM];
+  float inCurr;
+  float inNext;
+  if(iStart-1 >= 0 && iStart-1 < N && j >= 0 && j < N && k >= 0 && k < N) {
+    inPrev = in[(iStart - 1)*N*N + j*N + k];
+  }
+  if(iStart >= 0 && iStart < N && j >= 0 && j < N && k >= 0 && k < N) {
+    inCurr = in[iStart*N*N + j*N + k];
+    inCurr_s[threadIdx.y][threadIdx.x] = inCurr;
+  }
+  for(int i = iStart; i < iStart + OUT_TILE_DIM; ++i) {
+    if(i + 1 >= 0 && i + 1 < N && j >= 0 && j < N && k >= 0 && k < N) {
+      inNext = in[(i + 1)*N*N + j*N + k];
+    }
+    __syncthreads();
+    if(i >= 1 && i < N - 1 && j >= 1 && j < N - 1 && k >= 1 && k < N - 1) {
+      if(threadIdx.y >= 1 && threadIdx.y < IN_TILE_DIM - 1
+         && threadIdx.x >= 1 && threadIdx.x < IN_TILE_DIM - 1) {
+        out[i*N*N + j*N + k] = c0*inCurr
+                               + c1*inCurr_s[threadIdx.y][threadIdx.x-1]
+                               + c2*inCurr_s[threadIdx.y][threadIdx.x+1]
+                               + c3*inCurr_s[threadIdx.y+1][threadIdx.x]
+                               + c4*inCurr_s[threadIdx.y-1][threadIdx.x]
+                               + c5*inPrev
+                               + c6*inNext;
+      }
+    }
+    __syncthreads();
+    inPrev = inCurr;
+    inCurr = inNext;
+    inCurr_s[threadIdx.y][threadIdx.x] = inNext;
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{沿 $z$ 方向同时采用线程粗化与寄存器分块的三维七点模板扫掠内核
+  （依据原书图 8.12 重排）}
+  \label{fig:8-12}
+\end{figure}
+
+\paragraph{译者注：}原书图 8.12 最后一条赋值把右值写为已经被寄存器变量替代的
+\code{inNext_s}；结合本节文字和循环中的变量角色，此处应为 \code{inNext}，代码
+清单已按这一含义更正。原书同节还把共享内存用量的比较对象印为图 8.12；从上下文
+可知应与改写前的图 8.10 比较。
+
+输入分块上一平面和当前平面的初始加载（第 9--15 行），以及每次新迭代前下一平面的
+加载（第 17--19 行），都以寄存器变量作为目的位置。因此，输入分块“活跃部分”的
+三个平面分散保存在同一线程块各线程的寄存器中。内核还始终在共享内存中保存输入
+分块当前平面的一个副本（第 14、36 行），使活跃输入平面上的 $x$-$y$ 邻点一直可供
+所有需要它们的线程访问。
+
+图 \ref{fig:8-10} 和图 \ref{fig:8-12} 的内核都只把输入分块的“活跃部分”保存在
+片上内存中。活跃部分的平面数取决于模板阶数；对三维七点模板而言是 3 个平面。图
+\ref{fig:8-12} 的线程粗化与寄存器分块内核，相比图 \ref{fig:8-10} 只有线程粗化的
+内核具有两个优点。第一，原来对共享内存的许多读写现在改由寄存器完成。寄存器延迟
+明显更低、带宽更高，因此代码有望运行得更快。第二，每个线程块的共享内存消耗只剩
+原来的三分之一。
+
+当然，这一改进的代价是每个线程多使用三个寄存器；若采用 $32\times32$ 线程块，
+每个线程块总共会多用 3072 个寄存器。模板阶数更高时，寄存器用量还会进一步上升。
+如果寄存器用量成为问题，可以改回把部分平面存放在共享内存中。这体现了共享内存
+用量与寄存器用量之间经常需要做出的权衡。
+
+总体而言，数据复用现在分散在寄存器和共享内存中。全局内存访问次数没有变化；把
+寄存器和共享内存一并考虑时，总体数据复用率与只用共享内存保存输入分块的线程粗化
+内核相同。因此，在线程粗化基础上增加寄存器分块，不会改变全局内存带宽消耗。
+
+\section{小结}
+\label{sec:stencil-summary}
+
+本章深入讨论了模板扫掠计算。它看起来只是采用特殊滤波器模式的卷积，但模板源于
+求解微分方程时对导数的离散化和数值近似，因此具有两项能够促成新优化的特征。
+
+第一，模板扫掠通常在三维网格上执行，而卷积通常用于二维图像或少量二维图像的时间
+切片。这使二者的分块考量不同，并促使三维模板采用线程粗化，以获得更大的输入分块
+和更高的算术强度。第二，某些模板模式允许对输入数据执行寄存器分块，从而进一步
+提高数据访问吞吐量，并缓解共享内存压力。
+
+\section{练习}
+\label{sec:stencil-exercises}
+
+\begin{enumerate}
+  \item 考虑在包含边界单元的 $120\times120\times120$ 网格上执行三维模板计算。
+  \begin{enumerate}[label=\alph*.]
+    \item 每次模板扫掠会计算多少个输出网格点？
+    \item 对图 \ref{fig:8-6} 的基本内核，假设线程块大小为 $8\times8\times8$，
+      需要多少个线程块？
+    \item 对图 \ref{fig:8-8} 的共享内存分块内核，假设线程块大小为
+      $8\times8\times8$，需要多少个线程块？
+    \item 对图 \ref{fig:8-10} 同时采用共享内存分块和线程粗化的内核，假设线程块
+      大小为 $32\times32$，需要多少个线程块？
+  \end{enumerate}
+
+  \item 考虑一个同时采用共享内存分块和线程粗化的三维七点模板实现。该实现与图
+  \ref{fig:8-10} 和图 \ref{fig:8-12} 类似，但分块不是规则立方体；它采用
+  $32\times32$ 的线程块，并把粗化因子设为 16，也就是说，每个线程块沿 $z$ 维
+  处理连续的 16 个输出平面。
+  \begin{enumerate}[label=\alph*.]
+    \item 在线程块的整个生命周期中，它所加载的输入分块大小是多少（以元素个数
+      计）？
+    \item 在线程块的整个生命周期中，它所处理的输出分块大小是多少（以元素个数
+      计）？
+    \item 该内核的算术强度是多少（以 FLOP/B 计）？
+    \item 如果不使用寄存器分块，如图 \ref{fig:8-10} 所示，每个线程块需要多少
+      字节共享内存？
+    \item 如果使用寄存器分块，如图 \ref{fig:8-12} 所示，每个线程块需要多少
+      字节共享内存？
+  \end{enumerate}
+\end{enumerate}
