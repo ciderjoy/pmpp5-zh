@@ -116,10 +116,16 @@
 \include{chapters/05-memory-architecture-and-data-locality}
 \include{chapters/06-performance-considerations}
 
+\part{并行模式}
+% 第 7 章尚待翻译；显式推进计数器以保留原书章节编号。
+\setcounter{chapter}{7}
+\include{chapters/08-stencil-computation}
+
 \backmatter
 
 \chapter*{术语表（待扩充）}
 \addcontentsline{toc}{chapter}{术语表（待扩充）}
+\markboth{术语表（待扩充）}{术语表（待扩充）}
 
 \begin{description}[leftmargin=5em,style=nextline]
   \item[GPU] 图形处理器（Graphics Processing Unit）
@@ -147,6 +153,12 @@
   \item[vector load/store] 向量加载/存储
   \item[thread coarsening] 线程粗化
   \item[coarsening factor] 粗化因子
+  \item[stencil] 模板；差分模板
+  \item[stencil sweep] 模板扫掠
+  \item[structured grid] 结构化网格
+  \item[finite difference] 有限差分
+  \item[boundary condition] 边界条件
+  \item[register tiling] 寄存器分块
   \item[loop unrolling] 循环展开
   \item[instruction scheduling] 指令调度
   \item[double-buffering] 双缓冲
