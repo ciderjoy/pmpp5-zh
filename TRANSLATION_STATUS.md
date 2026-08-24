@@ -9,12 +9,9 @@
 - [x] 第 3 章：Multidimensional grids and data —— 多维网格与数据（初译，已完成底本对照、CUDA 代码核对、图示重绘和编译/视觉验收）
 - [x] 第 4 章：Compute architecture and scheduling —— 计算架构与调度（初译，已完成底本对照、CUDA 代码核对、图示重绘和编译/视觉验收）
 - [x] 第 5 章：Memory architecture and data locality —— 内存架构与数据局部性（初译，已完成底本对照、CUDA 代码核对、图示重绘和编译/视觉验收）
+- [x] 第 6 章：Performance considerations —— 性能考量（初译，已完成底本对照、CUDA 代码核对、图示重绘和编译/视觉验收）
 
 ## 待处理
-
-### 第 1 部分：基础概念
-
-- [ ] 第 6 章：Performance considerations —— 性能考量
 
 ### 第 2 部分：并行模式
 
@@ -61,3 +58,10 @@
 - 已检查交叉引用和引用键；当前构建无未定义引用、缺失数学定界符、LaTeX 错误或 overfull/underfull 警告。
 - 原书插图以中文概念示意重绘，图号使用译稿中的 `4-1`--`4-10` 和 `5-1`--`5-15` 标签。
 - 对底本中动态共享内存参数单位、`BLOCK_WIDTH`/`BLOCK_SIZE` 命名不一致，以及练习 11 的主机/设备指针类型差异，均保留代码并添加译者注。
+
+## 第六章本轮验收记录
+
+- 已完成全局内存访问合并、DRAM 通道与 bank、向量加载和存储、共享内存 bank 冲突、线程粗化、循环展开、双缓冲及优化检查清单等内容的底本对照。
+- 已核对本章 CUDA C++ 代码、公式、练习和参考文献，并将 13 幅原书概念图重绘为可编译的中文示意图。
+- 已将第六章接入 `main.tex`，使用 Tectonic 完整编译整书；最终 PDF 共 133 页。
+- 已检查构建日志；当前无未定义引用、缺失数学定界符、LaTeX 错误、overfull/underfull 或其他包警告。
