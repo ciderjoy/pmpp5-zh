@@ -120,6 +120,7 @@
 \include{chapters/07-convolution}
 \include{chapters/08-stencil-computation}
 \include{chapters/09-histogram}
+\include{chapters/10-reduction}
 
 \backmatter
 
@@ -176,6 +177,15 @@
   \item[contiguous partitioning] 连续划分
   \item[interleaved partitioning] 交错划分
   \item[warp-level primitive] warp 级原语
+  \item[warp shuffle] warp shuffle（warp 内线程寄存器数据交换）
+  \item[lane index] lane 下标（线程在 warp 内的下标）
+  \item[reduction] 归约
+  \item[reduction tree] 归约树
+  \item[associativity] 结合律；结合性
+  \item[commutativity] 交换律；交换性
+  \item[work] 工作量
+  \item[span] 跨度
+  \item[memory consistency model] 内存一致性模型
   \item[bottleneck] 瓶颈
   \item[convolution] 卷积
   \item[convolution filter] 卷积滤波器
