@@ -756,7 +756,7 @@ $b-1$ 都会做同一次加法，增加了冗余工作，却减少了等待延�
 \begin{figure}[htbp]
   \centering
   \begin{minipage}{0.99\textwidth}
-  \begin{lstlisting}[language=C++,numbers=left]
+  \begin{lstlisting}[language=C++,numbers=left,basicstyle=\ttfamily\scriptsize]
 __global__ void scan_kernel(float *input, float *output,
                             unsigned int *blockCounter, float *partialSums,
                             unsigned int *flags, unsigned int N) {
