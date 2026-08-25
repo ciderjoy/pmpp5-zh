@@ -1,0 +1,1047 @@
+\chapter{卷积神经网络}
+\label{chap:convolutional-neural-networks}
+
+\setcounter{footnote}{0}
+
+\noindent\textit{Juan G\'omez-Luna 特别参与撰写。}
+
+\textbf{深度学习}（deep learning）\cite{ch19-lecun2015deep} 是机器学习的一个分支，
+它研究如何让计算机在未经显式编程的情况下学会执行某些任务。针对一项任务开展机器学习时，
+通常先由开发者为给定数据集设计一个带参数的模型；数据集以显式或隐式方式规定每个输入实例
+应当触发的动作。随后，系统通过处理数据集来“学习”模型参数。机器学习模型的复杂度和规模
+差异很大，取决于所执行的任务和所用数据集的规模。
+
+深度学习模型面向人脸识别、自然语言处理等复杂任务。这些任务的预期行为只能从包含海量样例
+的数据集中捕获和学习。此类模型通常采用很深的分层分类器体系，其中包含大量参数，用来学习
+大量复杂特征。因此，只要训练数据足够充分，系统就能正确学习模型各层特征提取器的参数值，
+自动发现足够多的相关模式，从而得到更准确的模式识别结果。
+
+机器学习作为计算机科学的一个研究领域由来已久，也早已成功用于自动完成许多简单的例行任务。
+不过，其深度学习分支曾沉寂数十年，原因是既缺少海量数据集，也缺少从这些数据集中学习庞大
+模型参数所需的计算能力。自 2012 年以来，基于多层人工神经网络的深度学习受到产业界广泛
+关注，主要有两个原因。第一，消费者和企业普遍使用互联网，为训练深度学习模型提供了海量
+数据集；第二，GPU 计算系统提供了充足算力，能够及时而有效地从这些海量数据中学习模型参数。
+附录 B 对机器学习和神经网络的介绍可作为本章的预备知识。
+
+本章讨论\textbf{卷积神经网络}（convolutional neural network，CNN）的加速。CNN 在
+计算机视觉中的有效性于 2012 年得到有力证明，并由此引发了第一波深度学习革命。尤其是，
+CNN 的卷积层具有很高的计算与内存访问之比，也蕴含高度并行性，因而非常适合使用 GPU
+加速。我们将给出卷积层前向（推理）路径的一个基本 CUDA 实现，以及若干可提高这一基本
+实现速度的优化。随后还会说明如何把卷积层表述为矩阵乘法，从而系统地利用现代 GPU 中高度
+优化的硬件和软件来加速。
+
+\section{卷积神经网络}
+\label{sec:cnn}
+
+CNN 发明于 20 世纪 80 年代末\cite{ch19-lecun1998gradient}，是一类\textbf{前馈网络}
+（feed-forward network，见附录 B）。到 20 世纪 90 年代初，CNN 已在自动语音识别、
+光学字符识别（OCR）、手写识别和人脸识别中得到实验性应用
+\cite{ch19-lecun1989handwritten}。
+
+然而，直到 20 世纪 90 年代末，计算机视觉和自动语音识别的主流方法仍依赖精心设计的
+人工特征。当时带标签数据的数量不足，无法训练出能与人类专家编写的识别或分类函数竞争的
+深度学习系统。此外，人们普遍认为，即使具备所需的带标签数据集，要自动学习层数足够多的
+分层特征提取器参数，使之胜过人工设计、针对具体应用的特征提取器，在计算上也不可行。
+
+大约在 2006 年，一批研究人员提出了无需带标签数据便可构建多层分层特征检测器的无监督
+学习方法，重新唤起了人们对深层前馈网络的兴趣\cite{ch19-hinton2006fast,ch19-raina2009large}。
+这种方法最早的重要应用是语音识别。GPU 使研究人员的网络训练速度达到传统 CPU 的十倍，
+从而促成了突破。再加上互联网中可用的海量媒体数据，深度学习方法的地位迅速提升。尽管
+CNN 在语音领域取得了成功，但直到 2012 年，它在计算机视觉领域仍基本未受重视。
+
+2012 年，多伦多大学的一组研究人员训练了一个卷积神经网络，在 ILSVRC 竞赛中对
+1000 个不同类别进行分类\cite{ch19-krizhevsky2012imagenet}。按当时的标准，这个网络
+规模惊人，约有 6000 万个参数和 65 万个神经元；训练数据来自 ImageNet 数据库中的
+120 万幅高分辨率图像。研究人员使用 Alex Krizhevsky 编写的、基于 CUDA 的卷积神经
+网络库\cite{ch19-krizhevsky2014cuda}，只用两块 GPU 训练一周便完成了网络训练。该网络
+取得突破性结果，以 15.3\% 的测试错误率胜出；相比之下，使用传统计算机视觉算法的第二名
+错误率为 26.2\%。这一成功引发了计算机视觉革命，卷积神经网络也成为计算机视觉、自然语言
+处理、强化学习等众多领域的主流工具。
+
+我们以 20 世纪 80 年代末为数字识别设计的 CNN LeNet-5
+\cite{ch19-lecun1989handwritten} 为贯穿全章的示例。如图 \ref{fig:19-1} 所示，LeNet-5
+由三类层组成：卷积层、下采样层和全连接层。这三类层至今仍是神经网络的重要组成部分；其中，
+卷积层占据 CNN 的大部分执行时间。本章重点讨论卷积层的逻辑设计与加速。希望进一步了解
+其他 CNN 层的读者可以参阅附录 B 和相关文献。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[
+    x=1cm,y=1cm,>=Stealth,
+    layer/.style={draw=black!65,fill=gray!18,minimum width=1.05cm,align=center,font=\scriptsize},
+    arrow/.style={-{Stealth[length=1.8mm]},line width=.65pt,black!70}
+  ]
+    \node[layer,minimum height=2.15cm] (in) at (0,0) {\Large A};
+    \node[font=\scriptsize,align=center,above=2mm of in] {输入\\$32\times32$};
+    \foreach \i in {0,...,5} {
+      \draw[fill=blue!12,draw=black!55] (1.55+0.07*\i,-.82+0.07*\i)
+        rectangle +(0.75,1.65);
+    }
+    \node[font=\scriptsize,align=center] at (2.05,1.25) {C1：6 幅特征图\\$28\times28$};
+    \node[font=\tiny] at (2.05,-1.25) {卷积};
+    \foreach \i in {0,...,5} {
+      \draw[fill=green!12,draw=black!55] (3.75+0.06*\i,-.62+0.06*\i)
+        rectangle +(0.62,1.24);
+    }
+    \node[font=\scriptsize,align=center] at (4.1,1.2) {S2：6 幅特征图\\$14\times14$};
+    \node[font=\tiny] at (4.1,-1.25) {下采样};
+    \foreach \i in {0,...,7} {
+      \draw[fill=orange!13,draw=black!55] (5.9+0.055*\i,-.55+0.055*\i)
+        rectangle +(0.55,1.1);
+    }
+    \node[font=\scriptsize,align=center] at (6.35,1.2) {C3：16 幅特征图\\$10\times10$};
+    \node[font=\tiny] at (6.35,-1.25) {卷积};
+    \foreach \i in {0,...,7} {
+      \draw[fill=purple!10,draw=black!55] (8.05+0.045*\i,-.38+0.045*\i)
+        rectangle +(0.4,0.76);
+    }
+    \node[font=\scriptsize,align=center] at (8.45,1.08) {S4：16 幅特征图\\$5\times5$};
+    \node[font=\tiny] at (8.45,-1.25) {下采样};
+    \node[layer,minimum width=.7cm,minimum height=.7cm] (c5) at (10.05,0) {C5\\120};
+    \node[font=\tiny] at (10.05,-1.25) {卷积};
+    \node[layer,minimum width=.7cm,minimum height=1.25cm] (f6) at (11.55,0) {F6\\84};
+    \node[font=\tiny,align=center] at (11.55,-1.25) {全连接};
+    \node[layer,minimum width=.7cm,minimum height=1.7cm] (out) at (13.0,0) {输出\\10};
+    \node[font=\tiny,align=center] at (13.0,-1.25) {高斯连接};
+    \draw[arrow] (in.east)--(1.55,0);
+    \draw[arrow] (2.7,0)--(3.75,0);
+    \draw[arrow] (4.7,0)--(5.9,0);
+    \draw[arrow] (6.9,0)--(8.05,0);
+    \draw[arrow] (8.85,0)--(c5.west);
+    \draw[arrow] (c5.east)--(f6.west);
+    \draw[arrow] (f6.east)--(out.west);
+  \end{tikzpicture}
+  \caption{用于手写数字识别的卷积神经网络 LeNet-5。输入中的字母 A 应被判定为不属于
+  10 个数字类别中的任何一类。依据原书图 19.1 重绘}
+  \label{fig:19-1}
+\end{figure}
+
+LeNet-5 的前向路径从左侧接收输入，并从左向右流经各层。网络输入在图中显示为一幅灰度
+图像，其中的手写数字表示成一个 $32\times32$ 二维像素数组。最后一层计算输出，给出原始
+图像分别属于网络所识别的 10 个类别（数字）的概率。
+
+在推理阶段，网络前向路径生成的输出就是对输入图像的回答，即识别出了哪个数字。训练阶段
+则不同，此时会把前向路径的输出与标签比较，标签就是输入图像的预期输出值。若输出与预期
+不符，就激活\textbf{反向传播}（backward propagation）路径来调整网络的模型参数
+（见附录 B）。换句话说，训练和推理两个阶段都会激活\textbf{前向传播}（forward
+propagation）路径。因此，本章用前向路径说明卷积层的加速。\footnote{附录 B 还介绍了
+CNN 的反向传播路径。感兴趣的读者可以运用学习前向路径时掌握的技能，探索 CNN 各层反向
+传播的 CUDA 内核实现。}
+
+CNN 各层的输入和输出称为\textbf{特征图}（feature map），也简称特征。例如在图
+\ref{fig:19-1} 中，网络输入端的 C1 卷积层把 $32\times32$ 的 \code{INPUT} 像素数组
+变换成 6 幅 $28\times28$ 输出特征图。卷积层输出由像素组成；每个像素都是上一层生成的
+特征图像素中一小块局部区域（对 C1 而言就是 \code{INPUT} 的局部区域），与一组权重
+进行卷积的结果。这组权重就是第 \ref{chap:convolution} 章定义的卷积掩模，本章统一称为
+\textbf{卷积滤波器}（convolution filter），以免与 CUDA 内核函数混淆。
+
+卷积结果随后送入 sigmoid 等\textbf{激活函数}（activation function，见附录 B），生成
+输出特征图中的一个像素。也可以把卷积层理解成一组感知机（见附录 B）：每幅输出特征图的
+各个像素分别由一个感知机生成，而该感知机的输入是各幅输入特征图中的一块像素。本章重点
+讨论如何高效生成卷积结果。有了高效的卷积结果内核以后，既可以用单独的内核执行激活函数，
+也可以在同一个内核的末尾执行它。也就是说，在本章的讨论中，每个输出像素的值等于所有
+输入特征图相应区域卷积结果之和。
+
+图 \ref{fig:19-2} 给出一个小型卷积层示例，其中有 3 幅输入特征图、2 幅输出特征图和
+6 个卷积滤波器。同一层中，每一对输入和输出特征图都使用独立的卷积滤波器。因此，3 幅
+输入特征图与 2 幅输出特征图需要 $3\times2=6$ 个卷积滤波器，合称一个\textbf{滤波器组}
+（filter bank）。图 \ref{fig:19-1} 中 LeNet 的 C3 层有 6 幅输入特征图和 16 幅输出
+特征图，所以 C3 的滤波器组共包含 $6\times16=96$ 个卷积滤波器。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{minipage}{0.98\textwidth}
+    \centering
+    \textbf{(a) 卷积层前向路径}\\[0.35em]
+    \fbox{3 幅输入特征图 $X$}
+    $\;\longrightarrow\;$
+    \fbox{卷积层：6 个卷积滤波器 $F$}
+    $\;\longrightarrow\;$
+    \fbox{2 幅输出特征图 $Y$}
+
+    \vspace{0.8em}
+    \textbf{(b) 数值示例}\\[0.35em]
+    \begin{tabular}{c@{\qquad}c@{\qquad}c}
+      输入特征图 & 对输出 0 / 输出 1 的卷积滤波器 & 输出特征图\\[0.25em]
+      $X_0=\begin{bmatrix}1&2&0\\1&1&3\\0&2&2\end{bmatrix}$ &
+      $F_{0,0}=\begin{bmatrix}1&1\\2&2\end{bmatrix}\quad
+       F_{1,0}=\begin{bmatrix}1&0\\0&1\end{bmatrix}$ &
+      $Y_0=\begin{bmatrix}14&20\\15&24\end{bmatrix}$\\[1em]
+      $X_1=\begin{bmatrix}0&2&1\\0&3&2\\1&1&0\end{bmatrix}$ &
+      $F_{0,1}=\begin{bmatrix}1&1\\1&1\end{bmatrix}\quad
+       F_{1,1}=\begin{bmatrix}2&1\\2&1\end{bmatrix}$ &
+      $Y_1=\begin{bmatrix}12&24\\17&26\end{bmatrix}$\\[1em]
+      $X_2=\begin{bmatrix}1&2&1\\0&1&3\\3&3&2\end{bmatrix}$ &
+      $F_{0,2}=\begin{bmatrix}0&1\\1&0\end{bmatrix}\quad
+       F_{1,2}=\begin{bmatrix}1&2\\2&0\end{bmatrix}$ &
+      每幅输出都是三个卷积之和
+    \end{tabular}
+  \end{minipage}
+  \caption{卷积层的前向传播路径：(a) 结构；(b) 三幅输入特征图、六个卷积滤波器与
+  两幅输出特征图的数值关系。依据原书图 19.2 重绘}
+  \label{fig:19-2}
+\end{figure}
+
+图 \ref{fig:19-2}(b) 展示了卷积层计算的更多细节。为简化图示，这里省略输出像素的激活
+函数。每幅输出特征图都是所有输入特征图卷积结果之和。例如，输出特征图 0 左上角的元素
+（值为 14）由图中相应输入区域与卷积滤波器的卷积得到：\footnote{为便于说明，图中的
+特征图和滤波器组元素采用整数；实际使用的是浮点数。}
+
+\begin{equation}
+\begin{aligned}
+ &(1,2,1,1)\mathbin{\cdot}(1,1,2,2)
+ +(0,2,0,3)\mathbin{\cdot}(1,1,1,1)
+ +(1,2,0,1)\mathbin{\cdot}(0,1,1,0)\\
+ &\qquad=1+2+2+2+0+2+0+3+0+2+0+0=14.
+\end{aligned}
+\label{eq:ch19-convolution-example}
+\end{equation}
+
+图 \ref{fig:19-1} 虽未标出，但 LeNet-5 使用的所有二维卷积滤波器都是 $5\times5$。
+回忆第 \ref{chap:convolution} 章，从输入图像和卷积滤波器生成卷积输出图像时，必须对
+ghost cell 作出假设。LeNet-5 没有采用额外边界假设，而是直接把每幅输入特征图最右侧
+4 个元素和最下侧 4 个元素当作 ghost cell。这样，每个维度都会缩短 4：右侧去掉 4 个，
+底部也去掉 4 个。因此，C1 层把 $32\times32$ 的 \code{INPUT} 图像变成 $28\times28$
+的输出特征图。图 \ref{fig:19-1} 用 \code{INPUT} 中一个正方形像素区域生成 C1 中的
+一个像素，表示了这项计算；该区域实际为 $5\times5$，图中未按元素明确画出。
+
+图 \ref{fig:19-3} 给出卷积层前向传播路径的顺序 C 函数 \code{convLayer_forward}。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1,lastline=13]
+void convLayer_forward(int M, int C, int H, int W, int K, float* X, float* F, float* Y) {
+    int H_out = H - K + 1;
+    int W_out = W - K + 1;
+    for(int m = 0; m < M; m++) // for each output feature map
+        for(int h = 0; h < H_out; h++) // for each output element
+            for(int w = 0; w < W_out; w++) {
+                Y[m, h, w] = 0;
+                for(int c = 0; c < C; c++) // sum over all input feature maps
+                    for(int p = 0; p < K; p++) // KxK filter
+                        for(int q = 0; q < K; q++)
+                            Y[m, h, w] += X[c, h + p, w + q] * F[m, c, p, q];
+            }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{卷积层前向传播路径的 C 实现。依据原书图 19.3 逐字符重排}
+  \label{fig:19-3}
+\end{figure}
+
+输入特征图存放在尺寸为 $C\times H\times W$ 的三维数组参数 $X$ 中。第二个输入参数
+$C$ 指定输入特征图数，也就是\textbf{输入通道}数；第三、第四个输入参数 $H$ 和 $W$
+分别指定每幅输入特征图的高度和宽度（第 1 行）。也就是说，$X$ 的最高维下标选择一幅
+特征图（也常称为通道），较低两维下标选择该输入特征图中的一个像素。例如，图
+\ref{fig:19-1} 中 C1 层的输入存放在维度为 $1\times32\times32$ 的 $X$ 中，因为它只有
+一幅输入特征图（\code{INPUT}），且 $x$、$y$ 两个方向各有 32 个像素。这也说明，可以把
+一个层的全部二维输入特征图合起来看成一幅三维输入特征图，也就是该层的\textbf{输入张量}
+（input tensor）。
+
+卷积层的输出特征图存放在三维数组参数 $Y$ 中，其尺寸为
+$M\times(H-K+1)\times(W-K+1)$，其中 $M$ 是\textbf{输出特征图}（或输出通道）数，
+$K$ 是每个二维卷积滤波器的高和宽（第 1 行）。例如，图 \ref{fig:19-1} 中 C1 使用
+$5\times5$ 滤波器生成 6 幅输出特征图，所以 $Y$ 的维度为 $6\times28\times28$。
+
+滤波器组存放在四维数组参数 $F$ 中，其尺寸为 $M\times C\times K\times K$。共有
+$M\times C$ 个卷积滤波器，每一对输入和输出特征图使用一个。计算输入特征图
+$X[c,\_,\_]$ 对输出特征图 $Y[m,\_,\_]$ 的贡献时，使用滤波器
+$F[m,c,\_,\_]$；这里的“$\_$”表示取值范围为 $0$ 到 $K-1$ 的下标。每幅输出特征图
+都是所有输入特征图卷积结果之和。
+
+\noindent\textbf{译者注：}底本正文把上述四维滤波器组参数写成了 $W$，但图 19.3 的
+函数签名、数组访问及随后各图均使用 $F$；本译稿按代码统一为 $F$。底本还称“$\_$”下标
+范围为 0 到 $K$，而代码循环条件为下标小于 $K$，故最小修正为 0 到 $K-1$。
+
+最外层 $m$ 循环（第 4--12 行）的每次迭代生成一幅输出特征图。接下来两层 $h$、$w$
+循环（第 5--12 行）的每次迭代生成当前输出特征图的一个像素。最内侧三层循环（第
+8--11 行）在输入特征图与相应卷积滤波器之间执行卷积，并把各输入特征图的卷积结果累加
+到输出特征图中（第 11 行）。
+
+继续看 LeNet-5：图 \ref{fig:19-1} 中的 C3 卷积层有 6 幅输入特征图和 16 幅输出特征图；
+输入特征图尺寸为 $14\times14$，输出特征图尺寸为 $10\times10$。该层共有
+$6\times16=96$ 个卷积滤波器，每个滤波器含有 $5\times5=25$ 个权重。C3 的输出送入
+下采样层 S4，后者生成 16 幅 $5\times5$ 输出特征图。最后一个卷积层 C5 使用包含
+$16\times120=1920$ 个 $5\times5$ 滤波器的滤波器组，从 16 幅输入特征图生成 120 幅
+单像素输出特征图。
+
+C5 的输出特征图随后送入全连接层 F6。F6 有 84 个输出单元，每个输出都与全部输入相连。
+输出的计算过程是：先用权重矩阵乘以输入向量，再加偏置，最后通过 sigmoid。若把 120 个
+输入写成列向量 $X$，则本例 F6 的权重矩阵 $W$ 为 $84\times120$，输出是含 84 个元素的
+向量 $Y_6=\operatorname{sigmoid}(WX+b)$。读者应能看出，这等价于 84 个感知机，每个
+感知机都接收 C5 层生成的全部 120 个单像素值。全连接层的详细实现留作练习。
+
+\noindent\textbf{译者注：}底本称 $W$ 为 $120\times84$ 矩阵，却紧接着写出
+$Y_6=\operatorname{sigmoid}(WX+b)$，并把 $X$ 视为 120 元素输入向量、$Y_6$ 视为
+84 元素输出向量。按这一列向量公式，$W$ 必须为 $84\times120$；若采用行向量公式
+$XW$，才应为 $120\times84$。本译稿保留底本的 $WX$ 约定并修正矩阵维度。
+
+最后一级是输出层，它使用高斯连接\cite{ch19-lecun1989handwritten} 生成含 10 个元素的
+向量，分别表示输入图像包含数字 0 到 9 的概率。
+
+\paragraph{批处理卷积层。}
+为了充分利用计算资源，CNN 实现通常把多个输入收集起来，以一个批次通过网络，从而采用
+\textbf{批处理}（batched execution）。对批次中的每个输入生成的输入特征图与输出特征图，
+合称该批次中的一个\textbf{样本}（sample）。批处理可以启动包含更多线程块的大得多的网格，
+从而显著提高 GPU 执行资源利用率。批处理 CNN 在训练阶段尤其常见，因为训练需要让海量
+输入通过 CNN；在送入网络前把大量训练输入划分成若干批次十分自然。
+
+图 \ref{fig:19-4} 给出修改后的卷积层前向路径实现，它为一个批次中的所有样本生成输出
+特征图。与图 \ref{fig:19-3} 相比，代码新增一个遍历批次中全部样本的最外层循环（第 4 行）。
+注意，$X$ 和 $Y$ 新增了一维，用于容纳批次中的不同样本；$F$ 没有新增维度，因为同一批次
+的各个样本共享相同权重。后面的 CUDA 内核将以这个批处理实现为基础。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1,lastline=14]
+void convLayer_batched(int N, int M, int C, int H, int W, int K, float* X, float* F, float* Y) {
+    int H_out = H - K + 1;
+    int W_out = W - K + 1;
+    for(int n = 0; n < N; n++) // for each sample in the batch
+        for(int m = 0; m < M; m++) // for each output feature map
+            for(int h = 0; h < H_out; h++) // for each output element
+                for(int w = 0; w < W_out; w++) {
+                    Y[n, m, h, w] = 0;
+                    for(int c = 0; c < C; c++) // sum over all input feature maps
+                        for(int p = 0; p < K; p++) // K x K filter
+                            for(int q = 0; q < K; q++)
+                                Y[n,m,h,w] = Y[n,m,h,w] + X[n, c, h+p, w+q] * F[m,c,p,q];
+                }
+}
+  \end{lstlisting}
+  \end{minipage}
+\caption{批处理卷积层的前向路径。依据原书图 19.4 逐字符重排}
+  \label{fig:19-4}
+\end{figure}
+
+\section{CUDA 卷积层内核}
+\label{sec:cuda-convolutional-layer-kernel}
+
+卷积神经网络训练中的计算模式与矩阵乘法相似：它既是计算密集型的，也具有高度并行性。
+我们可以并行处理小批量中的不同样本、同一样本的不同输出特征图，以及每幅输出特征图中的
+不同元素。图 \ref{fig:19-4} 中的 $n$ 循环（第 4 行，遍历小批量中的样本）、$m$ 循环
+（第 5 行，遍历输出特征图），以及嵌套的 $h$--$w$ 循环（第 6--7 行，遍历每幅输出
+特征图的像素）都是并行循环，它们的迭代可以并行执行。这四层循环共同提供了海量并行性。
+
+最内侧三层循环也提供了相当多的并行性：$c$ 循环遍历输入特征图或通道，嵌套的
+$p$--$q$ 循环遍历滤波器组中的权重。不过，若将它们并行化，不同循环迭代会对同一个 $Y$
+元素执行读取--修改--写入，累加时必须大量使用原子操作。因此，除非确实还需要更多并行性，
+否则我们会让这三层循环保持串行。
+
+假设利用卷积层中 $n$、$m$、$h$、$w$ 四层“易于利用”的并行性，并行迭代总数就是
+$N\times M\times H_{\mathrm{out}}\times W_{\mathrm{out}}$。如此高的可用并行度使卷积层
+非常适合 GPU 加速；我们很容易设计出相应的线程组织来捕获这些并行性。
+
+首先需要对线程组织作出一些高层设计决策。假设每个线程计算某幅输出特征图的一个元素。
+我们采用二维线程块，每个块计算一幅输出特征图中的正方形输出图块，其高、宽均为
+\code{TILE_WIDTH} 个像素。例如，若
+\code{TILE_WIDTH=16}，每块共有 256 个线程。这就捕获了生成输出特征图像素时，嵌套
+$h$--$w$ 循环的一部分并行性。把每个线程块分配给某幅输出特征图中一个边长为
+\code{TILE_WIDTH} 的图块以后，上述“易于利用”的并行性最多
+可以支持
+\[
+  N\times M\times
+  \frac{H_{\mathrm{out}}}{\mathrm{TILE\_WIDTH}}\times
+  \frac{W_{\mathrm{out}}}{\mathrm{TILE\_WIDTH}}
+\]
+个线程块。
+
+线程块可以用多种方式组织成三维网格。不同方案以不同组合，把网格的各个维度用于捕获
+$n$、$m$ 和 $h$--$w$ 并行性。下面详细介绍一种方案；其他方案及其潜在优缺点留给读者
+探索和评价。
+
+\begin{enumerate}[label=\arabic*.,leftmargin=2.7em]
+  \item 网格的第一维（$X$）对应每个线程块覆盖的 $M$ 幅输出特征图。块内线程可以用
+  公共块下标的 $X$ 维 \code{blockIdx.x}，识别分配给自己的输出特征图。
+  \item 网格的第二维（$Y$）表示一个块的输出图块在 $X$ 维所选输出特征图中的位置。
+  块内线程可以用块下标的 $Y$ 维 \code{blockIdx.y}，在分配给自己的输出特征图中生成
+  相应图块。
+  \item 网格的第三维（$Z$）对应批次中的 $N$ 个输入。每个块可以用块下标的 $Z$ 维
+  \code{blockIdx.z}，选择该批次中的一个样本作为输入。
+\end{enumerate}
+
+图 \ref{fig:19-5} 给出按照这种线程组织方式启动内核的主机代码。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.96\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1,lastline=7]
+#define TILE_WIDTH 16
+W_grid = W_out/TILE_WIDTH; // number of tiles in the horizontal dimension of each output feature map
+H_grid = H_out/TILE_WIDTH; // number of tiles in the vertical dimension of each output feature map
+T = H_grid * W_grid; // Total number of tiles in each output feature map
+dim3 blockDim(TILE_WIDTH, TILE_WIDTH, 1);
+dim3 gridDim(M, T, N);
+ConvLayerForward_Kernel<<<gridDim, blockDim>>>(...);
+  \end{lstlisting}
+  \end{minipage}
+  \caption{启动卷积层内核的主机代码。依据原书图 19.5 逐字符重排}
+  \label{fig:19-5}
+\end{figure}
+
+网格 $X$、$Z$ 两维中的线程块数很直接，分别就是输出特征图数 $M$ 和批次样本数 $N$。
+也就是说，线程块的 $X$ 下标选择输出特征图，$Z$ 下标选择当前批次中的输入样本。
+
+$Y$ 维的安排稍复杂一些，如图 \ref{fig:19-6} 所示。为简化计算，理想情况下会把网格
+下标的两个维度分别用于输出图块的纵向和横向下标。但 $X$ 维已经用于输出特征图下标，
+$Z$ 维已经用于小批量中的样本下标，因此这里只剩一个维度。于是我们把图块下标线性化，
+在网格 $Y$ 维中同时编码输出特征图图块的横向和纵向下标。
+
+图 \ref{fig:19-6} 的例子中，每个样本有 4 幅输出特征图（$M=4$），每幅输出特征图
+包含 $2\times2$ 个图块（图 \ref{fig:19-5} 第 2 行的 \code{W_grid=2}，第 3 行的
+\code{H_grid=2}），每个图块包含 $16\times16=256$ 个像素。网格把每个块分配给一个
+这样的输出图块。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[x=.92cm,y=.72cm,>=Stealth,font=\scriptsize]
+    \draw[line width=.85pt] (-4,0) rectangle (4,4);
+    \foreach \x in {-2,0,2} \draw (\x,0)--(\x,4);
+    \foreach \y in {1,2,3} \draw (-4,\y)--(4,\y);
+    \foreach \m/\x in {0/-3,1/-1,2/1,3/3}
+      \node[align=center] at (\x,4.35) {$m=\m$};
+    \foreach \t/\name/\y in {0/{(0,0)}/3.5,1/{(0,1)}/2.5,2/{(1,0)}/1.5,3/{(1,1)}/.5}
+      \node[left] at (-4.15,\y) {$\code{blockIdx.y}=\t\;\leftrightarrow\;\name$};
+    \node[above,align=center] at (0,5.15)
+      {网格的 $X$--$Y$ 维：$M=4$，$T=H_{\mathrm{grid}}W_{\mathrm{grid}}=4$\\
+       $X$ 维中 $\code{blockIdx.x}=m$，即输出特征图下标};
+    \foreach \x in {-3,-1,1,3} {
+      \begin{scope}[shift={(\x,-2)}]
+        \draw[line width=.8pt] (-.65,-.65) rectangle (.65,.65);
+        \draw (-.65,0)--(.65,0); \draw (0,-.65)--(0,.65);
+      \end{scope}
+    }
+    \foreach \m/\x in {0/-3,1/-1,2/1,3/3}
+      \node[below] at (\x,-2.75) {$m=\m$};
+    \draw[dashed,->,blue!65!black] (-3,3.5)--(-3,-1.35);
+    \draw[dashed,->,orange!80!black] (-3,2.5)--(-2.35,-2);
+    \node[align=center,right] at (4.4,2) {$Y$ 维的四行依次对应\\图块 $(0,0),(0,1),(1,0),(1,1)$};
+    \node[align=center] at (0,-3.35)
+      {下方各 $2\times2$ 方格表示对应输出特征图的四个图块};
+    \node[align=center] at (0,-3.8) {同一映射会在 $Z$ 维的每个样本上重复};
+  \end{tikzpicture}
+  \caption{把输出特征图图块映射到网格 $X$--$Y$ 维中的线程块；同一映射应用于
+  $Z$ 维中的全部样本。依据原书图 19.6 重绘}
+  \label{fig:19-6}
+\end{figure}
+
+我们已经把每幅输出特征图分配给 $X$ 维，图 \ref{fig:19-6} 中 $X$ 维的 4 列线程块
+分别对应 4 幅输出特征图。每幅输出特征图中的 4 个图块则按行主序线性化，并分配给 $Y$
+维的线程块。也就是说，图块 $(0,0)$、$(0,1)$、$(1,0)$、$(1,1)$ 分别映射到
+\code{blockIdx.y} 为 0、1、2、3 的块。因此，$Y$ 维共有 4 个块，即图
+\ref{fig:19-5} 第 4 行的 $T=\code{H_grid}*\code{W_grid}=4$。最终，第 6--7 行启动
+维度为 \code{gridDim(4,4,N)} 的网格。
+
+图 \ref{fig:19-7} 给出按上述线程组织实现的内核。为清楚起见，代码中的数组访问采用
+多维下标。读者可以利用第 3 章介绍的行主序线性化下标，把 $X$、$Y$、$F$ 的访问改写成
+常规 C 代码。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1,lastline=14]
+__global__ void
+ConvLayerForward_Kernel(int C, int W_grid, int K, float* X, float* F, float* Y) {
+    int m = blockIdx.x;
+    int h = (blockIdx.y / W_grid) * TILE_WIDTH + threadIdx.y;
+    int w = (blockIdx.y % W_grid) * TILE_WIDTH + threadIdx.x;
+    int n = blockIdx.z;
+    float acc = 0.;
+    for (int c = 0; c < C; c++) { // sum over all input channels
+        for (int p = 0; p < K; p++) // loop over KxK filter
+            for (int q = 0; q < K; q++)
+                acc += X[n, c, h + p, w + q] * F[m, c, p, q];
+    }
+    Y[n, m, h, w] = acc;
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{卷积层前向路径的 CUDA 内核。依据原书图 19.7 逐字符重排}
+  \label{fig:19-7}
+\end{figure}
+
+每个线程首先生成分配给自己的输出特征图像素的 $n$（批次内样本）、$m$（特征图）、
+$h$（纵向位置）和 $w$（横向位置）下标。由主机代码可直接得到 $n$（第 6 行）和 $m$
+（第 3 行）。计算 $h$ 时，先用 \code{blockIdx.y} 除以 \code{W_grid}，恢复图
+\ref{fig:19-6} 所示的纵向图块下标；再乘以 \code{TILE_WIDTH}，并加上
+\code{threadIdx.y}，得到输出特征图中的实际纵向像素下标（第 4 行）。横向像素下标的
+推导与之类似（第 5 行）。
+
+每个线程以迭代方式生成一个输出特征图像素。每次迭代都在一块输入特征图像素与所选卷积
+滤波器之间执行卷积（第 7--12 行），并把卷积结果累加到局部变量 \code{acc} 中。线程
+对所有输入特征图的同一位置完成卷积后，再把最终结果写入输出特征图像素（第 13 行）。
+
+图 \ref{fig:19-7} 的内核有很高的并行度，但消耗了过多全局内存带宽。与第
+\ref{chap:convolution} 章对卷积模式的讨论一样，内核执行速度会受全局内存带宽限制。
+第 \ref{chap:convolution} 章还说明，可以采用共享内存分块等技术，大幅减少全局内存
+流量并提高内核执行速度。对这个卷积层内核实施这些优化留作练习；下一节转而介绍一种更
+系统的降低内存带宽消耗的方法。
+
+\section{把卷积层表述为 GEMM}
+\label{sec:cnn-as-gemm}
+
+卷积层为通过数据复用降低内存带宽消耗提供了多种机会。图 \ref{fig:19-7} 所示内核的
+执行速度受全局内存带宽限制，因此只要能减少内存带宽消耗，通常就能提高执行速度。例如，
+每幅输入特征图都会用于计算所有输出特征图，可以把输入特征图分块，并在计算多幅输出特征图
+时复用这些图块。然而，图 \ref{fig:19-7} 的卷积层内核用不同线程块计算不同输出特征图。
+把输入特征图图块放进一个线程块的共享内存，并不能让其他线程块复用这些数据。若要复用
+输入特征图像素，就必须大幅重新设计内核。
+
+本节介绍 Chellapilla 等人\cite{ch19-chellapilla2006high} 提出的方法，把卷积层表述为
+等价的矩阵乘法。有了这种表述，就能直接使用成熟的分块技术（第
+\ref{chap:advanced-matrix-multiplication} 章），同时复用输入特征图和滤波器组，减少
+全局内存带宽消耗。事实上，可以直接使用 CUDA 线性代数库 cuBLAS 中高度优化的
+\textbf{通用矩阵乘法}（General Matrix Multiply，GEMM）内核，或稍作改造，以实现高性能
+卷积层内核。
+
+这种表述的核心在于：每个输出特征图元素都是输入特征图元素与相应滤波器组元素的点积。
+矩阵乘法由第一个输入矩阵的行向量与第二个输入矩阵的列向量之间的点积组成，因此可以把
+输入特征图和滤波器组排列成矩阵，使输出特征图的每个输出元素恰好成为乘积矩阵的一个元素。
+具体而言，可以把生成某幅输出特征图中一个像素所需的滤波器排列成第一个输入矩阵的一行；
+还可以展开并复制输入特征图像素，使计算一个输出特征图像素所需的全部元素存放在第二个
+输入矩阵的一列中。\footnote{更详细的讲解见
+\href{https://petewarden.com/2015/04/20/why-gemm-is-at-the-heart-of-deep-learning/}
+{Pete Warden 对 GEMM 与深度学习关系的说明}。}
+图 \ref{fig:19-8} 给出了这种重排的示例。
+
+考虑一个小型卷积层：输入为 $C=3$ 幅 $3\times3$ 特征图，输出为 $M=2$ 幅
+$2\times2$ 特征图。这就是图 \ref{fig:19-2}(b) 的例子，图 \ref{fig:19-8} 顶部再次
+画出以方便对照。该层使用 $M\times C=6$ 个卷积滤波器，每个尺寸为 $2\times2$。
+同一批次中的样本彼此完全独立，因此图 \ref{fig:19-8} 只画出一个样本的输入和输出
+特征图，并假设该样本下标为 $n$。
+
+先考察生成输出特征图像素 $Y[n,0,0,0]$ 所需的计算，也就是图 \ref{fig:19-8} 左上角
+样本 $n$ 的输出特征图 0 中坐标 $(0,0)$、值应为 14 的像素。计算它所需的全部输入特征图
+像素区域，与相应滤波器的关系为
+
+\begin{equation}
+\begin{aligned}
+Y[n,0,0,0]
+ &= (1,1,2,2)\mathbin{\cdot}(1,2,1,1)
+  +(1,1,1,1)\mathbin{\cdot}(0,2,0,3)\\
+ &\quad +(0,1,1,0)\mathbin{\cdot}(1,2,0,1)\\
+ &= (1+2+2+2)+(0+2+0+3)+(0+2+0+0)=14.
+\end{aligned}
+\label{eq:ch19-three-inner-products}
+\end{equation}
+
+每个点积的第一个输入都是把卷积所用滤波器按行主序（第 3 章）线性化得到的向量。例如，
+把滤波器 $F_{0,0}$ 按行主序线性化，得到 $(1,1,2,2)$，它就是第一个点积的第一个输入。
+由于 C 语言的数组在全局内存中本就按行主序布局，无须在各个滤波器内部重排。
+
+只需确保各个卷积滤波器按如下顺序拼接：输出特征图下标较大的滤波器，排在输出特征图下标
+较小者之后；对于同一幅输出特征图，输入特征图下标较大的滤波器，排在输入特征图下标较小者
+之后。本例的顺序应为
+$F_{0,0},F_{0,1},F_{0,2},F_{1,0},F_{1,1},F_{1,2}$。回忆图
+\ref{fig:19-3} 第 11 行和图 \ref{fig:19-7} 第 11 行，$F$ 数组的维度约定为
+$m\times c\times p\times q$。输出特征图下标是最高维，输入特征图下标是次高维，因此
+滤波器在内存中已经按所需顺序拼接。按这种顺序，滤波器组构成一个行主序的
+$2\times(3\times4)=2\times12$ 矩阵，如图 \ref{fig:19-8} 左下方所示。结论是：
+滤波器组已经符合矩阵乘法表述，无须进一步重排。
+
+计算 $Y[n,0,0,0]$ 的每个点积中，第二个输入是把图 \ref{fig:19-2} 对应输入特征图的
+局部区域按行主序线性化得到的向量。例如，把输入特征图 0 左上角区域线性化，得到
+$(1,2,1,1)$，它就是第一个点积的第二个输入。进一步把所有输入特征图的线性化区域拼接
+成一个向量，三个点积便可改写为一个点积：
+
+\begin{equation}
+\begin{aligned}
+Y[n,0,0,0]
+ &= (1,1,2,2,\,1,1,1,1,\,0,1,1,0)\mathbin{\cdot}
+    (1,2,1,1,\,0,2,0,3,\,1,2,0,1)\\
+ &=1+2+2+2+0+2+0+3+0+2+0+0=14.
+\end{aligned}
+\label{eq:ch19-one-inner-product}
+\end{equation}
+
+\noindent\textbf{译者注：}底本公式 19.3 把输入特征图区域向量写在点积左侧、滤波器向量
+写在右侧，但紧邻正文和公式 19.2 都把滤波器称为第一个输入，随后的 GEMM 也要求滤波器矩阵
+$F$ 位于左侧。由于实数点积满足交换律，数值不受影响；本译稿按上下文统一为“滤波器向量
+$\mathbin{\cdot}$ 输入区域向量”。
+
+这个点积的第一个输入由 $F_{0,0}$、$F_{0,1}$、$F_{0,2}$ 拼接而成，第二个输入由各输入
+特征图的线性化区域拼接而成。若把第一个输入向量作为矩阵 $F$ 的一行、第二个输入向量作为
+矩阵 $B$ 的一列，生成 $Y[n,0,0,0]$ 的点积自然就成为 $F$ 与 $B$ 的矩阵--矩阵乘法的一部分。
+在矩阵乘法中，滤波器组矩阵 $F$ 的一行与输入特征矩阵 $B$ 的一列生成输出特征图的一个像素。
+矩阵 $F$ 的形成方式已经确定，剩下只需从输入特征图区域形成矩阵 $B$。
+
+每幅输出特征图包含 $H_{\mathrm{out}}W_{\mathrm{out}}$ 个像素，而 $B$ 的每一列用于生成
+一个输出像素，所以 $B$ 必须有 $H_{\mathrm{out}}W_{\mathrm{out}}$ 列。本例中
+$H_{\mathrm{out}}=W_{\mathrm{out}}=2$，因此 $B$ 有 4 列，如图 \ref{fig:19-8} 所示。
+每一列由各输入特征图中的局部区域展开并拼接而成。本例已经确定 $B$ 的每一列含有
+$3\times4=12$ 个元素，所以 $B$ 的尺寸为 $12\times4$。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \setlength{\arraycolsep}{2.2pt}
+  \setcounter{MaxMatrixCols}{12}
+  \resizebox{0.98\textwidth}{!}{$\displaystyle
+    F=\begin{bmatrix}
+      1&1&2&2&1&1&1&1&0&1&1&0\\
+      1&0&0&1&2&1&2&1&1&2&2&0
+    \end{bmatrix}
+    \quad\times\quad
+    B=\begin{bmatrix}
+      1&2&1&1\\2&0&1&3\\1&1&0&2\\1&3&2&2\\
+      0&2&0&3\\2&1&3&2\\0&3&1&1\\3&2&1&0\\
+      1&2&0&1\\2&1&1&3\\0&1&3&3\\1&3&3&2
+    \end{bmatrix}
+    \quad=\quad
+    Y=\begin{bmatrix}14&20&15&24\\12&24&17&26\end{bmatrix}
+  $}
+
+  \vspace{0.45em}
+  $F:2\times12=M\times(CK^2)$，\quad
+  $B:12\times4=(CK^2)\times(H_{\mathrm{out}}W_{\mathrm{out}})$，\quad
+  $Y:2\times4=M\times(H_{\mathrm{out}}W_{\mathrm{out}})$
+
+  \vspace{0.8em}
+  \begin{tikzpicture}[>=Stealth,font=\scriptsize]
+    \node[draw,fill=orange!14,text width=3.4cm,minimum height=.9cm,align=center] (x)
+      {样本 $n$ 的输入 $X$\\3 幅 $3\times3$ 特征图};
+    \node[draw,fill=blue!12,text width=3.4cm,minimum height=.9cm,align=center,right=1.25cm of x] (f)
+      {共享滤波器组 $F$\\6 个 $2\times2$ 卷积滤波器};
+    \node[draw,fill=green!13,text width=3.4cm,minimum height=.9cm,align=center,right=1.25cm of f] (y)
+      {样本 $n$ 的输出 $Y$\\2 幅 $2\times2$ 特征图};
+    \draw[->] (x)--node[above,align=center,font=\tiny]{局部区域展开\\为 $B$ 的列}(f);
+    \draw[->] (f)--node[above]{$F B$}(y);
+  \end{tikzpicture}
+  \caption{把卷积层表述为 GEMM。批次中的各个样本拥有各自的输入、输出特征图，但共享
+  同一滤波器组；图中只画出下标为 $n$ 的一个样本。依据原书图 19.8 重绘}
+  \label{fig:19-8}
+\end{figure}
+
+按正确顺序排列 $B$ 的列，可以直接得到 $Y$ 中所需的行主序输出特征图。图
+\ref{fig:19-8} 中，输出特征矩阵的第一行是输出特征图 0 的行主序视图，第二行是输出
+特征图 1 的行主序视图。两者都已经符合 C 语言假定的行主序，可以直接作为下一层的输入
+特征图。一般而言，矩阵乘法生成的输出特征矩阵，就是把 $Y[n,m,p,q]$ 的 $p$、$q$ 两维
+按行主序线性化后的形式。因此，矩阵乘法会以网络后续层期望的输入特征图形式，准确生成输出。
+
+\paragraph{显式展开输入特征图的代价。}
+接下来本可以直接介绍如何把输入特征图 $X$ 重排为矩阵 $B$，但在此之前先分析显式生成和
+存储 $B$ 的代价。图 \ref{fig:19-8} 中，$B$ 含有 $12\times4=48$ 个元素，而三幅输入
+特征图总共只有 $3\times3\times3=27$ 个元素。也就是说，从 $X$ 到 $B$，尺寸显著扩大到
+原来的 $1.78$ 倍。
+
+尺寸增大的根本原因是卷积的性质：计算不同输出特征图像素所用的输入特征图区域彼此重叠，
+所以生成矩阵 $B$ 时，每个输入特征图像素可能被复制多次。例如在图 \ref{fig:19-8} 中，
+每幅 $3\times3$ 输入特征图的中心像素会用于计算全部 4 个输出像素，因此在 $B$ 中复制
+4 次。四条边中部的像素各使用两次，所以各复制两次；四个角像素各使用一次，无须复制。
+因此，一幅输入特征图在 $B$ 中占用的像素数为 $4\times1+2\times4+1\times4=16$。
+原输入特征图只有 9 个像素，所以显式生成 $B$ 的扩张比为 $16/9=1.78$。
+
+一般而言，展开后的输入特征图矩阵 $B$ 的尺寸，可以从生成一个输出特征图元素所需的输入
+元素数推导出来。扩展矩阵的高度，也就是行数，等于参与一个输出特征图元素计算的输入特征
+元素数，即 $CK^2$：每幅输入特征图有 $K^2$ 个元素参与卷积，并且共有 $C$ 幅输入特征图。
+本例的卷积滤波器为 $2\times2$，所以 $K=2$；输入特征图数为 3，因此扩展矩阵高度为
+$3\times2\times2=12$，与图 \ref{fig:19-8} 完全一致。
+
+$B$ 的宽度，也就是列数，等于每幅输出特征图的元素数 $H_{\mathrm{out}}W_{\mathrm{out}}$。
+本例的每幅输出特征图是 $2\times2$ 矩阵，即 $H_{\mathrm{out}}=W_{\mathrm{out}}=2$，
+所以扩展矩阵有 4 列。注意，输出特征图数 $M$ 不影响复制量，因为所有输出特征图都由同一个
+展开输入特征图矩阵 $B$ 计算得到。
+
+输入特征图的扩张比，等于扩展矩阵的尺寸除以原输入特征图总尺寸。读者可以验证
+
+\begin{equation}
+ \frac{CK^2H_{\mathrm{out}}W_{\mathrm{out}}}
+      {CH_{\mathrm{in}}W_{\mathrm{in}}}
+ =\frac{K^2H_{\mathrm{out}}W_{\mathrm{out}}}
+       {H_{\mathrm{in}}W_{\mathrm{in}}},
+\label{eq:ch19-expansion-ratio}
+\end{equation}
+
+其中 $H_{\mathrm{in}}$、$W_{\mathrm{in}}$ 是每幅输入特征图的高度和宽度。本例的比值为
+$(3\times2\times2\times2\times2)/(3\times3\times3)=16/9$。一般情况下，若输入、
+输出特征图远大于卷积滤波器，扩张比将趋近于 $K^2$。在这个小例子中，扩张似乎还算温和；
+但实际特征图的 $H_{\mathrm{out}}$、$W_{\mathrm{out}}$ 可达数百乃至数千，$K$ 也可能不小于
+5，此时扩张比很容易达到 20 倍甚至更高。更何况，显式生成展开矩阵 $B$ 还需要一个额外
+步骤，进一步增加全局内存带宽消耗，抵消矩阵乘法表述原本带来的带宽节省。由此引出下面的
+隐式方法。
+
+\paragraph{隐式展开输入特征图。}
+为避免输入特征图尺寸扩张的缺点，实际系统用矩阵乘法实现卷积层时，通常会把 $B$ 矩阵
+分片生成，并把这一过程纳入分块矩阵乘法。其依据是：图 5.9 那样的分块矩阵乘法内核，在
+计算一个输出矩阵图块的某个阶段之前，会先加载两个输入矩阵的图块。这就提供了一个机会：
+输入特征图在全局内存中保持原始形式；需要从全局内存加载一个 $B$ 图块时，修改图块加载
+代码，从 $X$ 数组的对应位置加载像素，当场组装出 $B$ 图块。用计算机科学术语来说，矩阵
+$B$ 只是概念上的矩阵；它在分块矩阵乘法过程中，按需逐图块\textbf{物化}（materialize）。
+完整的 $B$ 矩阵从不在全局内存中物化。
+
+隐式方法的关键，是在 $B$ 矩阵元素与 $X$ 数组元素之间建立系统映射。也就是说，需要把
+概念元素 $B[u,v]$ 装入图块时，必须能唯一确定应当使用哪个 $X$ 元素。假设矩阵乘法采用
+$2\times2$ 图块，如图 \ref{fig:19-9}(a) 所示。
+
+这个小例子会启动由两个线程块组成的网格，每块有 $2\times2=4$ 个线程。每个线程生成
+输出特征矩阵中的一个元素，每个块协作生成一个 $2\times2$ 输出矩阵图块。我们关注图
+\ref{fig:19-9}(a) 中生成 $Y$ 左侧 $2\times2$ 图块的线程块；该图块包含
+$Y[n,0,0,0]$、$Y[n,0,0,1]$、$Y[n,1,0,0]$ 和 $Y[n,1,0,1]$。在矩阵乘法的阶段 0，
+要加载的 $B$ 图块包含 $B[0,0]$、$B[0,1]$、$B[1,0]$、$B[1,1]$，即图中 $B$ 左上角
+标出的区域。如箭头所示，$B[0,0]$ 从 $X[n,0,0,0]$ 加载，$B[0,1]$ 从
+$X[n,0,0,1]$ 加载，$B[1,0]$ 从 $X[n,0,0,1]$ 加载，$B[1,1]$ 从 $X[n,0,0,2]$ 加载。
+
+\noindent\textbf{译者注：}底本正文把上述输出图块写成输出特征图 0 的全部四个像素，
+但原图框选的是输出矩阵 $Y$ 的左侧 $2\times2$ 图块，其中两行分别来自输出特征图 0 和 1。
+本译稿按图示和 $2\times2$ 分块矩阵乘法的行、列映射作最小修正；这不影响随后对 $B$
+矩阵列下标的推导。
+
+图 \ref{fig:19-9}(b) 给出同一线程块在阶段 1 的映射。此阶段要加载的 $B$ 图块包含
+$B[2,0]$、$B[2,1]$、$B[3,0]$、$B[3,1]$。箭头表明，$B[2,0]$ 从 $X[n,0,1,0]$
+加载，$B[2,1]$ 从 $X[n,0,1,1]$ 加载，$B[3,0]$ 从 $X[n,0,1,1]$ 加载，$B[3,1]$
+从 $X[n,0,1,2]$ 加载。下面就以这两个图块为例，推导从 $B$ 元素到 $X$ 元素的一般映射。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c@{\hspace{2.2em}}c}
+    \begin{minipage}{0.43\textwidth}
+      \centering\textbf{(a) 阶段 0}\\[0.4em]
+      $\displaystyle
+      \underbrace{\begin{bmatrix}B[0,0]&B[0,1]\\B[1,0]&B[1,1]\end{bmatrix}}_{B\text{ 图块}}
+      \longleftarrow
+      \begin{bmatrix}X[n,0,0,0]&X[n,0,0,1]\\X[n,0,0,1]&X[n,0,0,2]\end{bmatrix}$\\[0.7em]
+      $F[:,0\mathinner{:}2]$ 与此 $B$ 图块相乘，累加到 $Y[:,0\mathinner{:}2]$。
+    \end{minipage}
+    &
+    \begin{minipage}{0.43\textwidth}
+      \centering\textbf{(b) 阶段 1}\\[0.4em]
+      $\displaystyle
+      \underbrace{\begin{bmatrix}B[2,0]&B[2,1]\\B[3,0]&B[3,1]\end{bmatrix}}_{B\text{ 图块}}
+      \longleftarrow
+      \begin{bmatrix}X[n,0,1,0]&X[n,0,1,1]\\X[n,0,1,1]&X[n,0,1,2]\end{bmatrix}$\\[0.7em]
+      $F[:,2\mathinner{:}4]$ 与此 $B$ 图块相乘，继续累加到同一输出图块。
+    \end{minipage}
+  \end{tabular}
+  \caption{用分块矩阵乘法实现卷积层时，每个阶段都从相应 $X$ 元素按需加载 $B$ 矩阵
+  图块。依据原书图 19.9 重绘}
+  \label{fig:19-9}
+\end{figure}
+
+假设线程块加载图块时，某线程负责 $B[u,v]$。由上面的讨论可知，$v$ 是一个行主序线性化
+下标，用来标识接收该 $B$ 元素贡献的输出特征图像素。把它还原成 $Y$ 最后两维的下标，
+得到 $v/W_{\mathrm{out}}$ 和 $v\bmod W_{\mathrm{out}}$，所以相应输出元素是
+$Y[n,m,v/W_{\mathrm{out}},v\bmod W_{\mathrm{out}}]$。这两个下标同时给出生成该输出像素
+所需输入特征图区域的起点，也就是左上角位置。
+
+下标 $u$ 指定像素区域来自哪一幅输入特征图，以及相应 $B$ 元素在该区域中的行主序线性
+下标。输入特征图的通道号为 $\lfloor u/K^2\rfloor$。例如图 \ref{fig:19-10} 中，元素
+$B[10,2]$ 的 $u=10$。因为 $\lfloor10/2^2\rfloor=2$，所以 $B[10,2]$ 来自输入特征图 2，
+即 $c=2$。图中 $B[10,2]$ 位于 $B$ 的最下方区段，也印证了这一点。
+
+在输入区域内部，$u\bmod K^2$ 是像素的行主序线性下标。因此，像素在区域内的局部行、
+列下标分别是
+$\lfloor(u\bmod K^2)/K\rfloor$ 和 $(u\bmod K^2)\bmod K$。对 $B[10,2]$ 而言，
+$\lfloor(10\bmod4)/2\rfloor=1$，$(10\bmod4)\bmod2=0$，说明它来自输入区域的第 1 行、
+第 0 列。
+
+接下来，把区域内的局部下标投影到包含该区域的输入特征图上。只需把局部下标加到区域左上角
+的下标 $(\lfloor v/W_{\mathrm{out}}\rfloor,v\bmod W_{\mathrm{out}})$ 上。因此，选定输入
+特征图中的像素行、列下标分别为
+\[
+ \left\lfloor\frac{u\bmod K^2}{K}\right\rfloor
+ +\left\lfloor\frac{v}{W_{\mathrm{out}}}\right\rfloor,
+ \qquad
+ (u\bmod K^2)\bmod K+v\bmod W_{\mathrm{out}}.
+\]
+在本例中，$B[10,2]$ 对应像素的行下标为 $1+1=2$，列下标为 $0+0=0$；该像素又来自
+输入特征图 2，所以应从值为 3 的 $X[n,2,2,0]$ 加载。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[>=Stealth,font=\small]
+    \node[draw,fill=orange!15,text width=2.8cm,minimum height=1.35cm,align=center] (b)
+      {$B[10,2]=3$\\$u=10,\ v=2$};
+    \node[draw,fill=gray!12,text width=4.1cm,minimum height=1.35cm,align=center,right=1cm of b] (map)
+      {$c=\lfloor10/2^2\rfloor=2$\\局部位置 $(1,0)$\\区域起点 $(1,0)$};
+    \node[draw,fill=blue!12,text width=3.7cm,minimum height=1.35cm,align=center,right=1cm of map] (x)
+      {$X[n,2,2,0]=3$\\输入特征图 2，第 2 行、第 0 列};
+    \draw[->,line width=.8pt] (b)--(map);
+    \draw[->,line width=.8pt] (map)--(x);
+    \node[below=.8cm of map,align=center,font=\scriptsize]
+      {$u:\ 10\bmod4=2\Rightarrow(\lfloor2/2\rfloor,2\bmod2)=(1,0)$\qquad
+       $v:\ 2\Rightarrow(\lfloor2/2\rfloor,2\bmod2)=(1,0)$};
+  \end{tikzpicture}
+  \caption{$B[10,2]$（即 $u=10$、$v=2$）到输入特征图元素的映射示例。
+  依据原书图 19.10 重绘}
+  \label{fig:19-10}
+\end{figure}
+
+\noindent\textbf{译者注：}底本正文在图 19.10 后把 $B[10,2]$ 的 $u$ 误写为 2，但图注、
+矩阵下标和后续计算均明确给出 $u=10$，本译稿据此修正。另经渲染页逐字符核对，底本视觉
+内容为 $B[3,0]$ 和 $10/2^2=2$；PDF 文本提取层中的 $B[3.0]$、$10/22=2$ 均属提取错误。
+
+综上，把批处理卷积层表述为矩阵--矩阵乘法时，从概念矩阵 $B$ 到输入特征图数组 $X$ 的
+映射为
+
+\begin{equation}
+B[u,v]\longleftarrow X\!\left[n,
+ \left\lfloor\frac{u}{K^2}\right\rfloor,
+ \left\lfloor\frac{u\bmod K^2}{K}\right\rfloor
+   +\left\lfloor\frac{v}{W_{\mathrm{out}}}\right\rfloor,
+ (u\bmod K^2)\bmod K+v\bmod W_{\mathrm{out}}
+\right].
+\label{eq:ch19-implicit-mapping}
+\end{equation}
+
+其中，$n$ 是当前处理的批次样本下标，$K$ 是卷积层每个卷积滤波器的高度和宽度，
+$W_{\mathrm{out}}$ 是每幅输出特征图的宽度；除法均为整数除法，$\bmod$ 表示整数余数运算。
+
+图 \ref{fig:19-11} 给出一个用 CUDA 分块矩阵乘法实现卷积层的内核，它由图 5.9 的分块
+矩阵乘法内核改写而来。首先调整形参，依次指定输入特征图数（通道数 $C$）、输出特征图数
+$M$、每幅输入特征图的高度 $H$、宽度 $W$、每个卷积滤波器的高度和宽度 $K$，以及指向
+滤波器组数组 $F$、输入特征图数组 $X$、输出特征图数组 $Y$ 的指针（第 3 行）。
+
+内核假定启动时，网格 $Z$ 维的大小（块数）就是输入批次大小。因此，每个线程用
+\code{blockIdx.z} 作为分配给自己的输入特征图样本下标（第 9 行），加载 $B$ 图块时会
+使用这个下标（第 28 行）。与图 5.9 一样，每个线程用块下标和线程下标的 $X$、$Y$ 维，
+计算自己所负责输出特征矩阵元素的行、列下标（第 14--15 行）。
+
+分块矩阵乘法的阶段数，等于 $F$ 矩阵宽度 $CK^2$ 除以图块宽度 \code{TILE_WIDTH}
+（第 19 行）。加载 $F$ 矩阵图块时（第 23 行），使用的行、列下标与图 5.9 相同。这个
+版本未加入边界检查，因为这里重点展示加载 $B$ 矩阵图块时所用下标的改写；添加边界检查
+留作练习。
+
+$B$ 的行、列下标与图 5.9 访问矩阵 $N$ 时所用下标相同，区别在于必须按照公式
+\eqref{eq:ch19-implicit-mapping}，把对 $B$ 的访问映射成对 $X$ 的访问。第 28 行按行主序
+把四维 $N\times C\times H\times W$ 数组 $X$ 的下标线性化；其中
+$W_{\mathrm{out}}$ 写成 $W-K+1$，$W$ 是输入特征图的宽度。
+
+\begin{figure}[p]
+  \centering
+  \begin{minipage}{0.99\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1,lastline=38]
+#define TILE_WIDTH 16
+
+__global__ void ConvLayer_MM_Kernel(int C, int M, int H, int W, int K, float* F, float* X, float* Y) {
+
+    __shared__ float Fds[TILE_WIDTH][TILE_WIDTH];
+    __shared__ float Bds[TILE_WIDTH][TILE_WIDTH];
+
+    int bx = blockIdx.x; int by = blockIdx.y;
+    int bz = blockIdx.z; // bz is used for sample index
+
+    int tx = threadIdx.x; int ty = threadIdx.y;
+
+    // Identify the row/column of the Y element to work on
+    int Row = by * TILE_WIDTH + ty;
+    int Col = bx * TILE_WIDTH + tx;
+
+    // Loop over the F and B tiles for the Y element
+    float Pvalue = 0;
+    for (int ph = 0; ph < (C*K*K)/TILE_WIDTH; ++ph) {
+        // C*K*K is the width of the F matrix
+
+        // Load F and B tiles into shared memory
+        Fds[ty][tx] = F[Row*(C*K*K) + (ph*TILE_WIDTH+tx)];
+
+        int u = ph*TILE_WIDTH + ty;
+        int v = Col;
+
+        Bds[ty][tx]=X[bz*(C*H*W)+(u/(K*K))*(H*W)+((u%(K*K))/K + v/(W-K+1))*W+(u%(K*K))%K + (v%(W-K+1))];
+
+        __syncthreads();
+
+        for (int k = 0; k < TILE_WIDTH; ++k)
+            Pvalue += Fds[ty][k] * Bds[k][tx];
+
+        __syncthreads();
+    }
+    Y[bz*M*(H-K+1)*(W-K+1)+Row*(H-K+1)*(W-K+1)+Col]=Pvalue;
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{用分块矩阵乘法实现卷积层的 CUDA 内核。依据原书图 19.11 逐字符重排}
+  \label{fig:19-11}
+\end{figure}
+
+线程块完成全部阶段后，每个线程利用样本下标、行下标和列下标，把结果写入指定的 $Y$
+元素（第 37 行）。
+
+用矩阵乘法实现卷积可以非常高效，因为所有硬件平台都对矩阵乘法做了高度优化。分块矩阵
+乘法在 GPU 上尤其快，因为它的每字节全局内存访问对应很多浮点运算。回忆第 5 章，每个
+元素的复用次数与图块维度成正比。这意味着矩阵较小时，可用图块尺寸可能受限，矩阵乘法也
+就不够高效。此外，小矩阵乘法的内核启动开销往往相当显著。因此，把卷积转成矩阵乘法的
+方法，在能够形成大矩阵时最有效。
+
+前面已经指出，滤波器组矩阵尺寸为 $M\times(CK^2)$，展开输入特征图矩阵尺寸为
+$(CK^2)\times(H_{\mathrm{out}}W_{\mathrm{out}})$。除了滤波器组矩阵的高度以外，各维尺寸
+都取决于卷积参数的乘积，而不是单个参数。单个参数可能很小，但乘积往往很大。例如，卷积
+网络的前几层通常 $C$ 较小，而 $H_{\mathrm{out}}$、$W_{\mathrm{out}}$ 很大；网络末端则
+通常 $C$ 很大，而 $H_{\mathrm{out}}$、$W_{\mathrm{out}}$ 很小。因此，各层的
+$C H_{\mathrm{out}}W_{\mathrm{out}}$ 通常都很大。这意味着整个网络各层形成的矩阵尺寸往往
+始终较大，使用这种方法通常能在所有层中保持较高的 GPU 执行资源利用率，从而获得很高的
+执行速度。
+
+\section{cuDNN 库}
+\label{sec:cudnn-library}
+
+cuDNN 是一个经过优化的例程库，用于实现深度学习基本操作。它的设计目标，是让深度学习
+框架更容易利用 GPU。cuDNN 提供灵活、易用的 C 语言深度学习 API，可以自然地集成到
+PyTorch、Caffe、TensorFlow、MXNet 等既有深度学习框架中。与本章前面的讨论一样，
+该库要求输入和输出数据已经驻留在 GPU 设备内存中；这与 cuBLAS 的要求类似。
+
+cuDNN 是线程安全的，不同主机线程可以调用其例程。下面以 CNN 为例说明 cuDNN 提供的
+能力。前向和反向路径的卷积例程使用同一种描述符，其中封装了层的属性。张量和卷积滤波器
+通过不透明描述符访问；用户可以为每一维指定任意步幅，从而灵活规定\textbf{张量布局}
+（tensor layout）。卷积神经网络最重要的计算基本操作，是一种特殊形式的批处理卷积。
+本节介绍这种卷积的前向形式，控制它的 cuDNN 参数列于表 \ref{tab:19-1}。
+
+\begin{table}[htbp]
+  \centering
+  \caption{cuDNN 的卷积参数。注意，cuDNN 的命名约定与前几节略有不同，尤其是 $K$
+  在这里表示输出特征图数，而前文用 $K$ 表示方形卷积滤波器尺寸。依据原书表 19.1 重排}
+  \label{tab:19-1}
+  \small
+  \begin{tabular}{cl}
+    \toprule
+    参数 & 含义\\
+    \midrule
+    $N$ & 小批量中的图像数\\
+    $C$ & 输入特征图数\\
+    $H$ & 输入图像高度\\
+    $W$ & 输入图像宽度\\
+    $K$ & 输出特征图数\\
+    $R$ & 卷积滤波器高度\\
+    $S$ & 卷积滤波器宽度\\
+    $u$ & 纵向步幅\\
+    $v$ & 横向步幅\\
+    \code{pad_h} & 零填充高度\\
+    \code{pad_w} & 零填充宽度\\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+卷积有两个输入：
+
+\begin{itemize}[leftmargin=2em]
+  \item $D$ 是一个四维 $N\times C\times H\times W$ 张量，包含输入数据；\footnote{
+  “张量”是指数超过二维的数组的数学术语。数学中的矩阵只有二维，三维及以上的数组称为
+  张量。就本书而言，可以简单地把 $T$ 维张量视为 $T$ 维数组。}
+  \item $F$ 是一个四维 $K\times C\times R\times S$ 张量，包含卷积滤波器。
+\end{itemize}
+
+输入数据数组（张量）$D$ 的各维依次覆盖：小批量中的 $N$ 个样本、每个样本的 $C$ 幅输入
+特征图、每幅输入特征图的 $H$ 行和 $W$ 列。卷积滤波器的各维依次覆盖：$K$ 幅输出特征图、
+$C$ 幅输入特征图、每个卷积滤波器的 $R$ 行和 $S$ 列。输出同样是四维张量 $O$，各维依次
+覆盖小批量中的 $N$ 个样本、$K$ 幅输出特征图、每幅输出特征图的 $P$ 行和 $Q$ 列，其中
+\[
+ P=f(H;R;u;\code{pad_h}),\qquad
+ Q=f(W;S;v;\code{pad_w}).
+\]
+这表示输出特征图的高度和宽度取决于输入特征图、滤波器组的高度和宽度，以及填充与步幅的
+选择。步幅参数 $u$、$v$ 让用户只计算输出像素的一个子集，从而减少计算量。填充参数让用户
+指定在每幅特征图上附加多少行或多少列零元素，以改善内存对齐和/或向量化执行。
+
+cuDNN\cite{ch19-chetlur2014cudnn} 支持多种卷积层实现算法，包括 GEMM
+\cite{ch19-tan2011dgemm}、Winograd\cite{ch19-lavin2016fast} 和基于 FFT 的方法
+\cite{ch19-vasilache2014fast} 等。基于 GEMM 的算法用矩阵乘法实现卷积，与第
+\ref{sec:cnn-as-gemm} 节的方法相似。如该节末尾所述，在全局内存中物化扩展输入特征矩阵，
+会同时消耗大量全局内存空间和带宽。cuDNN 避免了这个问题：它以惰性方式生成扩展输入
+特征图矩阵，只把所需图块加载到片上内存中，与上一节的隐式方法类似；它不会先在片外内存中
+聚集完整扩展矩阵，再调用矩阵乘法例程。
+
+NVIDIA 提供的矩阵乘法例程可以高度利用 GPU 的理论最高浮点吞吐量，其算法与文献
+\cite{ch19-tan2011dgemm} 所述方法相似。输入矩阵 $A$、$B$ 的固定尺寸子矩阵依次读入片上
+内存，再用于计算输出矩阵 $C$ 的一个子矩阵。卷积带来的全部复杂下标计算，都由例程的图块
+管理负责。例程一边计算当前 $A$、$B$ 图块，一边把接下来的 $A$、$B$ 图块从片外内存取入
+片上缓存及其他片上存储器。这项技术隐藏了数据传输带来的内存延迟，使矩阵乘法计算最终只受
+算术运算耗时限制。
+
+矩阵乘法例程所需的分块与卷积参数相互独立，因此，扩展输入特征图矩阵的图块边界与卷积
+问题之间的映射并不简单。cuDNN 的方法会计算这种映射，并利用它把 $A$、$B$ 的正确元素
+装入片上存储器。这个过程随着计算动态进行，使 cuDNN 的卷积实现得以利用高度优化的矩阵
+乘法基础设施。与普通矩阵乘法相比，它需要额外的下标算术，却能充分利用矩阵乘法计算引擎
+完成主体工作。计算完成后，cuDNN 执行所需的张量转置，以用户要求的数据布局存储结果。
+
+\section{小结}
+\label{sec:cnn-summary}
+
+本章首先简要介绍了机器学习和卷积神经网络，然后给出一个基本卷积神经网络及其主要层类型
+的实现。在第 \ref{chap:convolution} 章卷积模式的基础上，我们实现了卷积神经网络中计算
+量最大的卷积层 CUDA 内核。
+
+随后，我们介绍了通过隐式展开输入特征图、把卷积层表述为矩阵乘法的技术。经过这种转换，
+卷积层可以受益于面向 GPU 高度优化的 GEMM 库。我们还给出了一个执行输入特征图隐式展开
+的矩阵乘法 CUDA 内核。
+
+最后，本章概述了大多数深度学习框架都会使用的 cuDNN 库。框架用户无须亲自编写 CUDA
+内核，就可以利用其中经过高度优化的层实现。
+
+\phantomsection
+\section{练习}
+\label{sec:cnn-exercises}
+
+\begin{enumerate}[label=\arabic*.,leftmargin=2.7em]
+  \item 实现第 \ref{sec:cnn} 节介绍的下采样层前向传播。附录 B 对这种层作了说明。
+
+  \item 本章的输入和输出特征采用 $[N,C,H,W]$（NCHW）布局。若改为
+  $[N,H,W,C]$（NHWC）布局，能否降低内存带宽需求？采用 $[C,H,W,N]$（CHWN）布局
+  可能有哪些好处？
+
+  \item 实现第 \ref{sec:cnn} 节介绍、附录 B 进一步说明的卷积层反向传播。
+
+  \item 分析图 \ref{fig:19-11} 矩阵乘法内核的内存访问模式，讨论其全局内存访问是否
+  合并，以及共享内存访问是否可能发生存储体冲突。
+\end{enumerate}
+
+\begin{chapterbibliography}{12}
+  \bibitem{ch19-lecun2015deep}
+  Y. LeCun, Y. Bengio, G. Hinton, Deep learning,
+  \emph{Nature} 521 (7553) (2015) 436--444.
+
+  \bibitem{ch19-lecun1998gradient}
+  Y. LeCun, L. Bottou, Y. Bengio, P. Haffner, Gradient-based learning applied to
+  document recognition, \emph{Proceedings of the IEEE} 86 (11) (1998) 2278--2324.
+
+  \bibitem{ch19-lecun1989handwritten}
+  Y. LeCun, B. Boser, J. Denker, D. Henderson, R. Howard, W. Hubbard, L. Jackel,
+  Handwritten digit recognition with a back-propagation network,
+  \emph{Advances in Neural Information Processing Systems} 2 (1989).
+
+  \bibitem{ch19-hinton2006fast}
+  G.E. Hinton, S. Osindero, Y.-W. Teh, A fast learning algorithm for deep belief nets,
+  \emph{Neural Computation} 18 (7) (2006) 1527--1554.
+
+  \bibitem{ch19-raina2009large}
+  R. Raina, A. Madhavan, A.Y. Ng, Large-scale deep unsupervised learning using graphics
+  processors, in: \emph{Proceedings of the 26th Annual International Conference on
+  Machine Learning}, 2009, pp.~873--880.
+
+  \bibitem{ch19-krizhevsky2012imagenet}
+  A. Krizhevsky, I. Sutskever, G.E. Hinton, ImageNet classification with deep
+  convolutional neural networks, \emph{Advances in Neural Information Processing
+  Systems} 25 (2012).
+
+  \bibitem{ch19-krizhevsky2014cuda}
+  A. Krizhevsky, cuda-convnet,
+  \href{https://code.google.com/p/cuda-convnet/}{project website}, 2014.
+
+  \bibitem{ch19-chellapilla2006high}
+  K. Chellapilla, S. Puri, P. Simard, High performance convolutional neural networks
+  for document processing, in: \emph{Tenth International Workshop on Frontiers in
+  Handwriting Recognition}, Suvisoft, 2006.
+
+  \bibitem{ch19-chetlur2014cudnn}
+  S. Chetlur, C. Woolley, P. Vandermersch, J. Cohen, J. Tran, B. Catanzaro,
+  E. Shelhamer, cuDNN: efficient primitives for deep learning,
+  arXiv preprint arXiv:1410.0759, 2014.
+
+  \bibitem{ch19-tan2011dgemm}
+  G. Tan, L. Li, S. Triechle, E. Phillips, Y. Bao, N. Sun, Fast implementation of
+  DGEMM on Fermi GPU, in: \emph{Proceedings of 2011 International Conference for
+  High Performance Computing, Networking, Storage and Analysis}, 2011, pp.~1--11.
+
+  \bibitem{ch19-lavin2016fast}
+  A. Lavin, S. Gray, Fast algorithms for convolutional neural networks, in:
+  \emph{Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition},
+  2016, pp.~4013--4021.
+
+  \bibitem{ch19-vasilache2014fast}
+  N. Vasilache, J. Johnson, M. Mathieu, S. Chintala, S. Piantino, Y. LeCun,
+  Fast convolutional nets with fbfft: a GPU performance evaluation,
+  arXiv preprint arXiv:1412.7580, 2014.
+\end{chapterbibliography}
