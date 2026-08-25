@@ -1,0 +1,617 @@
+\chapter{矩阵乘法的高级优化}
+\label{chap:advanced-matrix-multiplication}
+
+\setcounter{footnote}{0}
+
+矩阵乘法是科学、工程和图形应用中的重要操作。它的计算复杂度高，因而具有很高的数据
+复用度，也蕴含大量优化机会。第 3 章以矩阵乘法说明如何把多维网格映射到数据，第 5 章
+又以它说明如何用共享内存分块减少全局内存访问。本章将进一步深入矩阵乘法，介绍 GPU
+架构上针对这一重要计算的高级优化。
+
+\section{背景}
+\label{sec:advanced-mm-background}
+
+矩阵--矩阵乘法（简称矩阵乘法）广泛出现在科学与工程问题的数学表达中。直观起见，可先
+看它的特例向量--矩阵乘法：第一个矩阵操作数只有一行，可视为向量 $v$。计算
+$u=v\times B$ 就是把 $v$ 线性变换为 $u$；$u$ 的每个元素都是 $v$ 全部元素的线性
+组合，矩阵 $B$ 的第 $j$ 列给出生成 $u_j$ 时的组合系数。例如在图形应用中，把空间点
+的三维坐标向量乘以一个 $3\times3$ 矩阵，就能执行坐标旋转；若还需平移或缩放，则再
+加一个向量或乘统一比例因子，便得到新观察点、方向与尺度下的坐标。
+
+要对多个向量执行同一线性变换，可以把它们收集为矩阵 $A$，每行放一个向量，再计算
+$D=A\times B$。结果 $D$ 的每一行就是一个变换后的向量。回到坐标变换示例，还可能要
+缩放乘法结果并加上（同样可缩放的）矩阵 $C$，其中 $C$ 的每一行是要加到 $A$ 相应变换
+结果上的向量。于是得到通式
+\[
+  D=\alpha A\times B+\beta C,
+\]
+它在线性代数和高性能计算中称为\textbf{通用矩阵乘法（GEMM）}。其中
+$A\times B$ 通常是计算量最大的部分，本章专注于此。
+
+矩阵可按行主序或列主序存储，具体格式也可能来自对原矩阵或其转置的操作（见第 6 章）。
+本章假设两个输入矩阵均为行主序，不过所述优化也能用于其他存储格式组合。实际 GEMM 库
+通常会支持这些组合。
+
+优化是否适用、收益多大，还取决于矩阵维度。深度学习兴起前，应用中的矩阵乘法通常规模
+适中，因为线性变换涉及的向量元素不多。第 19、20 章将看到，卷积神经网络的卷积层训练
+和大语言模型的注意力层都能表达为大矩阵乘法。这些大规模计算使许多过去收益不高的优化
+变得重要，本章的许多技术正是为大矩阵设计的。
+
+\section{数据复用分析}
+\label{sec:mm-data-reuse}
+
+图 \ref{fig:15-1} 回顾第 5 章的分块矩阵乘法，并采用一般化的 tile 维度。每个线程块
+负责 $C$ 中一个 $m\times n$ 输出 tile。块内线程协作遍历 $A$ 与 $B$ 的输入 tile，
+每轮把 $A$ 的一个 $m\times k$ tile 和 $B$ 中对应的 $k\times n$ tile 从全局内存
+装入共享内存，再计算这对 tile 对所有输出元素的部分贡献。输出 tile 分布保存在块内线程
+的寄存器中；全部计算结束后，线程协作把它写回全局内存。
+
+\begin{figure}[htbp]
+  \centering\small
+  \begin{tabular}{c@{\quad$\times$\quad}c@{\quad$\longrightarrow$\quad}c}
+    \fbox{$A$：$m\times k$ tile} & \fbox{$B$：$k\times n$ tile}
+      & \fbox{$C$：$m\times n$ tile}\\[-0.1em]
+    共享内存 & 共享内存 & 线程寄存器
+  \end{tabular}
+  \caption{分块矩阵乘法回顾}
+  \label{fig:15-1}
+\end{figure}
+
+第 5 章只分析了正方形 tile。一般情况下，每对输入 tile 为 $m\times n$ 个输出元素各
+执行 $k$ 次乘法和 $k$ 次加法，共 $2mnk$ 次浮点操作；同时加载 $mk+kn=k(m+n)$ 个
+浮点数，每个 4 B，共 $4k(m+n)$ B。因此算术强度为
+\[
+ \frac{2mnk}{4k(m+n)}=\frac{0.5mn}{m+n}\quad\text{FLOP/B}.
+\]
+
+较高算术强度更容易突破内存带宽瓶颈。增大 $m,n$，也就是增大输出 tile，便会提高这个
+比值。例如 $m=n=32$ 时强度为 8 FLOP/B，在 H100 上仍受内存限制；增至
+$m=n=128$ 后则为 32 FLOP/B，会转为受计算吞吐量限制。
+
+其直觉是：大输出 tile 让相同输入被更多输出复用。若把图 \ref{fig:15-1} 的 $n$ 从
+32 增至 128，输出 tile 在水平方向扩大 4 倍，一个线程块相当于计算原来的 4 个输出
+tile。这 4 个输出都需要同一个 $A$ 输入 tile；原来由 4 个块分别重复加载，扩大后由一个
+块只加载一次。同理，增大高度 $m$ 可减少 $B$ tile 在不同块间的重复加载。消除这些冗余
+加载，就提高了数据复用与算术强度。
+
+\section{用线程粗化处理更大的 tile}
+\label{sec:mm-large-tiles}
+
+使用更大的 tile，意味着每个线程必须计算多个输出元素、加载多个输入元素，所以它可以
+视为线程粗化：细粒度并行的额外开销，是相同输入会由不同线程块重复加载。这类似第 8 章
+对模板计算的粗化——同样通过扩大输出 tile 增强复用与算术强度。
+
+图 \ref{fig:15-2} 中，每块计算 $bM\times bN$ 的\textbf{块级输出 tile}。当 tile
+元素数多于块内线程数时，每线程负责多个输出。例如块级 tile 为 $128\times128$，线程块
+为 $16\times16$，每线程可负责 $tM\times tN=8\times8$ 的\textbf{线程级输出 tile}。
+
+\begin{figure}[htbp]
+  \centering\small
+  \begin{tabular}{c@{\quad$\supset$\quad}c@{\qquad}c}
+    \fbox{块级 $C$ tile：$bM\times bN$}
+    & \fbox{线程级 $C$ tile：$tM\times tN$}
+    & \begin{tabular}{l}$A$ 输入：$tM\times bK$\\$B$ 输入：$bK\times tN$\end{tabular}
+  \end{tabular}
+  \caption{使用大 tile 的分块矩阵乘法及线程级 tile 层次}
+  \label{fig:15-2}
+\end{figure}
+
+一般地，矩阵可在逻辑上形成 tile 层次，每层 tile 分配给相应线程层次。本例把块级 tile
+交给线程块，把线程级 tile 交给线程；还可推理 warp 级、GPU 级乃至计算集群结点级 tile。
+第 \ref{sec:mm-coalesced-store} 节会用到 warp 级 tile，本节先实现块级与线程级两层。
+
+图 \ref{fig:15-3} 的内核先由所有线程求出块级输出 tile 在 $C$ 中的起始行、列
+\code{bRow}、\code{bCol}，再按线程在线程块中的位置计算线程级 tile 起点
+\code{tRow}、\code{tCol}。每线程声明 $tM\times tN$ 局部数组
+\code{C_r}，用 \code{clear()} 清零。局部数组默认可能放在全局内存；只有所有
+下标都是编译期常量时，编译器才能把它提升到寄存器，所以访问 \code{C_r} 的循环都
+必须完全展开。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.99\textwidth}
+  \begin{lstlisting}[language=C++,numbers=left]
+__global__ void mm_tiled_kernel(float *A, float *B, float *C,
+                                unsigned int M, unsigned int N,
+                                unsigned int K) {
+    unsigned int bRow = blockIdx.y * bM;
+    unsigned int bCol = blockIdx.x * bN;
+
+    unsigned int tilesPerBlockX = bN / tN;
+    unsigned int ty = threadIdx.x / tilesPerBlockX;
+    unsigned int tx = threadIdx.x % tilesPerBlockX;
+    unsigned int tRow = ty * tM;
+    unsigned int tCol = tx * tN;
+
+    float C_r[tM][tN];
+    clear(C_r, tM, tN);
+
+    for (unsigned int tile = 0; tile < (K + bK - 1) / bK; ++tile) {
+        __shared__ float A_s[bM * bK];
+        __shared__ float B_s[bK * bN];
+        loadTile(&A[bRow * K + tile * bK], K, M - bRow,
+                 K - tile * bK, &A_s[0], bK, bM, bK);
+        loadTile(&B[tile * bK * N + bCol], N, K - tile * bK,
+                 N - bCol, &B_s[0], bN, bK, bN);
+        __syncthreads();
+
+        mm(tM, tN, bK, &A_s[tRow * bK], bK,
+           &B_s[tCol], bN, C_r);
+        __syncthreads();
+    }
+
+    float *c = &C[(bRow + tRow) * N + bCol + tCol];
+    unsigned int maxRow = (bRow + tRow < M) ? M - (bRow + tRow) : 0;
+    unsigned int maxCol = (bCol + tCol < N) ? N - (bCol + tCol) : 0;
+    writeTile(c, N, maxRow, maxCol, C_r, tM, tN);
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{使用大 tile 的分块矩阵乘法代码}
+  \label{fig:15-3}
+\end{figure}
+
+计算块级输出 tile 需要 $A$ 的 $bM\times K$ 横向面板和 $B$ 的 $K\times bN$ 纵向
+面板，共分成 $K/bK$ 对输入 tile。线程块逐对加载 \code{A_s}、\code{B_s}，
+屏障确认数据齐全后调用 \code{mm()} 累加贡献，再用第二个屏障确认所有线程已用完
+本轮输入，随后才能覆盖共享内存。全部输入 tile 处理完后，\code{writeTile()} 把
+线程级结果从寄存器写到全局内存。这些设备函数都会内联进主内核。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.82\textwidth}
+  \begin{lstlisting}[language=C++,numbers=left]
+__device__ __forceinline__ void clear(float C_r[][tN],
+                                      unsigned int m, unsigned int n) {
+#pragma unroll
+    for (unsigned int row = 0; row < m; ++row) {
+#pragma unroll
+        for (unsigned int col = 0; col < n; ++col)
+            C_r[row][col] = 0.0f;
+    }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{清零输出 tile 的代码}
+  \label{fig:15-4}
+\end{figure}
+
+图 \ref{fig:15-4} 的双重循环遍历输出 tile 并清零。两个循环都标注
+\code{#pragma unroll}，保证完全展开，让 \code{C_r} 以常量下标访问并进入寄存器。
+
+图 \ref{fig:15-5} 的 \code{loadTile()} 接收原矩阵中 tile 的全局内存起始地址
+\code{T}、主维度 \code{lda}、边界 \code{maxRow/maxCol}，以及共享内存地址
+\code{T_s}、共享内存主维度 \code{ldas} 和 tile 的高、宽。\footnote{行主序中，
+主维度（leading dimension）是同一列相邻元素在内存中相隔的元素数。本章的 tile 主维度
+就是包含该 tile 的大矩阵宽度。}
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,numbers=left]
+__device__ __forceinline__ void loadTile(
+    float *T, unsigned int lda, unsigned int maxRow, unsigned int maxCol,
+    float *T_s, unsigned int ldas, unsigned int height, unsigned int width) {
+    unsigned int rowsPerSubTile = NUM_THREADS_PER_BLOCK / width;
+    unsigned int numSubtiles = height / rowsPerSubTile;
+#pragma unroll
+    for (unsigned int subTile = 0; subTile < numSubtiles; ++subTile) {
+        unsigned int row = subTile * rowsPerSubTile + threadIdx.x / width;
+        unsigned int col = threadIdx.x % width;
+        if (row < maxRow && col < maxCol)
+            T_s[row * ldas + col] = T[row * lda + col];
+        else
+            T_s[row * ldas + col] = 0.0f;
+    }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{从全局内存向共享内存装载输入 tile 的代码}
+  \label{fig:15-5}
+\end{figure}
+
+输入 tile 元素多于线程数时，每线程要加载多个元素。例如 tile 为 $128\times8=1024$
+个元素、块中有 256 线程时，每线程加载 4 个。代码把输入 tile 逻辑划分为 4 个子 tile，
+逐个装载；每轮线程计算所负责元素的行列下标，执行边界检查，越界则向共享内存填 0。
+还可使用第 6 章的向量加载，让线程一条指令加载 4 个元素，留作练习。
+
+图 \ref{fig:15-6} 的 \code{mm()} 计算当前输入 tile 对一个线程级输出 tile 的贡献。
+一个 $tM\times tN$ 输出 tile 只需 $A$ 中 $tM\times bK$ 子 tile 和 $B$ 中
+$bK\times tN$ 子 tile；称它们为对应线程的线程级输入 tile。$A$ tile 的横向尺寸与
+$B$ tile 的纵向尺寸是块级乘法的内维度，本设计中也是线程级乘法的内维度 $bK$。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.92\textwidth}
+  \begin{lstlisting}[language=C++,numbers=left]
+__device__ __forceinline__ void mm(unsigned int m, unsigned int n,
+    unsigned int k, float *a, unsigned int lda, float *b,
+    unsigned int ldb, float c[][tN]) {
+#pragma unroll
+    for (unsigned int row = 0; row < m; ++row) {
+#pragma unroll
+        for (unsigned int col = 0; col < n; ++col) {
+#pragma unroll
+            for (unsigned int i = 0; i < k; ++i)
+                c[row][col] += a[row * lda + i] * b[i * ldb + col];
+        }
+    }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{使用输入 tile 执行矩阵乘法的代码}
+  \label{fig:15-6}
+\end{figure}
+
+外两层循环遍历线程级输出元素并完全展开，使输出 tile 能存入寄存器；内层遍历输入 tile
+相应的行和列，执行乘加。参数 \code{a}、\code{b} 指向块级共享内存 tile 中线程
+所需子 tile 的起点，\code{lda/ldb} 用来跳到下一行。函数虽接收输出数组地址，内联
+后所有下标都是常量，编译器仍可把数组放进寄存器。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.92\textwidth}
+  \begin{lstlisting}[language=C++,numbers=left]
+__device__ __forceinline__ void writeTile(float *c, unsigned int ldc,
+    unsigned int maxRow, unsigned int maxCol, float C_r[][tN],
+    unsigned int m, unsigned int n) {
+#pragma unroll
+    for (unsigned int row = 0; row < m; ++row) {
+#pragma unroll
+        for (unsigned int col = 0; col < n; ++col)
+            if (row < maxRow && col < maxCol)
+                c[row * ldc + col] = C_r[row][col];
+    }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{把输出 tile 写入全局内存的代码}
+  \label{fig:15-7}
+\end{figure}
+
+\code{writeTile()} 以主内核算出的地址为起点，展开双重循环遍历寄存器输出 tile，经
+边界检查后写入全局内存。它也可改成向量存储，让线程一条指令写 4 个元素，留作练习。
+大块级与线程级 tile 已提高算术强度和总体性能，后续各节还会继续优化。
+
+\section{输入 tile 的寄存器分块}
+\label{sec:mm-register-tiling}
+
+共享内存分块通过把会复用的数据只从全局内存加载一次，解决全局内存带宽瓶颈。一个线程
+把输入元素从全局内存送到共享内存后，多个线程会再从共享内存把它加载到寄存器用于计算。
+共享内存远快于全局内存，却仍慢于寄存器；全局内存瓶颈缓解后，共享内存访问延迟便可能
+成为新瓶颈。
+
+图 \ref{fig:15-2} 表明，一个线程会用同一输入值计算多个输出。在上一节实现中，同一
+线程每计算一个受其贡献的输出元素，都会再次从块级共享内存 tile 加载这个输入值。可以
+对输入 tile 应用寄存器分块：每个所需输入只从共享内存加载一次并放进寄存器，再从寄存器
+复用于所有相应输出。
+
+\begin{figure}[htbp]
+  \centering
+  \fbox{\begin{minipage}{0.9\textwidth}\centering
+    共享内存：$A$ 与 $B$ 的块级输入 tile\\[0.35em]
+    $\Downarrow$ 每线程每次加载 $A$ 的 $tM$ 元素条带与 $B$ 的 $tN$ 元素条带\\[0.35em]
+    寄存器：$a_r[tM]$、$b_r[tN]$\\[0.35em]
+    $\Downarrow$ 外积更新寄存器中的 $tM\times tN$ 输出 tile
+  \end{minipage}}
+  \caption{对输入 tile 使用寄存器分块的矩阵乘法}
+  \label{fig:15-8}
+\end{figure}
+
+图 \ref{fig:15-8} 中，线程逐条遍历共享内存中属于自己的输入区段。每次把一对条带装进
+寄存器，先计算它们对全部线程级输出的贡献，再加载下一对。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.93\textwidth}
+  \begin{lstlisting}[language=C++,numbers=left]
+__device__ __forceinline__ void mm(unsigned int m, unsigned int n,
+    unsigned int k, float *a, unsigned int lda, float *b,
+    unsigned int ldb, float c[][tN]) {
+#pragma unroll
+    for (unsigned int i = 0; i < k; ++i) {
+        float a_r[tM];
+#pragma unroll
+        for (unsigned int row = 0; row < m; ++row)
+            a_r[row] = a[row * lda + i];
+
+        float b_r[tN];
+#pragma unroll
+        for (unsigned int col = 0; col < n; ++col)
+            b_r[col] = b[i * ldb + col];
+
+#pragma unroll
+        for (unsigned int row = 0; row < m; ++row) {
+#pragma unroll
+            for (unsigned int col = 0; col < n; ++col)
+                c[row][col] += a_r[row] * b_r[col];
+        }
+    }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{对输入 tile 使用寄存器分块的代码}
+  \label{fig:15-9}
+\end{figure}
+
+与图 \ref{fig:15-6} 相比，图 \ref{fig:15-9} 把内维度循环换到最外层。循环交换让线程
+一次处理一对输入条带，并在装载下一对之前把当前条带用于全部输出。每轮声明局部数组
+\code{a_r}、\code{b_r}；装载循环和计算循环都完全展开，使输入、输出 tile 都
+进入寄存器。
+
+寄存器分块减少了共享内存到寄存器的加载次数，缓解共享内存访问延迟与指令吞吐量瓶颈。
+分块并不限于共享内存和寄存器，而是适用于内存层次中任何存在延迟、吞吐量差异的两级
+存储。图 \ref{fig:15-8} 把共享内存中的块级 tile 与寄存器中的线程级 tile 正确结合；
+超大矩阵的多 GPU、甚至多结点乘法还可把这一层次扩展到 GPU 与集群结点。
+
+\section{输出 tile 的合并存储}
+\label{sec:mm-coalesced-store}
+
+大线程级输出 tile（如图 \ref{fig:15-2} 的 $8\times8$）有利于共享内存和寄存器分块
+中的数据复用，却不利于写回。线程遍历自己的 $8\times8$ tile 时，同一 warp 中负责
+相邻 tile 的线程会写入间隔 8 个元素的地址，访问不能合并。向量存储有所缓解：每线程
+一次写 4 个连续元素，但只覆盖 tile 宽度的一半，不同线程的向量存储起点仍相隔 4 个
+元素，依旧没有完全合并。
+
+希望同一 warp 的线程负责相邻的 $4\times4$ 输出 tile，这样每线程可用一条向量指令
+写出整行，各线程写出的 4 元素块彼此相邻，形成完全合并的事务。因此，把每线程原来的
+$8\times8$ 输出 tile 改成四个分散的 $4\times4$ tile。
+
+\begin{figure}[htbp]
+  \centering\small
+  \begin{tabular}{c@{$\Rightarrow$}c@{$\Rightarrow$}c}
+    \fbox{块级 $128\times128$}
+    & \fbox{8 个 warp：每个 $64\times32$}
+    & \fbox{4 象限：每线程各取一个 $4\times4$}\\
+    块级 tile & warp 级 tile & 四个物理子 tile 构成逻辑 $8\times8$
+  \end{tabular}
+  \caption{为合并存储而重新排列线程输出 tile}
+  \label{fig:15-10}
+\end{figure}
+
+如图 \ref{fig:15-10}，256 线程即 8 个 warp，可按 $2\times4$ 排列，每个 warp 取得
+$64\times32$ 的 warp 级输出 tile。再把它分成四个 $32\times16$ 象限，把 warp 的
+32 个线程按 $8\times4$ 排列，每线程从每个象限取得一个 $4\times4$ tile。四个物理
+tile 合起来仍是逻辑上的 $8\times8$ 线程级输出 tile，却能逐行执行完全合并的 4 元素
+向量存储。\code{mm()} 和 \code{writeTile()} 需要相应改为遍历四个小 tile，并在
+每步加载小输入条带，具体实现留作练习。
+
+\section{消除 bank 冲突}
+\label{sec:mm-bank-conflicts}
+
+让线程负责大输出 tile 还会导致它们跨步访问共享内存，从而产生 bank 冲突。继续采用图
+\ref{fig:15-10} 的 warp $8\times4$ 线程排列，前 4 个线程从共享内存中的 $A$ tile
+加载相同位置。
+
+图 \ref{fig:15-11}(a) 中，warp 0 加载第一条 $A$ 输入条带。线程 0--3 首先加载第 0
+行第一个元素，线性下标 0，位于 bank 0；线程 4--7 加载第 4 行第一个元素。若共享内存
+tile 宽度为 8，其下标是 $4\times8=32$，仍位于 bank $32\bmod32=0$。线程 8--11
+加载第 8 行第一个元素，下标 64，也在 bank 0。八个四线程组的对应元素都落在同一 bank，
+每次访问均形成 8 路冲突。
+
+\begin{figure}[htbp]
+  \centering\small
+  \begin{tabular}{c|ccc}
+    & 第 0 行首元素 & 第 4 行首元素 & 第 8 行首元素\\\hline
+    (a) 主维度 8 & $0\to$ bank 0 & $32\to$ bank 0 & $64\to$ bank 0\\
+    (b) 填充后主维度 9 & $0\to$ bank 0 & $36\to$ bank 4 & $72\to$ bank 8
+  \end{tabular}
+  \caption{增加填充列以消除共享内存 bank 冲突}
+  \label{fig:15-11}
+\end{figure}
+
+第 6 章已介绍，可通过改变共享内存布局、为矩阵增加填充列来消除冲突。图
+\ref{fig:15-11}(b) 加一列填充后，逻辑宽度仍为 8，地址计算使用的主维度却是 9。
+第 0、4、8 行首元素的下标分别为 0、36、72，落入 bank 0、4、8。各组访问第二个元素
+则进入 bank 1、5、9、……、29；8 路冲突由此消失。对每个四线程组访问的全部 16 个
+元素作同样分析，可以验证 32 个 bank 下的冲突均被消除。
+
+代码改动很简单，把图 \ref{fig:15-3} 的共享内存声明改为
+\begin{lstlisting}[language=C++]
+__shared__ float A_s[bM * (bK + 1)];
+\end{lstlisting}
+并把传给 \code{loadTile()} 和 \code{mm()} 的 \code{A_s} 主维度从
+\code{bK} 改为 \code{bK+1}。$B_s$ 不需修改：同一 warp 加载的 $B$ 条带由
+共享内存中连续的 32 个元素组成，天然分布在 32 个不同 bank 中。
+
+\section{占用率考量}
+\label{sec:mm-occupancy}
+
+大 tile 提高算术强度，也会对 SM 资源施压，尤其是保存块级输入 tile 的共享内存，以及
+保存线程级输入条带和输出 tile 的寄存器文件；二者会显著影响 SM 上的线程占用率。
+
+共享内存压力容易缓解。第 \ref{sec:mm-data-reuse} 节推导的算术强度
+$0.5mn/(m+n)$ 与 $k$ 无关，因此减小 $k$ 不会降低算术强度。例如 $m=n=128$ 时可取
+$k=8$，此时 $A_s$、$B_s$ 分别为 $128\times8$ 与 $8\times128$，各占 4 KB，现代
+GPU 上这点共享内存不会限制占用率。
+
+寄存器压力则仍很高。每线程的 $8\times8$ 输出 tile 单独需要 64 个寄存器；对两个
+线程级输入 tile 应用寄存器分块又各需 8 个，总计至少 80 个，尚未计入局部变量与临时值。
+积极展开循环还会增加同时存活的临时值，进一步提高寄存器用量。
+
+因此，SM 寄存器总数成为占用率的主要限制。实践中的高性能矩阵乘法内核往往会用到现代
+GPU 允许的每线程最大 255 个寄存器。典型 SM 只有 64K 寄存器，于是每 SM 最多运行
+256 个线程。这解释了第 \ref{sec:mm-large-tiles} 节为何选择每块 256 线程：每 SM 只能
+执行一个这样的块，相对 SM 最多 2048 线程，占用率仅 12.5\%。
+
+如此低的占用率通常并不理想，但寄存器分块对算术强度的巨大收益使它值得。低占用率有两
+个主要缺点。第一，活跃线程较少，能发出的内存指令也少，可能无法充分利用内存带宽；可让
+每线程使用向量加载、存储来发出更大的访问。第二，可用于容忍长延迟指令的线程变少；可
+积极展开循环，消除长延迟分支并暴露更多互相独立的指令，让编译器拉开长延迟指令及其消费
+者之间的距离。恰当展开和调度后，大部分机器码会成为一串独立的融合乘加，几乎无需停顿
+即可占满 SM 核心。
+
+仍须关注的长延迟操作是内存访问与屏障。算术强度高、受计算限制的内核通常能把内存延迟
+与计算重叠：一个块等待输入 tile 从全局内存进入共享内存时，另一个块可执行展开后的融合
+乘加。但本例每 SM 只能驻留一个块，无法这样重叠。一个块会分成两阶段：加载输入时受内存
+限制，计算核心空闲；执行计算时受计算限制，内存硬件空闲。没有其他块隐藏延迟，就必须
+在软件层面重叠两阶段。下一节介绍软件流水线。
+
+\section{软件流水线}
+\label{sec:mm-software-pipelining}
+
+若单个线程块在每个 SM 上交替经历内存阶段与计算阶段，那么每一阶段都有一类资源闲置，
+无法达到完整性能。软件流水线能把内存阶段与计算阶段重叠，让长延迟内存指令隐藏在计算
+指令后面，更充分利用 GPU。
+
+图 \ref{fig:15-12}(a) 展示未流水化时的指令次序：先加载输入 tile $A_0,B_0$，屏障
+等待所有线程完成装载；再计算它们对输出 tile 的贡献 $C_0$；第二个屏障等所有线程用完
+$A_0,B_0$，随后覆盖共享内存，加载 $A_1,B_1$。加载时浮点 ALU 空闲，计算时内存访问
+硬件空闲。
+
+\begin{figure}[htbp]
+  \centering\small
+  \begin{tabular}{c|l}
+    (a) 原始 & 加载 $A_0B_0$；屏障；计算 $C_0$；屏障；加载 $A_1B_1$；……\\
+    (b) 双缓冲 & 加载当前缓冲；计算当前缓冲与加载下一缓冲之间无假依赖屏障\\
+    (c) 软件流水 & 第 $i$ 轮计算 $A_iB_i$，同时预取 $A_{i+1}B_{i+1}$
+  \end{tabular}
+  \caption{采用双缓冲与软件流水线前后的指令交错}
+  \label{fig:15-12}
+\end{figure}
+
+理想情况下，应把全局内存加载与浮点计算指令交错，使长延迟内存指令后紧跟独立融合乘加，
+让两类硬件持续忙碌。编译器之所以不能交错，是因为加载与计算之间存在屏障。加载后、使用
+前的屏障维持真依赖，不能删除；使用当前 tile 后、覆盖为下一 tile 前的屏障只维持假依赖，
+两项活动本可独立，只因复用同一地址才互斥。
+
+双缓冲用不同共享内存缓冲区保存当前计算 tile 与下一轮加载 tile，消除假依赖以及相应
+屏障；偶数、奇数轮交替使用两套缓冲即可。但待交错的指令仍位于不同循环迭代，编译器无法
+跨轮调度。软件流水线进一步重排循环：第 $i$ 轮一边计算第 $i$ 对 tile，一边加载第
+$i+1$ 对。这样编译器就能交错两类指令。
+
+\begin{figure}[htbp]
+  \centering\small
+  \begin{tabular}{c|cccccc}
+    时间 & 0 & 1 & 2 & 3 & 4 & 5\\\hline
+    (a) 原始 & 加载 0 & 等待 & 计算 0 & 加载 1 & 等待 & 计算 1\\
+    (b) 流水 & 加载 0 & \multicolumn{2}{c}{计算 0 $\parallel$ 加载 1}
+      & \multicolumn{2}{c}{计算 1 $\parallel$ 加载 2} & 计算末 tile
+  \end{tabular}
+  \caption{软件流水线前后的时序示意}
+  \label{fig:15-13}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.96\textwidth}
+  \begin{lstlisting}[language=C++,numbers=left]
+// Pre-fetch first iteration tiles to shared memory
+loadTile(Acurr_s, A, 0, ...);
+loadTile(Bcurr_s, B, 0, ...);
+__syncthreads();
+
+for (unsigned int tile = 0; tile < numTiles - 1; ++tile) {
+    // Compute with current tiles
+    mm(Acurr_s, Bcurr_s, C_r, ...);
+
+    // Pre-fetch next tiles into the other buffers
+    loadTile(Anext_s, A, tile + 1, ...);
+    loadTile(Bnext_s, B, tile + 1, ...);
+    __syncthreads();
+
+    float (*Atmp_s)[bK] = Acurr_s;
+    Acurr_s = Anext_s;
+    Anext_s = Atmp_s;
+    float (*Btmp_s)[bN] = Bcurr_s;
+    Bcurr_s = Bnext_s;
+    Bnext_s = Btmp_s;
+}
+// Compute with the final pair
+mm(Acurr_s, Bcurr_s, C_r, ...);
+  \end{lstlisting}
+  \end{minipage}
+  \caption{采用双缓冲与软件流水线的代码}
+  \label{fig:15-14}
+\end{figure}
+
+代码先把第一对输入 tile 预取到 \code{Acurr_s/Bcurr_s} 并等待完成。每轮用当前缓冲
+执行 \code{mm()}，同时把下一对预取到 \code{Anext_s/Bnext_s}；屏障确认下一对
+全部装好后交换两套缓冲，旧的当前缓冲留给再下一轮复用。循环结束后单独计算最后一对。
+当前计算与下一轮加载使用不同地址，二者之间不需屏障，内联后编译器可以交错
+\code{mm()} 与 \code{loadTile()} 的指令，使浮点 ALU 和内存硬件同时忙碌。
+
+软件流水线依赖编译器估计指令延迟并正确调度，但编译器对运行时条件了解有限。也可把交错
+交给硬件：让部分 warp 专门访问内存、另一些 warp 专门计算，硬件多线程调度会自动交错，
+称为\textbf{warp 专门化（warp specialization）}。还可使用后台在全局内存与共享内存
+之间搬运数据的专用硬件，下一节继续讨论。
+
+\section{专用软件与硬件支持}
+\label{sec:mm-specialized-support}
+
+矩阵乘法在 GPU 计算中非常普遍，硬件厂商通常提供融入本章优化的高性能库。NVIDIA 的
+cuBLAS\cite{nvidia-cublas2025} 实现基础线性代数 BLAS API，包括矩阵乘法；
+cuDNN\cite{chetlur2014cudnn} 提供深度神经网络例程，底层大量使用矩阵乘法；开源
+CUTLASS\cite{nvidia-cutlass2025} 支持在不同层次和尺度上构造矩阵乘法，方便把它嵌入
+更大的内核。较新的 cuTile 等接口允许开发者写数组式代码，由编译器利用张量性质自动应用
+高级优化。实际 GPU 程序通常不从头实现矩阵乘法，但理解这些优化有助于迁移到底层相似的
+其他计算。
+
+GPU 还提供矩阵乘法专用硬件，可由编译器使用、由特殊 API 直接编程，更常见的是通过上述
+库调用。自 Volta 起，部分 NVIDIA GPU 配备张量核心，每个核心用一条指令完成一次小矩阵
+乘法。减少指令数能缓解译码与指令处理吞吐量瓶颈；张量核心还利用先进的 warp 级寄存器
+交换硬件和较低精度浮点单元，获得极高吞吐量。
+
+Hopper 之前，张量核心通过 warp 矩阵乘加（WMMA）指令编程，只能用于单个 warp。Hopper
+引入 warp 组矩阵乘加（WGMMA），让多个 warp 协作完成更大的张量核心乘法。WGMMA 可
+直接从共享内存读取操作数，缓解寄存器压力，并能与其他指令异步执行，减少对编译器调度
+长延迟指令重叠的依赖。Blackwell 又引入张量内存（TMEM），这种片上存储专门保存张量
+核心操作的输入、输出，进一步降低寄存器压力。
+
+张量核心把计算吞吐量大幅提高后，性能可能转而受共享内存和全局内存的数据搬运速度限制。
+除原始带宽外，数据搬运指令的处理开销以及寄存器占用对占用率的影响也很重要。第
+\ref{sec:mm-coalesced-store} 节的向量存储就是有效硬件支持：合适的输出 tile 布局使线程
+用相同指令数写更多数据，降低指令开销并改善合并。但普通向量加载、存储在全局内存与共享
+内存之间搬运时仍要先装进寄存器、再从寄存器存出，既需两条指令又增加寄存器用量。
+
+较新的 NVIDIA GPU 支持 LDGSTS 指令，能让向量数据不经寄存器直接从全局内存进入共享
+内存。一条指令替代两条，降低处理开销；硬件还可在后台异步执行访问，更有效地与计算重叠，
+不必依赖编译器交错指令。NVCC 可以识别“全局内存向量加载到寄存器、紧接着向量存入共享
+内存”的代码序列并自动生成 LDGSTS。程序员也可在内核中调用 libcu++ 的
+\code{cuda::memcpy_async}；实际使用还须遵守数据对齐等要求。
+
+从 Hopper 起，NVIDIA GPU 还提供张量内存加速器（Tensor Memory Accelerator，TMA），
+可在全局内存与共享内存间异步传送完整张量，不使用中间寄存器。它可以看成把 LDGSTS 从
+一维向量推广到多维张量，可通过 \code{cuda::memcpy_async} 使用，也可间接调用使用
+TMA 的 cuBLAS、cuDNN 或 CUTLASS 例程。
+
+\section{小结}
+\label{sec:advanced-mm-summary}
+
+本章把第 6 章的多项优化用于矩阵乘法，逐步得到高级高性能内核。大输出 tile 提高算术
+强度，使内核从内存受限转为计算受限；线程粗化使大 tile 成为可能。解决全局内存带宽
+瓶颈后，又对输入 tile 使用寄存器分块，缓解共享内存访问延迟；重新排列线程到输出数据
+的映射，保证寄存器结果写回全局内存时能够合并；为一个共享内存输入 tile 增加填充列，
+消除 bank 冲突。
+
+大量使用寄存器会造成很低的占用率，本章也给出相应缓解措施：向量加载、存储使少量线程
+仍能发出足够大的访问以利用内存带宽；积极展开循环暴露足够多的独立计算指令，利用浮点
+ALU 吞吐量；软件流水线或 warp 专门化把访问与计算指令交错，使内存延迟与计算重叠。
+
+这些优化已经由 cuBLAS、cuDNN、CUTLASS 等库提供，库还会使用张量核心、张量内存、
+异步复制与张量内存加速器等专用硬件。程序员通常应调用这些高度优化的库，而不必从头
+实现矩阵乘法；不过，矩阵乘法仍是综合展示本书优化技术的极佳案例。
+
+\phantomsection
+\section*{练习}
+\addcontentsline{toc}{section}{练习}
+
+\begin{enumerate}[label=\arabic*.,leftmargin=2.7em]
+  \item 修改图 \ref{fig:15-5} 的设备函数，用向量加载替代标量加载。
+  \item 修改图 \ref{fig:15-7} 的设备函数，用向量存储替代标量存储。
+  \item 按第 \ref{sec:mm-coalesced-store} 节所述的线程级输出 tile 重排方式，重新实现
+  本章的分块矩阵乘法内核。
+\end{enumerate}
+
+\begin{chapterbibliography}{9}
+  \bibitem{nvidia-cublas2025}
+  NVIDIA, cuBLAS, 2025. \url{http://docs.nvidia.com/cuda/cublas}.
+
+  \bibitem{chetlur2014cudnn}
+  S. Chetlur, C. Woolley, P. Vandermersch, J. Cohen, J. Tran, B. Catanzaro,
+  E. Shelhamer, cuDNN: efficient primitives for deep learning,
+  \emph{arXiv preprint arXiv:1410.0759}, 2014.
+
+  \bibitem{nvidia-cutlass2025}
+  NVIDIA, CUTLASS, 2025. \url{https://docs.nvidia.com/cutlass}.
+\end{chapterbibliography}

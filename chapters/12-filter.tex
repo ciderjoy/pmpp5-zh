@@ -1,0 +1,594 @@
+\chapter{过滤与 warp 投票}
+\label{chap:filter}
+
+\setcounter{footnote}{0}
+
+过滤操作会在删除列表中的某些元素之后重新排列数据，从而更有效地利用内存。若把
+删除的元素和保留的元素看成两个子列表，那么过滤可以看作合并操作的逆过程。本章将
+说明如何使用称为 \textbf{warp 投票（warp voting）}的技术，让多个线程的原子操作
+得以合并，从而提高并行过滤实现的速度。我们还会讨论就地执行稳定过滤而非异地执行时
+需要考虑的问题。最后介绍若干实现与优化方式相近的相关模式，例如从有序列表中删除
+重复项，以及在矩阵中添加或删除行、列。
+
+\section{背景}
+\label{sec:filter-background}
+
+过滤（filtering）是指按照给定条件从列表中删除一个或多个指定元素，并压紧列表以
+消除由此形成的空洞。一种典型应用是垃圾回收。应用释放某些对象并归还它们在堆中占用
+的内存块后，堆中可能散布着许多小块可用内存。到某个时刻，我们可能希望把堆中剩余
+对象压紧到连续位置，在堆尾形成一块大得多的可用空间。这样，当应用需要分配大型对象
+时，就有足够的连续内存可供使用。当列表很大时，最好使用许多线程并行搬移元素，以
+缩短执行时间。
+
+过滤可以是\textbf{就地的（in-place）}，也可以是\textbf{异地的（out-of-place）}。
+就地过滤在原列表内压紧保留元素，异地过滤则把它们压紧到一个新列表中。在上述内存
+管理例子中，新建列表意味着必须预留足够容纳整个新堆的内存，这会显著降低内存使用
+效率。然而，把一个元素移到列表中更靠前的位置，可能会覆盖当前占据该位置、但还在
+等待向前搬移的元素。因此，当多个线程共同搬移列表元素时，必须同步这些线程，确保
+任何元素都不会在被读取和搬移之前遭到错误覆盖。
+
+本章首先学习实现异地过滤。数据搜索与检索应用经常用它删除无关条目，生成相关结果
+列表。并行化异地过滤的一般方法，是让多个线程同时把保留元素搬到新列表中。随后，
+我们会介绍建立在第 11 章前缀和模式之上的就地过滤实现技术。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \setlength{\tabcolsep}{2.7pt}
+  \begin{tabular}{c|*{16}{c}}
+    输入&$k_0$&\textbf{$k_1$}&$k_2$&\textbf{$k_3$}&\textbf{$k_4$}&$k_5$&
+      \textbf{$k_6$}&$k_7$&\textbf{$k_8$}&$k_9$&\textbf{$k_{10}$}&
+      \textbf{$k_{11}$}&$k_{12}$&$k_{13}$&\textbf{$k_{14}$}&$k_{15}$
+  \end{tabular}
+  \\[0.45em]
+  \begin{tabular}{c|*{8}{c}}
+    不稳定输出&$k_4$&$k_{10}$&$k_3$&$k_1$&$k_6$&$k_{14}$&$k_{11}$&$k_8$\\
+  \end{tabular}
+  \\[0.75em]
+  \begin{tabular}{c|*{8}{c}}
+    稳定输出&$k_1$&$k_3$&$k_4$&$k_6$&$k_8$&$k_{10}$&$k_{11}$&$k_{14}$\\
+  \end{tabular}
+  \caption{异地过滤模式的不稳定变体与稳定变体}
+  \label{fig:12-1}
+\end{figure}
+
+图 \ref{fig:12-1} 展示了过滤操作的两种变体。按照计算机科学的惯例，本章把被过滤
+列表中的元素称为\textbf{键（key）}。概念示意图中以粗体表示保留项，常规字重表示
+删除项。稳定过滤保留其余各键的原始相对次序，不稳定过滤则不作这一保证。当列表
+无须保持有序时，可以使用不稳定过滤。下面先从不稳定过滤的并行实现开始。
+
+\section{简单的并行不稳定过滤}
+\label{sec:simple-parallel-unstable-filter}
+
+图 \ref{fig:12-2} 给出一个简单的不稳定过滤内核。该内核接收大小为 \code{N} 的
+输入数组，并把它过滤到输出数组。参数 \code{outputSize} 指向全局内存中的计数器，
+该计数器用于保存输出数组的大小，调用内核之前必须初始化为 0。每个线程先确定自己
+负责的输入键下标（第 3 行），检查下标是否越界（第 4 行），再从全局内存加载该下标
+处的键（第 5 行）。随后，线程检查加载的值是否满足过滤条件 \code{cond()}（第 6 行）。
+若满足，线程就以原子方式递增 \code{outputSize} 计数器，在输出数组中为该值分配
+空间（第 7--9 行）。最后，线程把值存入分配到的位置（第 10 行）。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__global__ void filter_kernel(unsigned int* input, unsigned int* output,
+                              unsigned int N, unsigned int* outputSize) {
+  unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
+  if(i < N) {
+    unsigned int val = input[i];
+    if(cond(val)) {
+      cuda::atomic_ref<unsigned int, cuda::thread_scope_device>
+          outputSize_ref(*outputSize);
+      unsigned int j = outputSize_ref.fetch_add(1, cuda::memory_order_relaxed);
+      output[j] = val;
+    }
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{简单的不稳定过滤内核代码}
+  \label{fig:12-2}
+\end{figure}
+
+这个实现产生的是不稳定过滤结果，因为硬件可能按任意次序执行各线程对计数器发起的
+原子操作。因此，每个线程取得的输出数组位置都是任意的，与它的输入键在输入数组中的
+位置无关。
+
+该实现的一个明显瓶颈，是全局内存输出计数器上的原子操作争用。由于所有原子操作都
+作用于同一计数器，硬件会把它们全部串行化，争用因而更加严重。正如第 9 章所学，
+输出争用可以用私有化优化缓解，第 \ref{sec:filter-privatization} 节将讨论这种做法。
+不过，在此之前先介绍另一种降低争用的技术：\textbf{合并原子操作（coalesced atomic
+operations）}。它利用了同一 warp 中的线程对同一个计数器执行原子操作这一事实。
+
+\section{用 warp 级原语合并原子操作}
+\label{sec:filter-coalesced-atomics}
+
+图 \ref{fig:12-2} 的简单不稳定过滤内核中，各原子操作争用同一个输出计数器，造成
+性能瓶颈。当同一 warp 中的线程同时发出原子操作时，这种争用尤为突出，因为这些
+操作必然彼此冲突并被硬件串行化。不过，我们可以利用同一 warp 中线程能够快速协作
+的特性来避免这种情况。与其让 warp 中每个线程独立发出原子操作，不如让这些线程先
+协作计算它们希望把计数器合计增加多少，再由其中一个线程代表其余线程发出一次原子
+操作。我们把合并后的操作称为\textbf{合并原子操作}。它类似于同一 warp 中各线程的
+加载和存储由硬件合并的方式（第 5 章）。
+
+合并原子操作的具体步骤如下。第一，从执行原子操作时处于活动状态的 warp 线程中
+指定一个首领线程。第二，计算所有线程合计需要增加的数值。第三，由首领线程对全局
+计数器执行原子操作，并把取得空间的起始位置广播给其他线程。第四，每个线程确定自己
+应将输出键存入这片空间的哪个偏移位置。这些步骤需要使用特殊的 warp 级原语，其中
+包括第 10 章介绍的洗牌指令，以及本节将介绍的其他原语。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__global__ void filter_kernel(unsigned int* input, unsigned int* output,
+                              unsigned int N, unsigned int* outputSize) {
+  unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
+  if(i < N) {
+    unsigned int val = input[i];
+    if(cond(val)) {
+      unsigned int activeThreads = __activemask();
+      unsigned int j;
+      // Assign a leader thread
+      unsigned int leader = __ffs(activeThreads) - 1;
+      if(laneIdx() == leader) {
+        // Find how many threads are active
+        unsigned int numActive = __popc(activeThreads);
+        // Have the leader perform the atomic operation
+        cuda::atomic_ref<unsigned int, cuda::thread_scope_device>
+            outputSize_ref(*outputSize);
+        j = outputSize_ref.fetch_add(numActive, cuda::memory_order_relaxed);
+      }
+      // Broadcast result to other threads
+      j = __shfl_sync(activeThreads, j, leader);
+      // Find the position of each active thread in the output
+      unsigned int previousThreads = (1 << laneIdx()) - 1;
+      unsigned int previousActiveThreads = activeThreads & previousThreads;
+      unsigned int offset = __popc(previousActiveThreads);
+      // Store the result
+      output[j + offset] = val;
+    }
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{使用合并原子操作的不稳定过滤内核代码}
+  \label{fig:12-3}
+\end{figure}
+
+图 \ref{fig:12-3} 给出了采用合并原子操作的不稳定过滤内核。与图 \ref{fig:12-2}
+的简单实现相比，差异从执行原子操作的第 7 行开始。首先调用
+\code{__activemask()} 原语确定哪些线程处于活动状态。该原语返回一个 32 位整数；
+如果 warp 中第 $i$ 个线程处于活动状态，其中第 $i$ 位就为 1。例如，若进入
+\code{if} 语句的活动线程为 1、2、4 和 5，则 \code{__activemask()} 返回
+\code{00000000000000000000000000110110}。
+
+知道哪些线程活动后，需要从中指定首领线程。一种确定性方法，是选取 warp 内下标最小
+的活动线程。也就是说，需要找出活动掩码中最低有效的置 1 位下标。为此，在活动掩码上
+调用 \code{__ffs()}（Find First Set，查找首个置位）内建函数（第 10 行），它会找到
+掩码中最低有效的置 1 位。\code{__ffs()} 返回的下标额外加 1，因为返回值 0 被保留
+用于表示掩码中没有任何位置 1，所以代码还要从返回值中减去 1。
+
+确定首领线程后，它必须知道 warp 中各线程合计希望把计数器增加多少。在原代码中，
+每个活动线程都把计数器加 1，因此总增量就等于 warp 内活动线程的总数。对活动掩码
+调用 \code{__popc()}（Population Count，置位计数）内建函数，即可统计其中置 1 位
+的数量（第 13 行）。
+
+首领线程知道总增量之后，就以该数值递增全局计数器（第 15--17 行）。返回值保存在
+\code{j} 中，它标志着该 warp 的活动线程将在输出数组中放置各自数值的起始下标。
+随后用洗牌指令把这个值从首领线程传给该 warp 中其他所有活动线程（第 20 行）。
+
+每个活动线程知道 warp 在输出数组中的起始下标之后，还要计算自己相对该下标的偏移。
+第一个活动线程的偏移为 0，第二个为 1，依此类推。换句话说，线程偏移等于 warp 中
+排在它之前的活动线程数。求这个值等价于在活动掩码上执行二进制前缀和操作
+\cite{harris2012prefix}。为计算偏移，每个线程先生成一个表示 warp 中先前线程的掩码：
+warp 内线程 $i$ 生成第 0 位到第 $i-1$ 位均为 1 的掩码。计算 $2^i-1$ 即可得到该掩码
+（第 22 行）。再将先前线程掩码与活动线程掩码相交，得到排在当前线程之前的活动线程
+掩码（第 23 行）。最后，对该掩码调用 \code{__popc()}，返回先前活动线程的数量
+（第 24 行），也就是所需偏移。
+
+偏移确定后，各活动线程把过滤后的值存到起始下标加线程偏移的位置（第 26 行）。
+这里还能看到合并原子操作的另一项好处：除了减少原子操作数之外，它还让 warp 中的
+活动线程把过滤值写入相邻内存位置。因此，这些全局内存存储更有可能被硬件合并。
+
+为了合并原子操作，前面的代码必须执行多项管理 warp 活动线程的操作。为简化这类管理，
+协作组 API 提供了一种特殊的组，称为\textbf{合并组（coalesced group）}。合并组是
+代表一个 warp 中活动线程的协作组。程序员可以按如下方式取得合并组句柄：
+
+\begin{lstlisting}[language=C++]
+coalesced_group activeThreads = coalesced_threads();
+\end{lstlisting}
+
+借助该句柄，可以轻松求出 warp 中的活动线程数，以及某个活动线程相对于其他活动线程
+的下标。warp 内活动线程数就是组大小，即 \code{activeThreads.size()}；活动线程相对
+其他活动线程的下标就是它在组中的秩，即 \code{activeThreads.thread_rank()}。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__global__ void filter_kernel(unsigned int* input, unsigned int* output,
+                              unsigned int N, unsigned int* outputSize) {
+  unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
+  if(i < N) {
+    unsigned int val = input[i];
+    if(cond(val)) {
+      coalesced_group activeThreads = coalesced_threads();
+      unsigned int j;
+      // Assign a leader thread
+      if(activeThreads.thread_rank() == 0) {
+        // Find how many threads are active
+        unsigned int numActive = activeThreads.size();
+        // Have the leader perform the atomic operation
+        cuda::atomic_ref<unsigned int, cuda::thread_scope_device>
+            outputSize_ref(*outputSize);
+        j = outputSize_ref.fetch_add(numActive, cuda::memory_order_relaxed);
+      }
+      // Broadcast result to other threads
+      j = activeThreads.shfl(j, 0);
+      // Find the position of each active thread in the output
+      unsigned int offset = activeThreads.thread_rank();
+      // Store the result
+      output[j + offset] = val;
+    }
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{使用协作组实现合并原子操作的不稳定过滤内核代码}
+  \label{fig:12-4}
+\end{figure}
+
+图 \ref{fig:12-4} 展示了如何用协作组 API 简化图 \ref{fig:12-3}。代码不再调用
+\code{__activemask()} 寻找活动线程，而是声明并初始化一个协作组（图
+\ref{fig:12-4} 第 7 行）；不再用 \code{__ffs()} 指定首领线程，而是把秩为 0 的
+线程指定为首领（第 10 行）；不再用 \code{__popc()} 求活动线程数，而是取得合并组
+的大小（第 12 行）。洗牌指令也通过合并组执行（第 19 行）。最后，不再用位运算求
+线程相对于 warp 中其他活动线程的下标，而是直接取得线程在组中的秩（第 21 行）。
+
+实践中，编译器已经会应用本节讨论的合并原子操作优化，程序员没有必要手动实现它。
+如果 warp 中只有一个线程执行原子操作，也无须应用该优化；当编译器能确定 warp 中
+只有一个线程活动时，确实不会应用它。尽管实际编程不必手动完成这种优化，理解其实现
+仍是很好的练习，因为它自然引出了 warp 投票函数（即 \code{__activemask()}）、
+\code{__ffs()} 和 \code{__popc()} 等内建函数，以及协作组 API 中的合并组。
+程序员还可能遇到其他 warp 投票函数：\code{__all_sync()} 检查 warp 中是否所有
+线程都把某个条件求值为真；\code{__any_sync()} 检查是否至少有一个线程求值为真；
+\code{__ballot_sync()} 则返回一个掩码，指明哪些线程把条件求值为真。
+
+\section{私有化}
+\label{sec:filter-privatization}
+
+第 \ref{sec:filter-coalesced-atomics} 节已经看到，合并原子操作能够减少输出列表计数器
+上的原子操作争用。本节讨论另一种降低计数器争用的优化，即私有化。回忆第 6 章和
+第 9 章，私有化会创建并更新输出数据的私有副本，以减少公共输出数据上的争用，最后
+再把私有副本合并到公共版本中。过滤模式也可以应用同样的优化。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c@{\quad}c@{\quad}c@{\quad}c}
+    \fbox{线程块 0：$k_0$--$k_3$}&\fbox{线程块 1：$k_4$--$k_7$}&
+    \fbox{线程块 2：$k_8$--$k_{11}$}&\fbox{线程块 3：$k_{12}$--$k_{15}$}\\[0.45em]
+    \fbox{$k_3\;k_1$}&\fbox{$k_6\;k_4$}&\fbox{$k_{10}\;k_{11}\;k_8$}&\fbox{$k_{14}$}\\[-0.1em]
+    \multicolumn{4}{c}{\scriptsize 共享内存中的每块私有输出列表与私有计数器}\\[0.35em]
+    \multicolumn{4}{c}{$\searrow\qquad\searrow\qquad\swarrow\qquad\swarrow$}\\[-0.1em]
+    \multicolumn{4}{c}{\fbox{公共输出：$k_6\;k_4\;k_{14}\;k_{10}\;k_{11}\;k_8\;k_3\;k_1$}}
+  \end{tabular}
+  \caption{采用私有化的不稳定过滤}
+  \label{fig:12-5}
+\end{figure}
+
+图 \ref{fig:12-5} 展示了如何把私有化用于过滤模式。我们在共享内存中为每个线程块
+创建输出数组和输出计数器的私有版本。处理输入键时，线程以原子方式更新所属线程块
+的私有计数器，并把过滤后的键放入该块的私有输出数组。所有输入键处理完毕后，块内
+一个线程以原子方式更新公共输出计数器，块内线程再协作把私有输出数组的内容写入公共
+输出数组。私有计数器和私有输出数组放在共享内存中，既降低原子更新计数器的延迟、
+提高其吞吐量，也加快向私有输出数组写入的速度。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__global__ void filter_kernel(unsigned int* input, unsigned int* output,
+                              unsigned int N, unsigned int* outputSize) {
+  // Declare and initialize private output list
+  __shared__ unsigned int output_s[BLOCK_DIM];
+  __shared__ unsigned int outputSize_s;
+  if(threadIdx.x == 0) {
+    outputSize_s = 0;
+  }
+  __syncthreads();
+
+  // Filter in the private lists
+  unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
+  if(i < N) {
+    unsigned int val = input[i];
+    if(cond(val)) {
+      cuda::atomic_ref<unsigned int, cuda::thread_scope_block>
+          outputSize_s_ref(outputSize_s);
+      unsigned int j = outputSize_s_ref.fetch_add(1, cuda::memory_order_relaxed);
+      output_s[j] = val;
+    }
+  }
+  __syncthreads();
+
+  // Update the public counter
+  __shared__ unsigned int j;
+  if(threadIdx.x == 0) {
+    cuda::atomic_ref<unsigned int, cuda::thread_scope_device>
+        outputSize_ref(*outputSize);
+    j = outputSize_ref.fetch_add(outputSize_s, cuda::memory_order_relaxed);
+  }
+  __syncthreads();
+
+  // Write to the public list
+  if(threadIdx.x < outputSize_s) {
+    output[j + threadIdx.x] = output_s[threadIdx.x];
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{采用私有化的不稳定过滤内核代码}
+  \label{fig:12-6}
+\end{figure}
+
+图 \ref{fig:12-6} 给出了采用私有化的不稳定过滤内核。首先，在共享内存中为每个线程
+块声明私有输出列表（第 5 行）和私有计数器（第 6 行）。随后由块内一个线程把私有
+计数器初始化为 0（第 7--9 行）。线程再执行一次屏障同步，确保任何线程开始更新
+计数器之前，初始化已经完成（第 10 行）。
+
+接下来，线程执行过滤操作，但把过滤值放进私有输出列表而非公共输出列表（第 13--22
+行）。这段代码与图 \ref{fig:12-2} 相似，区别在于它使用私有计数器和私有输出列表，
+而不是公共版本。此外，共享内存计数器只由同一块内的线程访问，因此原子引用的作用域
+是 \code{cuda::thread_scope_block}，而非 \code{cuda::thread_scope_device}。
+随后再次执行屏障同步，确保所有线程都已经把元素加入私有输出列表，再把该列表提交到
+公共输出列表（第 23 行）。
+
+下一步是在公共输出列表中为私有输出列表预留空间。块内一个线程以私有输出列表的键数
+为增量，原子更新公共计数器（第 26--31 行）。预留空间的起始下标 \code{j} 放在
+共享内存中，以便块内其他线程访问。另一次屏障同步保证其他线程使用 \code{j} 之前，
+它已经写入共享内存（第 32 行）。
+
+最后一步是把私有输出列表写到公共输出列表。连续线程将写入连续的键，因此代码用线程
+下标从私有输出列表读取，并从 \code{j} 开始写入公共输出列表（第 35--37 行）。与
+合并原子操作类似，私有化除了减少公共计数器争用，还带来另一项收益：连续线程把键
+连续写到全局内存，所以这些存储会被合并。
+
+\section{简单的并行稳定过滤}
+\label{sec:simple-parallel-stable-filter}
+
+现在转向稳定过滤的并行化。在稳定过滤中，过滤后的键在输出列表中保持其输入列表中的
+相对次序。要保留键的次序，线程就不能通过原子递增计数器，把过滤键放进输出列表中的
+任意位置；相反，它必须统计在自己之前有多少输入键被保留，从而确定该键在输出列表中的
+确切位置。当需要从有序列表中删除或提取某些选定元素时，通常使用稳定过滤。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \setlength{\tabcolsep}{2.8pt}
+  \begin{tabular}{c|*{16}{c}}
+    输入&$k_0$&$k_1$&$k_2$&$k_3$&$k_4$&$k_5$&$k_6$&$k_7$&
+      $k_8$&$k_9$&$k_{10}$&$k_{11}$&$k_{12}$&$k_{13}$&$k_{14}$&$k_{15}$\\\hline
+    保留?&0&1&0&1&1&0&1&0&1&0&1&1&0&0&1&0\\
+    偏移&0&0&1&1&2&3&3&4&4&5&5&6&7&7&7&8
+  \end{tabular}
+  \\[0.55em]
+  \fbox{输出：$k_1\;k_3\;k_4\;k_6\;k_8\;k_{10}\;k_{11}\;k_{14}$}
+  \caption{稳定过滤操作的并行化}
+  \label{fig:12-7}
+\end{figure}
+
+图 \ref{fig:12-7} 展示了稳定过滤如何并行化。为输入列表中的每个键启动一个线程。
+每个线程对自己的输入值判断过滤条件，并设置一个 ``保留'' 标志，表示是否应该保留
+该值。接下来，线程必须统计在其之前将有多少键进入输出列表，从而确定自己的键在输出
+列表中的偏移。换句话说，线程要计算所有先前线程的 ``保留'' 值之和。为所有线程求出
+这一数值，正是第 11 章所学的排他扫描操作。还可以利用扫描输入只有 0 和 1 这一事实，
+按第 \ref{sec:filter-coalesced-atomics} 节的方法用位操作对短区段执行二进制前缀和
+\cite{harris2012prefix}，从而优化前缀和。确定自己的键在输出列表中的偏移后，线程
+便把该键存入输出列表。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__global__ void filter_kernel(unsigned int* input, unsigned int* output,
+                              unsigned int N, unsigned int* outputSize) {
+  unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
+  unsigned int val = input[i];
+  unsigned int keep = cond(val) ? 1 : 0;
+  unsigned int offset = gridExclusiveScan(keep);
+  if(keep) {
+    output[offset] = val;
+  }
+  if(i == N - 1) {
+    *outputSize = offset + keep;
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{简单的稳定过滤内核代码}
+  \label{fig:12-8}
+\end{figure}
+
+图 \ref{fig:12-8} 给出一个简单的稳定过滤内核。首先，每个线程确定自己负责的键下标
+（第 3 行），并从全局内存加载它（第 4 行）。随后，线程对该值判断过滤条件；条件为
+真就把整数 \code{keep} 设为 1，否则设为 0（第 5 行）。然后，网格中的所有线程对
+\code{keep} 执行网格范围的排他扫描，取得该键在输出列表中的偏移（第 6 行）。这个
+网格级排他扫描按照第 11 章介绍的单内核扫描实现，在一个内核内完成。需要保留键的线程
+把键写到扫描结果给出的输出列表偏移处（第 7--9 行）。最后，网格中的最后一个线程
+写出结果列表的总大小（第 10--12 行）。
+
+\noindent\textbf{译者注：}与底本一致，图 \ref{fig:12-8} 直接在边界检查之前读取
+\code{input[i]}，其正确执行隐含要求启动的线程总数恰好为 \code{N}，或者调用方已为
+多余线程提供可安全读取的填充元素。若按通常方式把网格大小向上取整，则应先检查
+\code{i < N}，同时保证网格级扫描中的所有参与线程遵守相同的同步约定。
+
+\section{用共享内存与线程粗化改进内存合并}
+\label{sec:filter-shared-memory-coarsening}
+
+第 \ref{sec:simple-parallel-stable-filter} 节给出的简单稳定过滤实现有一项低效之处：
+向全局内存存储过滤键时，并非块内所有线程都会参与。写入全局内存相邻位置的键可能由
+不同 warp 中的线程写出，而两个活跃线程之间夹着许多不活动线程，因而错失内存合并
+机会。可以先在共享内存中收集过滤键，再把它们作为一个连续块从共享内存写入全局内存，
+从而重新获得这些机会。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c@{\quad}c@{\quad}c@{\quad}c}
+    \fbox{块 0：$k_0$--$k_3$}&\fbox{块 1：$k_4$--$k_7$}&
+    \fbox{块 2：$k_8$--$k_{11}$}&\fbox{块 3：$k_{12}$--$k_{15}$}\\[0.45em]
+    \fbox{$k_1\;k_3$}&\fbox{$k_4\;k_6$}&\fbox{$k_8\;k_{10}\;k_{11}$}&\fbox{$k_{14}$}\\[-0.1em]
+    \multicolumn{4}{c}{\scriptsize 在共享内存中按块压紧}\\[0.35em]
+    \multicolumn{4}{c}{$\downarrow\quad$由连续线程按连续区段写出$\quad\downarrow$}\\[0.25em]
+    \multicolumn{4}{c}{\fbox{$k_1\;k_3\;k_4\;k_6\;k_8\;k_{10}\;k_{11}\;k_{14}$}}
+  \end{tabular}
+  \caption{使用共享内存改进内存合并}
+  \label{fig:12-9}
+\end{figure}
+
+图 \ref{fig:12-9} 展示了这种私有化方式。相邻输出键由连续线程从共享内存写到全局
+内存，增加了同一 warp 写出的相邻键数，从而增加内存合并机会。
+
+还可以应用线程粗化进一步改进内存合并。图 \ref{fig:12-10} 展示了它在稳定过滤中的
+用法。分给每个线程块过滤的键数多于块内线程数，于是从共享内存写入全局内存的连续
+输出区段更少、每段更大。更少且更大的区段暴露出更多内存合并机会，进一步提升性能。
+可以把细粒度并行化的代价理解为：它不得不把输出列表切分成更小的区段，从而影响内存
+合并。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c@{\qquad}c}
+    \fbox{块 0：$k_0$--$k_7$}&\fbox{块 1：$k_8$--$k_{15}$}\\[0.45em]
+    \fbox{$k_1\;k_3\;k_4\;k_6$}&\fbox{$k_8\;k_{10}\;k_{11}\;k_{14}$}\\[-0.1em]
+    \multicolumn{2}{c}{\scriptsize 每块 4 个线程，每线程负责 2 个键；共享内存内压紧}\\[0.35em]
+    \multicolumn{2}{c}{$\downarrow\qquad$两个较大的连续写入区段$\qquad\downarrow$}\\[0.25em]
+    \multicolumn{2}{c}{\fbox{$k_1\;k_3\;k_4\;k_6\;k_8\;k_{10}\;k_{11}\;k_{14}$}}
+  \end{tabular}
+  \caption{用线程粗化进一步改进内存合并；本玩具示例采用两个线程块，每块四个线程}
+  \label{fig:12-10}
+\end{figure}
+
+线程粗化可能更重要的收益，是它对扫描操作的影响。扫描是稳定过滤过程中代价最高的
+部分。回忆第 11 章，扫描能从线程粗化中显著受益，因为粗化提高了工作效率，并减少
+同步开销。对过滤操作进行粗化，也会自然地粗化其中的扫描操作，从而显著提高整个稳定
+过滤的性能。
+
+把排他扫描、私有化和线程粗化结合起来的稳定过滤详细实现，留作练习。
+
+\section{就地稳定过滤}
+\label{sec:in-place-stable-filter}
+
+许多场合需要就地执行过滤，即让过滤输出占据与输入相同的内存数组，而不是单独的数组。
+当被过滤数组相对于 GPU 全局内存容量非常大时，往往更适合就地操作。例如，在第
+\ref{sec:filter-background} 节的堆对象释放示例中，全局内存可能没有足够空间容纳
+一个新的过滤后堆，此时就不希望另外分配数组来保存输出键。
+
+就地过滤时，必须小心：在读取原本占据某个内存位置的键之前，不能先把任何输出键写到
+这个位置。例如，在图 \ref{fig:12-10} 中，若输入和输出数组相同，$k_3$ 将占据
+$k_1$ 原来所在的位置。因此，必须保证线程 1 先读完 $k_1$，线程 3 才能写入 $k_3$。
+只要在线程块读取完所有输入值与开始写输出值之间执行一次屏障同步，就能轻松保证这种
+次序。\footnote{底本此处写作“线程 1 读完 $k_0$”，但根据图中的键与位置关系，应为
+“线程 1 读完 $k_1$”；译稿按依赖关系更正。}
+
+更复杂的情形是，读写同一位置的线程分属不同线程块。例如，若图 \ref{fig:12-10}
+中的过滤就地执行，则 $k_8$ 将占据位置 4，也就是 $k_4$ 原来所在的位置，而读取和
+写入这些键的线程位于不同线程块。因此，必须确保第二个块在第一个块读完自己的值之前
+不写任何值。一般而言，需要保证某个块写入任何值之前，所有排在它之前的块都已经读完
+自己的值。设备范围扫描操作其实已经强制了这一顺序。因此，前面写出的代码在要求就地
+过滤时同样有效。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{*{4}{c@{\hspace{1.4em}}}c}
+    \textbf{块 0}&\textbf{块 1}&\textbf{块 2}&$\cdots$&\textbf{块 $N-1$}\\[0.25em]
+    \fbox{读输入$_0$}&\fbox{读输入$_1$}&\fbox{读输入$_2$}&$\cdots$&\fbox{读输入$_{N-1}$}\\
+    $\downarrow$&$\downarrow$&$\downarrow$&&$\downarrow$\\
+    \fbox{扫描$_0$}$\rightarrow$&\fbox{扫描$_1$}$\rightarrow$&\fbox{扫描$_2$}$\rightarrow$&$\cdots\rightarrow$&\fbox{扫描$_{N-1}$}\\
+    $\downarrow$&$\downarrow$&$\downarrow$&&$\downarrow$\\
+    \fbox{写输出$_0$}&\fbox{写输出$_1$}&\fbox{写输出$_2$}&$\cdots$&\fbox{写输出$_{N-1}$}
+  \end{tabular}
+  \caption{稳定过滤的依赖关系图}
+  \label{fig:12-11}
+\end{figure}
+
+为说明就地过滤所需次序已经得到保证，图 \ref{fig:12-11} 展示了稳定过滤实现中不同
+操作之间的依赖。目标顺序是：对任意满足 $j>i$ 的线程块对 $i$ 和 $j$，$i$ 的读取
+必须先于 $j$ 的写入。从图中可以看到，该条件成立：$i$ 的读取先于 $i$ 的扫描；由于
+$j>i$，$i$ 的扫描先于 $j$ 的扫描；而 $j$ 的扫描又先于 $j$ 的写入。
+
+把排他扫描的单内核实现改造成就地稳定过滤的单内核实现，留作练习。
+
+\section{相关模式}
+\label{sec:filter-related-patterns}
+
+稳定过滤属于一个更一般的模式类别：数据需要沿一个方向移动。本节回顾其中若干模式；
+需要注意，为稳定过滤讨论的许多优化同样适用于这些相关模式。
+
+从有序列表删除重复键与稳定过滤很相似。它可以看作过滤模式的一个特例，其中保留某个
+键的条件是该键不等于前一个键。
+
+另一个类似模式是从矩阵中删除行和/或列。它与过滤相似，都需要从输入数组删除特定键；
+区别在于，键是根据下标而非数值删除的。因此，线程可以用解析方式直接确定各键在输出
+中的位置，无须执行扫描。不过，如果操作就地执行，仍须保证较早的线程块先读完输入值，
+较晚的线程块才能写输出值。此时，可以采用单遍扫描中的单向同步，只用它保证线程块间
+的次序，而不必传播部分和。
+
+还有一种类似模式，是向矩阵添加行和/或列。这种模式经常出现在为了改进内存对齐而调整
+矩阵布局时。与删除行、列一样，它也能用解析方式确定键应搬到何处，无须执行扫描。
+不过有一个明显区别：这些键在数组中向外移动，而不是向内移动。若操作为异地执行，
+这种区别并不重要；若就地执行，它就会影响同步方向。由于键向外移动，较早的线程块会
+写入先前由较晚线程块所读取的键占据的内存位置。因此，必须确保较晚的线程块先读完其
+输入值，较早的线程块才能写输出值。此时，单向同步按相反方向执行，即从处理最后一组
+键的线程块向处理第一组键的线程块推进。
+
+矩阵和张量转置等更复杂的就地数据移动模式，可以参阅相关文献
+\cite{sung2014transpose}。
+
+\section{小结}
+\label{sec:filter-summary}
+
+本章讨论了稳定过滤与不稳定过滤的并行实现和优化。不稳定异地过滤以原子操作为基础，
+优化重点是尽量减少输出计数器上的原子操作数，并合并对输出的写入。稳定异地过滤以扫描
+操作为基础，可以建立在第 11 章的单遍扫描内核之上。实践中，Thrust
+\cite{bell2012thrust-filter} 和 CUB\cite{nvidia-cub-filter} 库已经提供过滤实现。
+掌握不同类型过滤的基本原理与优化之后，读者就能为具体应用选择合适的 Thrust 或 CUB
+API 函数。
+
+\phantomsection
+\section*{练习}
+\addcontentsline{toc}{section}{练习}
+
+\begin{enumerate}[label=\arabic*.,leftmargin=2.7em]
+  \item 使用三个独立内核实现带排他扫描的稳定过滤：条件求值、排他扫描和输出生成。
+
+  \item 把过滤代码加入单遍扫描内核，以单个内核实现稳定过滤。单内核实现有哪些主要
+  优点？
+
+  \item 对练习 2 的内核应用私有化。
+
+  \item 对练习 3 的内核应用线程粗化。
+\end{enumerate}
+
+\begin{chapterbibliography}{9}
+  \bibitem{harris2012prefix}
+  M. Harris, M. Garland, Optimizing parallel prefix operations for the Fermi
+  architecture, in: \emph{GPU Computing Gems Jade Edition}, Elsevier, 2012,
+  pp. 29--38.
+
+  \bibitem{sung2014transpose}
+  I.-J. Sung, J. G\'omez-Luna, J.M. Gonz\'alez-Linares, N. Guil, W.-M.W. Hwu,
+  In-place transposition of rectangular matrices on accelerators,
+  \emph{ACM SIGPLAN Notices} 49 (8) (2014) 207--218.
+
+  \bibitem{bell2012thrust-filter}
+  N. Bell, J. Hoberock, Thrust: a productivity-oriented library for CUDA,
+  in: \emph{GPU Computing Gems Jade Edition}, Elsevier, 2012, pp. 359--371.
+
+  \bibitem{nvidia-cub-filter}
+  NVIDIA, CUB, 2025.
+  \url{https://nvidia.github.io/cccl/cub/index.html}.
+\end{chapterbibliography}

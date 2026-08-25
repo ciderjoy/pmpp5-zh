@@ -1,0 +1,1031 @@
+\chapter{归并与动态输入数据识别}
+\label{chap:merge}
+
+\setcounter{footnote}{0}
+
+\begin{center}
+\small 李文彰（Li-Wen Chang）与吕杰（Jie Lv）对本章亦有特别贡献
+\end{center}
+
+本章介绍的下一个并行模式是\textbf{有序归并（ordered merge）}：它接收两个有序
+列表，生成一个合并后的有序列表。下一章介绍的排序算法会把有序归并
+作为基本构件；现代 MapReduce 框架也以归并为基础。本章给出一种并行有序归并算法，
+其中每个线程的输入数据由运行时动态确定。动态数据访问使得利用局部性和分块技术提高
+内存访问效率与性能更具挑战。动态识别输入数据的原理同样适用于集合求交、集合并集等
+重要计算。我们将逐步引入更精细的缓冲区管理方案，使有序归并以及其他动态确定输入的
+操作达到越来越高的内存访问效率。
+
+\section{背景}
+\label{sec:merge-background}
+
+有序归并函数接收两个有序列表 $A$ 和 $B$，把它们归并成一个有序列表 $C$。本章假定
+有序列表存放在数组中，并且数组中的每个元素都有一个键。键上定义了以 $\leq$ 表示的
+次序关系。例如，键可以只是整数值，而 $\leq$ 就是整数间通常的小于等于关系。最简单
+时，元素本身就只有键。
+
+设元素 $e_1$ 和 $e_2$ 的键分别为 $k_1$ 和 $k_2$。在按 $\leq$ 排列的有序列表中，
+若 $e_1$ 位于 $e_2$ 之前，则 $k_1\leq k_2$。基于次序关系 $R$ 的归并函数接收两个
+分别含 $m$、$n$ 个元素的有序输入数组 $A$、$B$，其中 $m$ 与 $n$ 不必相等。两个数组
+都按 $R$ 排序；函数生成含 $m+n$ 个元素的输出数组 $C$。$C$ 包含 $A$、$B$ 的全部
+输入元素，并按 $R$ 排序。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c@{\quad}*{9}{c}}
+    $A$ & 1 & 5 & 7 & 9 & 11 \\
+    $B$ & 7 & 10$_1$ & 10$_2$ & 12 \\
+    \multicolumn{10}{c}{$\Downarrow$ 按数值稳定归并 $\Downarrow$}\\[0.2em]
+    $C$ & 1 & 5 & 7$_A$ & 7$_B$ & 9 & 10$_1$ & 10$_2$ & 11 & 12
+  \end{tabular}
+  \caption{归并操作示例}
+  \label{fig:13-1}
+\end{figure}
+
+图 \ref{fig:13-1} 展示了采用通常数值次序关系的简单归并。$A$ 有 5 个元素
+（$m=5$），$B$ 有 4 个元素（$n=4$）。归并函数用二者的全部元素生成含 9 个元素的
+$C$，并使这些元素保持有序。图中的对应关系说明 $A$、$B$ 的元素应放到 $C$ 的什么
+位置。
+
+当 $A$ 中某元素与 $B$ 中某元素的数值相等时，可能要求也可能不要求 $A$ 的元素先在
+输出列表 $C$ 中出现。这一要求称为有序归并操作的\textbf{稳定性（stability）}。一般
+而言，如果键值相等的元素在输出中的相对次序与它们在输入中的次序相同，排序操作就是
+稳定的。图 \ref{fig:13-1} 的例子同时展示了单个输入列表内部以及不同输入列表之间的
+稳定性。例如，$B$ 中两个值为 10 的元素复制到 $C$ 后仍保持原有次序，这体现了输入
+列表内部的稳定性；$A$ 中值为 7 的元素先于 $B$ 中同值元素进入 $C$，则体现了输入
+列表之间的稳定性。稳定性使排序操作能够保留当前排序键未表达的既有次序。例如，列表
+$A$、$B$ 可能在按当前归并键排序之前，已经按另一个键排过序；稳定归并能够保留先前
+步骤完成的排序工作。
+
+归并操作是归并排序的核心；归并排序是一种重要而且适合并行化的排序算法。第 14 章将
+看到，并行归并排序把输入列表划成多个区段，分给并行线程；线程先分别对区段排序，再
+协同归并排好序的区段。这种分治方法使排序能够高效并行化。
+
+在 Hadoop 等现代 MapReduce 分布式计算框架中，计算会分散到数量庞大的计算结点，
+reduce 过程再把各结点的结果组装为最终结果。许多应用要求结果按某种次序关系排列，
+通常会用归约树形式的归并操作组装这些结果。因此，高效归并对这类框架的效率至关重要。
+
+\section{顺序归并算法}
+\label{sec:sequential-merge}
+
+归并操作可以用直观的顺序算法实现。图 \ref{fig:13-2} 给出了一个顺序归并函数。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.9\textwidth}
+  \begin{lstlisting}[language=C++,numbers=left]
+void merge_sequential(int* A, int m, int* B, int n, int* C) {
+    int i = 0;  // A 的下标
+    int j = 0;  // B 的下标
+    int k = 0;  // C 的下标
+    while ((i < m) && (j < n)) {  // 处理 A[] 和 B[] 的开头部分
+        if (A[i] <= B[j]) {
+            C[k++] = A[i++];
+        } else {
+            C[k++] = B[j++];
+        }
+    }
+    if (i == m) {                 // A[] 已用完，处理 B[] 的剩余部分
+        while (j < n) {
+            C[k++] = B[j++];
+        }
+    } else {                      // B[] 已用完，处理 A[] 的剩余部分
+        while (i < m) {
+            C[k++] = A[i++];
+        }
+    }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{顺序归并函数}
+  \label{fig:13-2}
+\end{figure}
+
+图 \ref{fig:13-2} 的顺序函数分为两个主要部分。第一部分是第 5 行的 while 循环，
+它按顺序访问 $A$、$B$ 的元素，从 $A[0]$ 和 $B[0]$ 开始。每次迭代填充输出数组 $C$
+的一个位置，从 $A$ 或 $B$ 中选择一个元素（第 6--10 行）。变量 $i$、$j$ 标识当前
+考虑的 $A$、$B$ 元素，首次进入循环时二者均为 0；变量 $k$ 标识 $C$ 中当前要填的
+位置。每次迭代中，如果 $A[i]\leq B[j]$，就把 $A[i]$ 赋给 $C[k]$，随后递增 $i$、
+$k$；否则把 $B[j]$ 赋给 $C[k]$，随后递增 $j$、$k$。
+
+访问到 $A$ 或 $B$ 的末尾时，程序退出 while 循环，进入右半部分。如果 $i=m$，说明
+$A$ 已全部访问，于是把 $B$ 的剩余元素复制到 $C$ 的剩余位置（第 12--15 行）；否则
+是 $B$ 已全部访问，于是复制 $A$ 的剩余元素（第 16--19 行）。为保证正确性其实无须
+if--else：可以让两个 while 循环都跟在第一个 while 循环之后，因为其中只有与未耗尽
+数组对应的循环会执行。这里保留 if--else 是为了让代码更直观。
+
+可以用图 \ref{fig:13-1} 的例子说明其执行。主 while 循环的前三次（第 0--2 次）
+迭代分别把 $A[0]$、$A[1]$、$B[0]$ 赋给 $C[0]$、$C[1]$、$C[2]$。执行到第 5 次
+迭代结束后，列表 $A$ 已全部访问，循环退出。此时 $C$ 的 6 个位置已由 $A[0]$ 至
+$A[4]$ 以及 $B[0]$ 填好。if 结构真分支中的循环把 $B[1]$ 至 $B[3]$ 复制到 $C$
+的剩余位置。
+
+顺序归并函数把 $A$、$B$ 的每个输入元素访问一次，也向 $C$ 的每个位置写入一次。
+它的算法复杂度为 $O(m+n)$，执行时间与待归并元素总数成线性关系。
+
+\section{一种并行化方法}
+\label{sec:parallel-merge-approach}
+
+Siebert 等人\cite{siebert2012merge}提出了一种并行化归并的方法。每个线程首先确定自己
+要生成的输出位置范围（输出区间），再把它作为\textbf{协同秩函数（co-rank function）}
+的输入，识别为生成该输出区间而需归并的相应输入区间。输入、输出区间一旦确定，各线程
+即可独立访问自己的两个输入子数组和一个输出子数组，并分别在自己的子数组上调用顺序
+归并函数，从而并行完成归并。显然，这种方法的关键在于协同秩函数，下面先对它形式化。
+
+设两个输入数组 $A$、$B$ 分别含 $m$、$n$ 个元素，而且都按某种次序关系排序；数组下标
+从 0 开始。设 $C$ 是归并 $A$、$B$ 得到的有序输出数组，显然它有 $m+n$ 个元素。可以
+得到如下观察。
+
+\noindent\textbf{观察 1。} 对任意满足 $0\leq k<m+n$ 的 $k$，归并过程中或者存在
+满足 $0\leq i<m$ 的 $i$，使 $C[k]$ 的值来自 $A[i]$（情形 1）；或者存在满足
+$0\leq j<n$ 的 $j$，使 $C[k]$ 的值来自 $B[j]$（情形 2）。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c@{\hspace{3em}}c}
+    \begin{tabular}{c}
+      $A=[1,5,8,\boxed{9},11]$\quad $B=[7,\boxed{10},10,12]$\\
+      $C=[1,5,7,8,\boxed{9},10,10,11,12]$\\
+      $k=4,\ i=3,\ j=k-i=1$\\[0.2em]
+      (a) $C[k]$ 来自 $A[i]$
+    \end{tabular}
+    &
+    \begin{tabular}{c}
+      $A=[1,5,7,8,9,\boxed{11}]$\quad $B=[7,\boxed{10},10,12]$\\
+      $C=[1,5,7,7,8,9,\boxed{10},10,11,12]$\\
+      $k=6,\ j=1,\ i=k-j=5$\\[0.2em]
+      (b) $C[k]$ 来自 $B[j]$
+    \end{tabular}
+  \end{tabular}
+  \caption{观察 1 的两种情形}
+  \label{fig:13-3}
+\end{figure}
+
+图 \ref{fig:13-3} 展示了观察 1 的两种情形。第一种情形中，所讨论的 $C$ 元素来自
+$A$。例如图 \ref{fig:13-3}(a) 中，值为 9 的 $C[4]$ 来自 $A[3]$，所以 $k=4$、
+$i=3$。$C[4]$ 的前缀子数组，即先于它的 4 个元素 $C[0]$ 至 $C[3]$，由 $A[3]$
+的前缀 $A[0]$ 至 $A[2]$（3 个元素）和 $B[1]$ 的前缀 $B[0]$（$4-3=1$ 个元素）
+归并而成。一般来说，含 $k$ 个元素的 $C[0]$ 至 $C[k-1]$ 是含 $i$ 个元素的
+$A[0]$ 至 $A[i-1]$ 与含 $k-i$ 个元素的 $B[0]$ 至 $B[k-i-1]$ 的归并结果。
+
+第二种情形中，$C$ 元素来自 $B$。例如图 \ref{fig:13-3}(b) 中，$C[6]$ 来自 $B[1]$，
+所以 $k=6$、$j=1$。$C[6]$ 的前缀 $C[0]$ 至 $C[5]$ 由 $A[5]$ 的前缀
+$A[0]$ 至 $A[4]$（5 个元素）和 $B[1]$ 的前缀 $B[0]$（$6-5=1$ 个元素）归并而成。
+一般来说，$C[0]$ 至 $C[k-1]$ 是含 $k-j$ 个元素的 $A[0]$ 至 $A[k-j-1]$ 与含 $j$
+个元素的 $B[0]$ 至 $B[j-1]$ 的归并结果。
+
+第一种情形先找到 $i$，再令 $j=k-i$；第二种情形先找到 $j$，再令 $i=k-j$。利用二者
+的对称性，可将其概括为下面的观察。
+
+\noindent\textbf{观察 2。} 对任意满足 $0\leq k\leq m+n$ 的 $k$，都能找到 $i$、$j$，
+使得 $k=i+j$、$0\leq i\leq m$、$0\leq j\leq n$，并且 $C[0]$ 至 $C[k-1]$ 是
+$A[0]$ 至 $A[i-1]$ 与 $B[0]$ 至 $B[j-1]$ 的归并结果。
+
+Siebert 等人还证明，为产生长度为 $k$ 的 $C$ 前缀子数组而定义 $A$、$B$ 前缀子数组的
+$i$、$j$ 是唯一的。元素 $C[k]$ 的下标 $k$ 称为它的\textbf{秩（rank）}，唯一的下标
+$i$、$j$ 称为它的\textbf{协同秩（co-ranks）}。例如图 \ref{fig:13-3}(a) 中，$C[4]$
+的秩和两个协同秩为 4、3、1；另一个例子中，$C[6]$ 的秩和协同秩为 6、5、1。
+
+协同秩概念提供了并行化归并函数的途径。我们可以把输出数组划成子数组，以此在线程间
+划分工作，并让每个线程生成一个子数组。分配完成后，各线程要生成的输出元素之秩便已
+确定。线程再用协同秩函数找出需要归并到其输出子数组中的两个输入子数组。
+
+归并函数与此前模式在并行化上的主要区别是：不能通过简单的下标计算确定各线程要用的
+输入数据范围。线程所用输入元素的范围取决于输入的实际值，这使并行归并成为既有趣又
+颇具挑战的并行计算模式。
+
+\section{协同秩函数的实现}
+\label{sec:co-rank-implementation}
+
+协同秩函数接收输出数组 $C$ 中某个元素的秩 $k$ 以及两个输入数组 $A$、$B$ 的信息，
+返回对应输入数组 $A$ 中的协同秩 $i$。函数签名如下：
+
+\begin{lstlisting}[language=C++,numbers=none]
+int co_rank(int k, int* A, int m, int* B, int n)
+\end{lstlisting}
+
+其中 $k$ 是所讨论 $C$ 元素的秩，$A$、$B$ 分别指向两个输入数组的首元素，$m$、$n$
+分别是它们的长度；返回值 $i$ 是 $k$ 在 $A$ 中的协同秩。调用者可再由 $j=k-i$ 得到
+$k$ 在 $B$ 中的协同秩。
+
+研究实现细节之前，先看并行归并函数如何使用协同秩函数。图 \ref{fig:13-4} 用两个线程
+说明这一过程：线程 0 生成 $C[0]$ 至 $C[3]$，线程 1 生成 $C[4]$ 至 $C[8]$。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c}
+    $A=[\underbrace{1,5,8}_{\text{线程 0}}\mid
+       \underbrace{9,11}_{\text{线程 1}}]$\qquad
+    $B=[\underbrace{7}_{\text{线程 0}}\mid
+       \underbrace{10,10,12}_{\text{线程 1}}]$\\[0.35em]
+    $C=[\underbrace{1,5,7,8}_{k_1=4}\mid
+       \underbrace{9,10,10,11,12}_{k_2=9}]$\\[0.35em]
+    线程 1：$(i_1,j_1)=(3,1)$，$(i_2,j_2)=(5,4)$
+  \end{tabular}
+  \caption{协同秩函数的执行示例}
+  \label{fig:13-4}
+\end{figure}
+
+直观上，每个线程调用协同秩函数，求出要归并到分配给自己的 $C$ 子数组中的 $A$、$B$
+子数组起始位置。例如，线程 1 以参数 $(4,A,5,B,4)$ 调用协同秩函数，目标是为秩
+$k_1=4$ 找到协同秩 $i_1=3$、$j_1=1$。也就是说，从 $C[4]$ 开始的子数组应由从
+$A[3]$ 和 $B[1]$ 开始的子数组归并而成。我们要从 $A$、$B$ 中找出总共 4 个元素，
+填充线程 1 开始归并位置之前的 4 个输出元素。观察图可知，$i_1=3$、$j_1=1$ 正好满足：
+线程 0 取 $A[0]$ 至 $A[2]$ 和 $B[0]$，为线程 1 留下从值为 9 的 $A[3]$ 和值为 10
+的 $B[1]$ 开始的部分。
+
+若把 $i_1$ 改为 2，为使线程 1 之前仍有 4 个元素，就必须令 $j_1=2$。然而这样会把值
+为 10 的 $B[1]$ 放入线程 0 的元素，而线程 1 的元素中却含值为 8 的 $A[2]$，所得 $C$
+便不再有序。反之，若令 $i_1=4$，则必须令 $j_1=0$；这样会把值为 9 的 $A[3]$ 放入
+线程 0，却把值为 7 的 $B[0]$ 错误地放入线程 1。这两个例子启发了一种快速确定协同秩
+的搜索算法。
+
+除了输入区段起点，线程 1 还需知道它们在哪里结束。因此，它再次调用协同秩函数，参数为
+\begin{center}
+$(9,A,5,B,4)$。
+\end{center}
+图 \ref{fig:13-4} 表明，应得到 $i_2=5$、$j_2=4$。由于 $C[9]$ 已越过
+$C$ 的最后一个元素，若要从 $C[9]$ 开始生成子数组，$A$、$B$ 的全部元素都应已耗尽。
+一般而言，线程 $t$ 使用的输入子数组由线程 $t$ 与线程 $t+1$ 的协同秩界定：
+\[
+  A[i_t\ldots i_{t+1}-1],\qquad B[j_t\ldots j_{t+1}-1].
+\]
+
+协同秩函数本质上是搜索操作。两个输入数组都已排序，因此可以采用二分搜索，甚至更高
+基数的搜索，使搜索计算复杂度达到 $O(\log N)$。图 \ref{fig:13-5} 给出了基于二分搜索
+的协同秩函数。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.92\textwidth}
+  \begin{lstlisting}[language=C++,numbers=left]
+int co_rank(int k, int* A, int m, int* B, int n) {
+    int i = k < m ? k : m;                 // i = min(k,m)
+    int j = k - i;
+    int i_low = 0 > (k-n) ? 0 : k-n;       // i_low = max(0,k-n)
+    int j_low = 0 > (k-m) ? 0 : k-m;       // j_low = max(0,k-m)
+    int delta;
+    bool active = true;
+    while (active) {
+        if (i > 0 && j < n && A[i-1] > B[j]) {
+            delta = ((i - i_low + 1) >> 1); // ceil((i-i_low)/2)
+            j_low = j;
+            j = j + delta;
+            i = i - delta;
+        } else if (j > 0 && i < m && B[j-1] >= A[i]) {
+            delta = ((j - j_low + 1) >> 1);
+            i_low = i;
+            i = i + delta;
+            j = j - delta;
+        } else {
+            active = false;
+        }
+    }
+    return i;
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{基于二分搜索的协同秩函数}
+  \label{fig:13-5}
+\end{figure}
+
+函数用两对标记变量界定当前考虑的 $A$、$B$ 下标范围。$i$、$j$ 是本轮二分搜索考虑的
+候选协同秩，$i_{\rm low}$、$j_{\rm low}$ 是函数可能给出的最小协同秩。第 2 行把 $i$
+初始化为最大可能值：若 $k>m$，令 $i=m$，因为 $A$ 中的协同秩不能大于数组长度；否则
+令 $i=k$，因为 $i$ 不能大于 $k$。第 3 行令 $j=k-i$。整个执行过程中，函数始终保持
+重要不变量 $i+j=k$。
+
+$i_{\rm low}$、$j_{\rm low}$ 的初始化（第 4、5 行）还需解释。它们能缩小搜索范围、
+加快搜索。从功能上说，可以把二者都置零，让后续执行逐步提高；$k<m$ 且 $k<n$ 时确实
+如此。然而，当 $k>n$ 时，$i$ 不可能小于 $k-n$，因为 $C[k]$ 的前缀最多只能有 $n$
+个元素来自 $B$，至少必须有 $k-n$ 个元素来自 $A$。所以不妨直接令
+$i_{\rm low}=k-n$。同理，$j_{\rm low}$ 不能小于 $k-m$，这是归并中必须取自 $B$ 的
+最少元素数，也是最终协同秩 $j$ 的下界。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c}
+    $A=[1,7,8,9,11]$\qquad $B=[7,10,10,12]$\\
+    $C=[\underbrace{1,7,7}_{T_0}\mid\underbrace{8,9,11}_{T_1}\mid
+       \underbrace{10,10,12}_{T_2}]$\\[0.3em]
+    线程 1 求 $k=3$ 的协同秩：初值 $(i,j)=(3,0)$，
+    搜索范围 $i\in[0,3]$、$j\in[0,0]$
+  \end{tabular}
+  \caption{线程 1 的协同秩函数示例：第 0 次迭代}
+  \label{fig:13-6}
+\end{figure}
+
+图 \ref{fig:13-6} 假定用三个线程把 $A$、$B$ 归并为 $C$，每个线程负责三个输出元素。
+先追踪线程 1 的搜索，它负责 $C[3]$ 至 $C[5]$，以参数 $(3,A,5,B,4)$ 调用协同秩函数。
+第 2 行把 $i$ 初始化为 3，因为本例中 $k=3<m=5$；$i_{\rm low}=0$。二者界定当前搜索
+的 $A$ 下标范围，所以此时只考虑 0、1、2、3 作为 $i$。类似地，$j=j_{\rm low}=0$。
+
+函数主体是第 8 行的 while 循环，它逐步逼近最终的 $i$、$j$。目标是找到满足
+
+\[
+  A[i-1]\leq B[j]\qquad\text{且}\qquad B[j-1]<A[i]
+\]
+
+的一对值。直观上，要让上一个输出子数组所用的 $A$ 子数组（下称“前一 $A$ 子数组”）
+中的任何值，都不大于当前输出子数组所用的 $B$ 子数组（下称“当前 $B$ 子数组”）中的
+任何元素。由于稳定性要求在 $A$、$B$ 元素相等时让 $A$ 元素优先放入输出，所以前一
+$A$ 子数组的最大元素可以等于当前 $B$ 子数组的最小元素。
+
+while 循环中的第一个 if（第 9 行）检查当前 $i$ 是否过大。若是，就把 $i$ 与
+$i_{\rm low}$ 的差大约减半，从较小值方向把 $i$ 的搜索范围缩小一半。第 0 次迭代中，
+$i=3$ 过大，因为 $A[i-1]=A[2]=8>B[j]=B[0]=7$。于是令
+$\delta=(3-0+1)/2=2$，保持 $i_{\rm low}$ 不变，并把 $i$ 减 2，下一轮
+$i_{\rm low}=0$、$i=1$。同时把 $j$ 的搜索范围移到当前位置上方，使其大小与 $i$
+相当并维持 $i+j=k$：令 $j_{\rm low}=j$，再把 $j$ 加 $\delta$，所以下一轮
+$j_{\rm low}=0$、$j=2$。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c}
+    第 1 次迭代：$(i,j)=(1,2)$，$A[0]=1\leq B[2]=10$，但
+    $B[1]=10\geq A[1]=7$\\
+    因而 $\delta=1$，下一轮 $(i,j)=(2,1)$，
+    $i_{\rm low}=1$、$j_{\rm low}=0$
+  \end{tabular}
+  \caption{线程 1 的协同秩函数示例：第 1 次迭代}
+  \label{fig:13-7}
+\end{figure}
+
+第 1 次迭代如图 \ref{fig:13-7} 所示，$i=1$、$j=2$。第一个 if 认为 $i$ 可接受：
+$A[i-1]=A[0]=1<B[j]=B[2]=10$，故跳过其主体。但本轮 $j$ 过大，因为
+$B[j-1]=B[1]=10$，而 $A[i]=A[1]=7$。第二个 if 把 $j$ 向较小值方向的搜索范围缩小
+约一半：$\delta=(j-j_{\rm low}+1)/2=1$，从 $j$ 减去它，下一轮
+$j_{\rm low}=0$、$j=1$；同时令 $i_{\rm low}=i$，再把 $i$ 加 $\delta$，所以下一轮
+$i_{\rm low}=1$、$i=2$。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c}
+    第 2 次迭代：$(i,j)=(2,1)$\\
+    $A[i-1]=A[1]=7\leq B[1]=10$，且
+    $B[j-1]=B[0]=7<A[2]=8$\\
+    两个条件均满足，返回 $i=2$，并由 $j=k-i=1$ 得到另一协同秩
+  \end{tabular}
+  \caption{线程 1 的协同秩函数示例：第 2 次迭代}
+  \label{fig:13-8}
+\end{figure}
+
+第 2 次迭代如图 \ref{fig:13-8} 所示，$i=2$、$j=1$。此时两个 if 都认为候选值可接受：
+$A[1]=7\leq B[1]=10$，而 $B[0]=7<A[2]=8$。函数置标志退出 while 循环并返回
+$i=2$；调用线程由 $j=k-i=3-2=1$ 得到另一协同秩。图中可确认 2、1 的确识别了线程 1
+正确的 $A$、$B$ 输入子数组。读者可仿照此过程计算线程 2。若输入流长得多，每一步都会
+把 $\delta$ 减半，因此算法复杂度为 $O(\log_2N)$，其中 $N$ 是两个输入数组长度的较大者。
+
+\section{基本并行归并内核}
+\label{sec:basic-parallel-merge}
+
+本章余下部分假定输入数组 $A$、$B$ 位于全局内存，并启动一个内核归并二者，生成同样
+位于全局内存的输出数组 $C$。图 \ref{fig:13-9} 给出的基本内核直接实现了
+第 \ref{sec:parallel-merge-approach} 节描述的并行归并。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,numbers=left]
+__global__ void merge_basic_kernel(int* A, int m, int* B, int n, int* C) {
+    int tid = blockIdx.x*blockDim.x + threadIdx.x;
+    int elementsPerThread = ceil((m+n)/(blockDim.x*gridDim.x));
+    int k_curr = tid*elementsPerThread;               // 输出起始下标
+    int k_next = min((tid+1)*elementsPerThread, m+n); // 输出结束下标
+    int i_curr = co_rank(k_curr, A, m, B, n);
+    int i_next = co_rank(k_next, A, m, B, n);
+    int j_curr = k_curr - i_curr;
+    int j_next = k_next - i_next;
+    merge_sequential(&A[i_curr], i_next-i_curr,
+                     &B[j_curr], j_next-j_curr, &C[k_curr]);
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{基本归并内核}
+  \label{fig:13-9}
+\end{figure}
+
+内核很简洁。它先计算当前线程要生成的输出子数组起点 
+\code{k_curr} 和下一线程的起点 \code{k_next}，以此在线程间划分工作。输出元素总数
+未必是线程数的整数倍，因此 \code{k_next} 要受 $m+n$ 限制。随后，每个线程两次调用
+协同秩函数。第一次以 \code{k_curr} 为秩参数；它是当前线程输出子数组中下标最小的
+元素。返回的 \code{i_curr} 给出属于该线程输入子数组的、下标最小的 $A$ 元素，进而
+可得到 $B$ 子数组的 \code{j_curr}。二者标记输入子数组的开头，因此
+\code{\&A[i_curr]}、\code{\&B[j_curr]} 是它们的首指针。
+
+第二次调用以 \code{k_next} 为秩参数，得到下一线程的协同秩。这些协同秩标记下一线程
+要用的最低输入下标，因此 \code{i_next-i_curr}、\code{j_next-j_curr} 就是当前线程
+所用 $A$、$B$ 子数组的长度。当前线程输出子数组从 \code{\&C[k_curr]} 开始。最后，
+内核用这些参数调用图 \ref{fig:13-2} 的 \code{merge_sequential}。
+
+仍以图 \ref{fig:13-8} 为例。三个线程 0、1、2 的 \code{k_curr} 分别是 0、3、6。
+对线程 1，第一次协同秩调用由 \code{k_curr=3} 得到
+\code{i_curr=2}、\code{j_curr=1}；它的 \code{k_next=6}，第二次调用得到
+\code{i_next=5}、\code{j_next=1}。于是线程 1 以
+\code{(\&A[2],3,\&B[1],0,\&C[3])} 调用归并函数。参数 $n$ 为 0，说明线程 1 的三个
+输出元素均不来自 $B$；图中 $C[3]$ 至 $C[5]$ 的确全来自 $A[2]$ 至 $A[4]$。
+
+基本内核虽然简洁优雅，内存访问效率却不高。第一，执行顺序归并函数时，同一 warp 中
+相邻线程读取、写入输入输出子数组元素的位置并不相邻。图 \ref{fig:13-8} 中，三个相邻
+线程在顺序归并的第一次迭代会读取 $A[0]$、$A[2]$、$B[0]$，再写入 $C[0]$、$C[3]$、
+$C[6]$。这些访问不能合并，内存带宽利用率很差。
+
+第二，线程执行协同秩函数时也需从全局内存访问 $A$、$B$。二分搜索的访问模式较不规则，
+通常无法合并，进一步降低带宽利用率。若能让协同秩函数避免这些不合并的全局内存访问，
+将很有帮助。
+
+\section{用分块归并内核改善访问合并}
+\label{sec:tiled-merge}
+
+第 6 章提到，改善内核内存访问合并主要有三种策略：（1）重新安排线程到数据的映射；
+（2）重新安排数据本身；（3）以合并方式在全局内存与共享内存之间传输数据，再在共享
+内存中执行不规则访问。归并模式采用第三种策略。使用共享内存还可捕获协同秩函数与顺序
+归并阶段之间少量的数据复用。
+
+关键观察是，相邻线程使用的 $A$、$B$ 输入子数组在内存中也彼此相邻。换言之，一个块内
+所有线程共同使用更大的块级 $A$、$B$ 子数组，生成更大的块级 $C$ 子数组。可以针对整个
+块调用协同秩函数，得到块级 $A$、$B$ 子数组的起止位置；再用这些块级协同秩，让块中所有
+线程协同以合并模式把块级输入子数组载入共享内存。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c}
+    全局内存：$A=[\boxed{\ A_0\ }\mid\boxed{\ A_1\ }\mid\boxed{\ A_2\ }]$
+    \qquad
+    $B=[\boxed{\ B_0\ }\mid\boxed{\ B_1\ }\mid\boxed{\ B_2\ }]$\\[0.35em]
+    $\Downarrow$ 每块从自己的 $A_b$、$B_b$ 中各载入至多 $x$ 个元素 $\Downarrow$\\[0.35em]
+    块 $b$ 的共享内存：$A_S[0\ldots x-1]$，$B_S[0\ldots x-1]$\\[0.35em]
+    $\Downarrow$ 实际消费二者合计 $x$ 个元素 $\Downarrow$\\[0.35em]
+    输出：$C=[\boxed{\ C_0\ (y\text{ 个})\ }\mid
+                 \boxed{\ C_1\ (y\text{ 个})\ }\mid
+                 \boxed{\ C_2\ (y\text{ 个})\ }]$
+  \end{tabular}
+  \caption{分块归并内核的设计}
+  \label{fig:13-10}
+\end{figure}
+
+图 \ref{fig:13-10} 展示分块归并的块级设计，例中使用三个块。$C$ 被划成三个块级子数组，
+再据此调用协同秩函数，把输入数组划成各块使用的子数组。输入分区大小会随实际元素值而
+显著变化；例如某个块的 $A$ 子数组可能远大于 $B$ 子数组，而另一个块恰好相反。但每个
+块的两个输入子数组长度之和必然等于其输出子数组长度。
+
+每个块声明两个共享内存数组 \code{A_S}、\code{B_S}。受共享内存容量限制，它们可能
+容纳不了整个块级输入子数组，因此内核迭代处理。设 \code{A_S}、\code{B_S} 各能容纳
+$x$ 个元素，每个输出子数组含 $y$ 个元素，则每个块大约执行 $y/x$ 次迭代。每轮中，
+块内线程协同从块的 $A$ 子数组载入 $x$ 个元素、从 $B$ 子数组载入 $x$ 个元素。
+
+共享内存中有来自 $A$、$B$ 的各 $x$ 个元素后，线程块至少能生成 $x$ 个输出元素，保证
+所有线程拥有本轮所需的全部输入。之所以载入总共 $2x$ 个输入却只能保证生成 $x$ 个输出，
+是因为最坏情况下当前输出区段的全部元素都来自同一个输入区段。这种输入用量的不确定性
+使归并分块比此前模式更难设计。也可以先为当前与下一输出区段调用协同秩函数，只载入更
+准确的输入块；这样以额外一次二分搜索换取少一些冗余载入，留作练习。第
+\ref{sec:circular-buffer-merge} 节还会用环形缓冲区提高带宽利用率。
+
+每块的线程在一轮中使用 \code{A_S} 的一部分和 \code{B_S} 的一部分，生成 $C$ 子数组
+中的 $x$ 个元素。不同块实际使用的两部分比例可能不同，有的多用 $A_S$，有的多用 $B_S$，
+具体取决于输入值。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,numbers=left]
+__global__ void merge_tiled_kernel(int* A, int m, int* B, int n,
+                                   int* C, int tile_size) {
+    extern __shared__ int sharedAB[];
+    int* A_S = &sharedAB[0];
+    int* B_S = &sharedAB[tile_size];
+    int C_curr = blockIdx.x * ceil((m+n)/gridDim.x);
+    int C_next = min((blockIdx.x+1)*ceil((m+n)/gridDim.x), m+n);
+    if (threadIdx.x == 0) {
+        A_S[0] = co_rank(C_curr, A, m, B, n);
+        A_S[1] = co_rank(C_next, A, m, B, n);
+    }
+    __syncthreads();
+    int A_curr = A_S[0];
+    int A_next = A_S[1];
+    int B_curr = C_curr - A_curr;
+    int B_next = C_next - A_next;
+    __syncthreads();
+  \end{lstlisting}
+  \end{minipage}
+  \caption{分块归并内核第 1 部分：识别块级输出与输入子数组}
+  \label{fig:13-11}
+\end{figure}
+
+图 \ref{fig:13-11} 是分块内核的第一部分，与图 \ref{fig:13-9} 非常相似：它实质上是
+线程级基本内核设置代码的块级版本。每个块只需一个线程为当前块和下一块的输出起始秩
+计算协同秩，结果放入共享内存供块内所有线程读取。只让一个线程调用协同秩函数，可减少
+该函数造成的全局内存访问。屏障保证其他线程等待块级协同秩出现在共享内存
+\code{A_S[0]}、\code{A_S[1]} 后再使用。
+
+内核接收参数 \code{tile_size}，指定共享内存分别为 $A$、$B$ 容纳多少元素。例如取
+1024，表示要容纳 1024 个 $A$ 元素和 1024 个 $B$ 元素，每块需用
+$(1024+1024)\cdot4=8192$ 字节共享内存。
+
+考虑一个简单例子：把含 33,000 个元素的 $A$（$m=33000$）与含 31,000 个元素的 $B$
+（$n=31000$）归并，总输出为 64,000 个元素。若用 16 个块、每块 128 个线程，则每块
+生成 $64000/16=4000$ 个 $C$ 元素。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,numbers=left,firstnumber=17]
+    int counter = 0;
+    int C_length = C_next - C_curr;
+    int A_length = A_next - A_curr;
+    int B_length = B_next - B_curr;
+    int total_iteration = ceil(C_length/tile_size);
+    int C_completed = 0;
+    int A_consumed = 0;
+    int B_consumed = 0;
+    while (counter < total_iteration) {
+        // 将至多 tile_size 个 A、B 元素载入共享内存
+        for (int i = 0; i < tile_size; i += blockDim.x) {
+            if (i + threadIdx.x < A_length - A_consumed) {
+                A_S[i+threadIdx.x] =
+                    A[A_curr+A_consumed+i+threadIdx.x];
+            }
+        }
+        for (int i = 0; i < tile_size; i += blockDim.x) {
+            if (i + threadIdx.x < B_length - B_consumed) {
+                B_S[i+threadIdx.x] =
+                    B[B_curr+B_consumed+i+threadIdx.x];
+            }
+        }
+        __syncthreads();
+  \end{lstlisting}
+  \end{minipage}
+  \caption{分块归并内核第 2 部分：把 $A$、$B$ 元素载入共享内存}
+  \label{fig:13-12}
+\end{figure}
+
+若 \code{tile_size=1024}，图 \ref{fig:13-12} 的 while 循环需要 4 轮才能让每块生成
+4000 个输出。第 0 轮中，块内线程协同把 1024 个 $A$ 和 1024 个 $B$ 元素载入共享内存。
+每块有 128 个线程，for 循环每轮合计载入 128 个元素，因此第一个 for 循环迭代 8 次
+完成 1024 个 $A$ 元素，第二个也迭代 8 次完成 $B$。线程以 \code{threadIdx.x} 选择
+要载入的元素，相邻线程读取相邻元素，访问得以合并。if 条件和下标表达式稍后解释。
+
+输入块进入共享内存后，线程便可划分输入块，并行归并各自部分。做法是给每个线程分配
+一段输出，运行协同秩函数确定为生成该输出而应使用的共享内存区段。图 \ref{fig:13-13}
+给出这一步，它接续图 \ref{fig:13-12} 开始的 while 循环。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,numbers=left,firstnumber=37]
+        int c_curr = threadIdx.x * (tile_size/blockDim.x);
+        int c_next = (threadIdx.x+1) * (tile_size/blockDim.x);
+        c_curr = min(c_curr, C_length-C_completed);
+        c_next = min(c_next, C_length-C_completed);
+        int a_curr = co_rank(c_curr,
+            A_S, min(tile_size,A_length-A_consumed),
+            B_S, min(tile_size,B_length-B_consumed));
+        int b_curr = c_curr - a_curr;
+        int a_next = co_rank(c_next,
+            A_S, min(tile_size,A_length-A_consumed),
+            B_S, min(tile_size,B_length-B_consumed));
+        int b_next = c_next - a_next;
+        merge_sequential(A_S+a_curr, a_next-a_curr,
+                         B_S+b_curr, b_next-b_curr,
+                         C+C_curr+C_completed+c_curr);
+        counter++;
+        C_completed += tile_size;
+        A_consumed += co_rank(tile_size, A_S, tile_size,
+                             B_S, tile_size);
+        B_consumed = C_completed - A_consumed;
+        __syncthreads();
+    }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{分块归并内核第 3 部分：所有线程并行归并各自子数组}
+  \label{fig:13-13}
+\end{figure}
+
+每轮中，一个块的线程用共享内存中的数据合计生成 \code{tile_size} 个 $C$ 元素，最后
+一轮例外。各线程先算自己与下一线程输出范围的起点，再以二者调用共享内存上的协同秩
+函数，识别各自输入范围；最后调用顺序归并，把共享内存中自己的 $A$、$B$ 部分写入指定
+$C$ 范围。
+
+在运行示例中，每轮一个块的所有线程合计生成 1024 个输出，工作分给 128 个线程，所以
+每线程生成 8 个。虽然知道每线程总共消费 8 个共享内存元素，仍需协同秩函数确定其中
+$A$、$B$ 各占多少以及各自起止位置：某线程可能取 3 个 $A$ 和 5 个 $B$，另一个可能取
+6 个 $A$ 和 2 个 $B$。
+
+块内所有线程一轮使用的 $A$、$B$ 元素合计为 1024。例如，若使用 476 个 $A$，就使用
+$1024-476=548$ 个 $B$；甚至可能使用 1024 个 $A$ 而不使用 $B$。共享内存实际载入了
+2048 个元素，所以每轮只有一半被使用。
+
+下面解释从全局内存载入 $A$、$B$ 时的下标。每轮输入块的起点取决于此前各轮全块合计
+消费的 $A$、$B$ 元素数。用 \code{A_consumed} 跟踪此前各轮消费的 $A$ 元素总数，进入
+while 前初始化为 0。第 0 轮从 \code{A[A_curr]} 开始载入；以后各轮的起点为
+\begin{center}
+\code{A[A_curr+A_consumed]}。
+\end{center}
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c}
+    块级 $A$ 子数组：
+    $[\underbrace{\text{前一轮已消费}}_{\code{A_consumed}}\mid
+      \underbrace{\text{本轮载入块}}_{\text{从 }\code{A_curr+A_consumed}\text{ 开始}}\mid
+      \text{其余}]$\\[0.4em]
+    块级 $B$ 子数组：
+    $[\underbrace{\text{前一轮已消费}}_{\code{B_consumed}}\mid
+      \underbrace{\text{本轮载入块}}_{\text{从 }\code{B_curr+B_consumed}\text{ 开始}}\mid
+      \text{其余}]$
+  \end{tabular}
+  \caption{运行示例中 while 循环第 1 次迭代的载入位置}
+  \label{fig:13-14}
+\end{figure}
+
+图 \ref{fig:13-14} 展示第 1 轮的下标计算。第 0 轮消费的 $A$ 元素区段长度为
+\code{A_consumed}，所以第 1 轮从紧随其后的位置开始：
+\begin{center}
+\code{A[A_curr+A_consumed]}，\qquad \code{B[B_curr+B_consumed]}。
+\end{center}
+图 \ref{fig:13-13} 中 \code{A_consumed}、\code{C_completed} 跨 while 轮次累积，
+\code{B_consumed} 又由二者推得，因此它们始终反映截至当前已消费的元素数。
+
+最后一轮时，某些块剩余的 $A$ 或 $B$ 元素可能不足以填满共享内存输入块。图
+\ref{fig:13-12} 第 27 行的 if 检查线程要载入的 \code{A_S} 下标是否超过
+\code{A_length-A_consumed} 给出的剩余 $A$ 元素数，只允许载入块级 $A$ 子数组范围内的
+元素；第 32 行对 $B$ 做同样检查。
+
+while 循环末尾的语句更新迄今生成的 $C$ 元素总数。除最后一轮外，每轮多生成
+\code{tile_size} 个 $C$ 元素；线程块新消费的 $A$ 元素数是
+
+\begin{lstlisting}[language=C++,numbers=none]
+co_rank(tile_size, A_S, tile_size, B_S, tile_size)
+\end{lstlisting}
+
+的返回值，再由完成的 $C$ 元素数减去 $A$ 消费数得到 $B$ 消费数。最后一轮可能没有
+完整输入块，因此循环末计算的 \code{A_consumed}、\code{B_consumed}、
+\code{C_completed} 未必准确；但循环不再继续，这些值也不再使用，所以不会造成影响。
+若退出后仍需这些值，应改用 \code{A_length}、\code{B_length}、\code{C_length}，因为
+退出时分给该块的子数组已全部消费。
+
+分块内核显著减少了协同秩函数的全局内存访问，也让其余全局内存访问得以合并。然而，
+当前实现每轮只使用载入共享内存数据的一半，未用的数据下一轮又被重新载入，浪费一半
+内存带宽。下一节将以环形缓冲区管理共享内存数据块，充分利用所有已载入的 $A$、$B$
+元素；代价是代码复杂度显著增加。
+
+\section{环形缓冲区归并内核}
+\label{sec:circular-buffer-merge}
+
+环形缓冲区归并内核 \code{merge_circular_buffer_kernel} 的设计大体与上一节的
+\code{merge_tiled_kernel} 相同，主要差别是共享内存中 $A$、$B$ 元素的管理方式，
+目标是充分利用从全局内存载入的每个元素。图 \ref{fig:13-12} 至图 \ref{fig:13-14}
+中的分块内核总让输入块从 \code{A_S[0]}、\code{B_S[0]} 开始；每轮结束后，下一块又
+从这两个位置重新载入。低效之处在于，共享内存中其实还保留了下一轮所需的一部分元素，
+但整个输入块仍从全局内存重载并覆盖这些元素。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c@{\hspace{1.5em}}c}
+    \begin{tabular}{c}
+      (a) 第 0 轮载入\\
+      $A_S:[\boxed{\text{完整 }A\text{ 块}}]$\\
+      $B_S:[\boxed{\text{完整 }B\text{ 块}}]$
+    \end{tabular}
+    &
+    \begin{tabular}{c}
+      (b) 第 0 轮结束\\
+      $[\text{已消费}\mid\underbrace{\text{保留}}_{A_S\_start}]$\\
+      $[\text{已消费}\mid\underbrace{\text{保留}}_{B_S\_start}]$
+    \end{tabular}\\[1em]
+    \begin{tabular}{c}
+      (c) 第 1 轮补齐并回绕\\
+      $[\text{新载入}\mid\underbrace{\text{保留}}_{A_S\_start}\mid\text{新载入}]$\\
+      $[\text{新载入}\mid\underbrace{\text{保留}}_{B_S\_start}\mid\text{新载入}]$
+    \end{tabular}
+    &
+    \begin{tabular}{c}
+      (d) 第 1 轮结束\\
+      起点按消费量取模推进：\\
+      $A_S\_start\leftarrow(A_S\_start+A_S\_consumed)\bmod x$\\
+      $B_S\_start\leftarrow(B_S\_start+B_S\_consumed)\bmod x$
+    \end{tabular}
+  \end{tabular}
+  \caption{管理共享内存输入块的环形缓冲区方案}
+  \label{fig:13-15}
+\end{figure}
+
+图 \ref{fig:13-15} 给出主要思想。增加变量 \code{A_S_start}、\code{B_S_start}，使
+while 循环每轮可以从 \code{A_S}、\code{B_S} 中动态确定的位置开始其输入块，从而以
+上一轮剩余的元素作为本轮开头。首次进入循环时没有上一轮，故两者初始化为 0。
+
+第 0 轮中两个起点均为 0，输入块从 \code{A_S[0]}、\code{B_S[0]} 开始，如图
+\ref{fig:13-15}(a)；载入后，归并过程与分块内核相同。为供下一轮使用，还要把起点按
+本轮从共享内存消费的 $A$、$B$ 元素数推进。每个缓冲区大小限于 \code{tile_size}，
+越过末端时须回用开头的位置，因此更新为
+
+\begin{lstlisting}[language=C++,numbers=none]
+A_S_start = (A_S_start + A_S_consumed) % tile_size;
+B_S_start = (B_S_start + B_S_consumed) % tile_size;
+\end{lstlisting}
+
+图 \ref{fig:13-15}(b) 中，白色概念区段表示第 0 轮已消费部分，起点更新到其后。
+图 \ref{fig:13-15}(c) 展示第 1 轮开头如何补齐输入块。变量 \code{A_S_consumed} 跟踪
+当前轮使用的 $A$ 元素数；下一轮开头最多载入这么多个新元素，填满 $A$ 输入块，$B$
+同理。由于复用第 0 轮已消费元素留下的空间，输入块会在数组内“回绕”。图
+\ref{fig:13-15}(d) 展示第 1 轮结束时再次更新起点；$A_S$ 中消费区段跨过数组末端，
+取模运算让 \code{A_S_start} 也回绕到开头。载入和使用输入块的代码都必须适应这种环形
+用法。
+
+环形缓冲区内核的第 1 部分与图 \ref{fig:13-11} 完全相同，不再重复。图
+\ref{fig:13-16} 给出第 2 部分；其余未变的变量声明见图 \ref{fig:13-12}。进入 while
+循环前新增并初始化 \code{A_S_start}、\code{B_S_start}、\code{A_S_consumed}、
+\code{B_S_consumed}。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.99\textwidth}
+  \begin{lstlisting}[language=C++,numbers=left,firstnumber=25]
+    int A_S_start = 0;
+    int B_S_start = 0;
+    int A_S_consumed = tile_size; // 第 0 轮须填满整个输入块
+    int B_S_consumed = tile_size;
+    while (counter < total_iteration) {
+        // 把 A_S_consumed 个元素补入 A_S
+        for (int i = 0; i < A_S_consumed; i += blockDim.x) {
+            if (i+threadIdx.x < A_length-A_consumed &&
+                i+threadIdx.x < A_S_consumed) {
+                A_S[(A_S_start+(tile_size-A_S_consumed)+
+                     i+threadIdx.x)%tile_size] =
+                    A[A_curr+A_consumed+i+threadIdx.x];
+            }
+        }
+        // 把 B_S_consumed 个元素补入 B_S
+        for (int i = 0; i < B_S_consumed; i += blockDim.x) {
+            if (i+threadIdx.x < B_length-B_consumed &&
+                i+threadIdx.x < B_S_consumed) {
+                B_S[(B_S_start+(tile_size-B_S_consumed)+
+                     i+threadIdx.x)%tile_size] =
+                    B[B_curr+B_consumed+i+threadIdx.x];
+            }
+        }
+        __syncthreads();
+  \end{lstlisting}
+  \end{minipage}
+  \caption{环形缓冲区归并内核第 2 部分}
+  \label{fig:13-16}
+\end{figure}
+
+两个 for 循环的结束条件已经调整：不再像图 \ref{fig:13-12} 那样每轮都载入完整输入块，
+而是只载入由 \code{A_S_consumed}、\code{B_S_consumed} 给出的、补满输入块所需的元素数。
+第 $i$ 次 for 迭代中，块要载入的 $A$ 区段从全局位置
+\code{A[A_curr+A_consumed+i]} 开始；$i$ 每轮增加 \code{blockDim.x}，故某线程读取
+\code{A[A_curr+A_consumed+i+threadIdx.x]}。它在 \code{A_S} 中的写入下标为
+
+\[
+  (\code{A_S_start}+(\code{tile_size}-\code{A_S_consumed})
+   +i+\code{threadIdx.x})\bmod\code{tile_size}.
+\]
+
+输入块从 \code{A_S[A_S_start]} 开始，而缓冲区中已有
+\code{tile_size-A_S_consumed} 个上一轮剩余元素；取模在下标达到输入块大小时将其回绕
+到数组开头。载入 $B$ 的循环完全类似。
+
+\noindent\textbf{译者注：}底本图 13.16 的 $B_S$ 写入下标使用了
+\code{tile_size-A_S_consumed}，但正文和环形缓冲区对称性都表明这里应为
+\code{tile_size-B_S_consumed}；本译稿按算法意图更正。
+
+把 \code{A_S}、\code{B_S} 当作环形缓冲区，也让协同秩和归并函数更复杂。可以把部分
+复杂度留在调用这些函数的线程级代码中，但通常更好的做法是由库函数高效封装复杂度，
+尽量不增加用户代码负担。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c@{\hspace{3em}}c}
+    \begin{tabular}{c}
+      (a) 实际环形缓冲区\\
+      $[\text{输入块尾部}\mid\underbrace{\text{输入块头部}}_{A_S\_start}\mid\cdots]$\\
+      下标越过末端会回绕，可能有 $a_{next}<a_{curr}$
+    \end{tabular}
+    &
+    \begin{tabular}{c}
+      (b) 简化的连续模型\\
+      $[A_S\_start\mid\cdots\mid a_{curr}\mid\cdots\mid a_{next}]$\\
+      所有值视为偏移，始终有 $a_{next}\geq a_{curr}$
+    \end{tabular}
+  \end{tabular}
+  \caption{环形缓冲区中协同秩的简化模型}
+  \label{fig:13-17}
+\end{figure}
+
+协同秩用于标识线程输入子数组的起点、终点和长度。若直接把实际环形下标作为协同秩，
+内核代码会复杂得多。例如，输入块在 \code{A_S} 中回绕时，\code{a_next} 可能小于
+\code{a_curr}，区段长度要算作 \code{a_next-a_curr+tile_size}；没有回绕时又只是
+\code{a_next-a_curr}。
+
+图 \ref{fig:13-17}(b) 提供一个简化模型：每个输入块看起来都是从
+\code{A_S_start}、\code{B_S_start} 开始的连续区段，最多含 \code{tile_size} 个元素。
+于是 \code{a_next}、\code{b_next} 总不小于相应的 \code{a_curr}、\code{b_curr}。
+\code{co_rank_circular} 与 \code{merge_sequential_circular} 负责把这一简化视图映射到
+实际环形下标，并正确、高效地完成操作。
+
+两个环形版本保留原函数的参数，并增加 \code{A_S_start}、\code{B_S_start}、
+\code{tile_size}，告知当前缓冲区起点和大小。图 \ref{fig:13-18} 给出基于简化模型的
+线程级代码；唯一变化是改为调用两个环形版本，说明良好设计的库接口可以降低复杂数据
+结构对用户代码的影响。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.99\textwidth}
+  \begin{lstlisting}[language=C++,numbers=left,firstnumber=40]
+        int c_curr = threadIdx.x * (tile_size/blockDim.x);
+        int c_next = (threadIdx.x+1) * (tile_size/blockDim.x);
+        c_curr = min(c_curr, C_length-C_completed);
+        c_next = min(c_next, C_length-C_completed);
+        int a_curr = co_rank_circular(c_curr,
+            A_S, min(tile_size,A_length-A_consumed),
+            B_S, min(tile_size,B_length-B_consumed),
+            A_S_start, B_S_start, tile_size);
+        int b_curr = c_curr - a_curr;
+        int a_next = co_rank_circular(c_next,
+            A_S, min(tile_size,A_length-A_consumed),
+            B_S, min(tile_size,B_length-B_consumed),
+            A_S_start, B_S_start, tile_size);
+        int b_next = c_next - a_next;
+        merge_sequential_circular(A_S, a_next-a_curr,
+            B_S, b_next-b_curr, C+C_curr+C_completed+c_curr,
+            A_S_start+a_curr, B_S_start+b_curr, tile_size);
+        counter++;
+        A_S_consumed = co_rank_circular(
+            min(tile_size,C_length-C_completed),
+            A_S, min(tile_size,A_length-A_consumed),
+            B_S, min(tile_size,B_length-B_consumed),
+            A_S_start, B_S_start, tile_size);
+        B_S_consumed = min(tile_size,C_length-C_completed)-A_S_consumed;
+        A_consumed += A_S_consumed;
+        C_completed += min(tile_size,C_length-C_completed);
+        B_consumed = C_completed - A_consumed;
+        A_S_start = (A_S_start+A_S_consumed) % tile_size;
+        B_S_start = (B_S_start+B_S_consumed) % tile_size;
+        __syncthreads();
+    }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{环形缓冲区归并内核第 3 部分}
+  \label{fig:13-18}
+\end{figure}
+
+图 \ref{fig:13-19} 的协同秩实现以简化模型定义协同秩，同时正确操作环形缓冲区。它对
+\code{i}、\code{j}、\code{i_low}、\code{j_low} 的处理与图 \ref{fig:13-5} 完全相同；
+区别只是访问 \code{A_S}、\code{B_S} 时不直接用 \code{i}、\code{i-1}、\code{j}、
+\code{j-1} 作下标，而把它们视为偏移，加到起点上，形成实际下标，并分别检查是否需要
+回绕。注意不能简单用 \code{i_cir-1} 代替 \code{i-1}，必须先构造最终下标再取模。
+简化模型让所有协同秩变量的操纵都无须知道缓冲区的环形性质。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.99\textwidth}
+  \begin{lstlisting}[language=C++,numbers=left]
+int co_rank_circular(int k, int* A, int m, int* B, int n,
+                     int A_S_start, int B_S_start, int tile_size) {
+    int i = k < m ? k : m;
+    int j = k - i;
+    int i_low = 0 > (k-n) ? 0 : k-n;
+    int j_low = 0 > (k-m) ? 0 : k-m;
+    int delta;
+    bool active = true;
+    while (active) {
+        int i_cir = (A_S_start+i) % tile_size;
+        int i_m_1_cir = (A_S_start+i-1+tile_size) % tile_size;
+        int j_cir = (B_S_start+j) % tile_size;
+        int j_m_1_cir = (B_S_start+j-1+tile_size) % tile_size;
+        if (i > 0 && j < n && A[i_m_1_cir] > B[j_cir]) {
+            delta = ((i-i_low+1) >> 1);
+            j_low = j;
+            i -= delta;
+            j += delta;
+        } else if (j > 0 && i < m && B[j_m_1_cir] >= A[i_cir]) {
+            delta = ((j-j_low+1) >> 1);
+            i_low = i;
+            i += delta;
+            j -= delta;
+        } else {
+            active = false;
+        }
+    }
+    return i;
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{在环形缓冲区上操作的 \code{co_rank_circular} 函数}
+  \label{fig:13-19}
+\end{figure}
+
+\noindent\textbf{译者注：}底本图 13.19 构造 \code{j_m_1_cir} 时把偏移误写成
+\code{i-1}，按变量含义应为 \code{j-1}。此外，本译稿在两个“减一”下标取模前加上
+\code{tile_size}，避免 C/C++ 中负数取模产生负下标；二者均不改变正文描述的算法意图。
+
+图 \ref{fig:13-20} 的 \code{merge_sequential_circular} 也基本保留原归并逻辑，唯一变化
+是 $i$、$j$ 访问 $A$、$B$ 的方式。该函数只由环形内核线程级代码调用，访问元素位于
+\code{A_S}、\code{B_S} 中；四处访问都先形成 \code{i_cir} 或 \code{j_cir} 并取模回绕。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.99\textwidth}
+  \begin{lstlisting}[language=C++,numbers=left]
+void merge_sequential_circular(int* A, int m, int* B, int n, int* C,
+                               int A_S_start, int B_S_start,
+                               int tile_size) {
+    int i = 0;  // A 中的虚拟下标
+    int j = 0;  // B 中的虚拟下标
+    int k = 0;  // C 中的下标
+    while ((i < m) && (j < n)) {
+        int i_cir = (A_S_start+i) % tile_size;
+        int j_cir = (B_S_start+j) % tile_size;
+        if (A[i_cir] <= B[j_cir]) {
+            C[k++] = A[i_cir]; i++;
+        } else {
+            C[k++] = B[j_cir]; j++;
+        }
+    }
+    if (i == m) {
+        for (; j < n; j++) {
+            int j_cir = (B_S_start+j) % tile_size;
+            C[k++] = B[j_cir];
+        }
+    } else {
+        for (; i < m; i++) {
+            int i_cir = (A_S_start+i) % tile_size;
+            C[k++] = A[i_cir];
+        }
+    }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{\code{merge_sequential_circular} 函数的实现}
+  \label{fig:13-20}
+\end{figure}
+
+虽然没有列出环形归并内核的全部部分，读者应能根据以上代码将其组合起来。分块与环形
+缓冲区增加了不少复杂度，尤其每线程需要更多寄存器跟踪缓冲区起点和剩余元素数，可能
+降低占用率，即内核运行时每个流多处理器可分配的线程块数。不过归并受内存带宽限制，
+计算和寄存器资源通常利用不足；增加寄存器与地址计算来节省内存带宽，是合理的权衡。
+
+\section{归并的线程粗化}
+\label{sec:merge-thread-coarsening}
+
+用许多线程并行化归并的主要开销，是每个线程都要执行二分搜索以识别其输出下标的协同秩。
+减少启动的线程数即可减少二分搜索次数，方法是给每线程分配更多输出元素。本章给出的所有
+内核实际上都已应用线程粗化，因为它们均让一个线程处理多个元素。
+
+在完全没有粗化的内核中，每线程只负责一个输出元素，因而每个元素都要执行一次昂贵的
+二分搜索。线程粗化把一次二分搜索的成本摊销到相当数量的元素上，对归并至关重要。
+
+\section{小结}
+\label{sec:merge-summary}
+
+本章介绍了有序归并模式。并行化它时，每个线程必须动态识别自己的输入位置范围。输入
+范围依赖数据，因此采用快速搜索实现的协同秩函数为每线程确定范围。数据依赖性也使得
+利用分块节省内存带宽、实现访问合并面临额外挑战，于是我们引入环形缓冲区，充分利用
+从全局内存载入的数据。
+
+更复杂的环形数据结构会显著增加使用它的代码的复杂度。为此，本章为操纵、使用下标的
+代码建立简化的连续缓冲区访问模型，使其大体无需改变；缓冲区的真实环形性质只在这些
+下标实际访问元素时才暴露出来。
+
+\phantomsection
+\section*{练习}
+\addcontentsline{toc}{section}{练习}
+
+\begin{enumerate}[label=\arabic*.,leftmargin=2.7em]
+  \item 假设要归并列表
+  $A=\{1,7,8,9,10\}$ 与 $B=\{7,10,10,12\}$。$C[8]$ 的两个协同秩是多少？
+
+  \item 完成图 \ref{fig:13-6} 中线程 2 的协同秩函数计算过程。
+
+  \item 对图 \ref{fig:13-12} 中载入 $A$、$B$ 输入块的 for 循环增加协同秩函数调用，
+  使其只载入当前 while 循环迭代实际会消费的 $A$、$B$ 元素。
+
+  \item 考虑并行归并两个长度分别为 1,030,400 和 608,000 的数组。假设每线程归并
+  8 个元素，线程块大小为 1024。
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item 在图 \ref{fig:13-9} 的基本归并内核中，有多少线程在全局内存数据上执行
+    二分搜索？
+    \item 在图 \ref{fig:13-11} 至图 \ref{fig:13-13} 的分块归并内核中，有多少线程
+    在全局内存数据上执行二分搜索？
+    \item 在同一分块归并内核中，有多少线程在共享内存数据上执行二分搜索？
+  \end{enumerate}
+\end{enumerate}
+
+\begin{chapterbibliography}{9}
+  \bibitem{siebert2012merge}
+  C. Siebert, J. L. Träff, Efficient MPI implementation of a parallel,
+  stable merge algorithm, in: \emph{European MPI Users' Group Meeting},
+  Springer, 2012, pp. 204--213.
+\end{chapterbibliography}
