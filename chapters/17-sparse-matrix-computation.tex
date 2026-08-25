@@ -1,0 +1,1190 @@
+\chapter{稀疏矩阵计算}
+\label{chap:sparse-matrix}
+
+\setcounter{footnote}{0}
+
+本章讨论的并行模式是稀疏矩阵计算。所谓稀疏矩阵，是指其中绝大多数元素为零的矩阵。
+把这些零元素原封不动地存下来并参与运算，会同时浪费内存容量、内存带宽、执行时间和
+能耗。现实世界中大量重要问题都归结为稀疏矩阵计算，因此人们发展出了多种稀疏矩阵
+存储格式以及与之配套的处理方法，并在工程实践中广泛使用。
+
+这些方法的共同思路是用某种\textbf{紧凑化}（compaction）手段，把零元素从表示中挤出去，
+从而不必存储它们、也不必对它们做无意义的乘加。代价是数据表示变得不再规整：元素的
+位置需要显式记录，行与行之间的长度参差不齐。而不规整性正是并行计算的天敌——它会
+带来内存带宽利用不足、控制流分歧和负载不均衡。
+
+因此，稀疏矩阵格式设计的核心是在\textbf{紧凑化}与\textbf{规整化}（regularization）
+之间取得平衡。有的格式把紧凑化做到极致，但表示极不规整；有的格式只做适度紧凑，却
+换来更规整的结构。更重要的是，究竟哪种格式跑得快，严重依赖于具体矩阵中非零元素的
+分布——这与我们前面各章讨论的绝大多数内核都不同，那些内核的性能主要由算法和硬件
+决定，而不由输入数据的取值决定。理解稀疏矩阵存储格式及其并行算法，能为读者提供
+处理这类“紧凑化与规整化”矛盾的一般性思路。
+
+\section{背景}
+\label{sec:spmv-background}
+
+稀疏矩阵在科学计算、工程仿真和金融建模中随处可见。一个典型来源是线性方程组：矩阵的
+每一行对应一个方程，每一列对应一个未知量，矩阵元素就是方程中的系数。在许多科学与
+工程问题里，虽然未知量和方程的总数极其庞大，但它们之间只是\textbf{稀疏耦合}的——
+每个方程只牵涉到少数几个未知量。于是矩阵的每一行都只有少量非零元素。
+
+以图 \ref{fig:17-1} 中的 $4\times 4$ 矩阵为例。第 0 行只在第 0 列和第 1 列上有非零
+元素，说明方程 0 只包含未知量 $x_0$ 和 $x_1$；第 1 行在第 0、2、3 列上非零，说明
+方程 1 包含 $x_0$、$x_2$ 和 $x_3$；第 2 行涉及 $x_1$ 和 $x_2$；第 3 行则只涉及
+$x_3$。整个矩阵的 16 个元素中只有 8 个非零，一半的存储被浪费在零上。真实问题中的
+稀疏度往往还要极端得多：非零元素占比常常低于 $1\%$。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{r|cccc|}
+    \multicolumn{1}{c}{} & \multicolumn{1}{c}{$x_0$} & \multicolumn{1}{c}{$x_1$}
+      & \multicolumn{1}{c}{$x_2$} & \multicolumn{1}{c}{$x_3$}\\
+    \cline{2-5}
+    行 0 & \colorbox{blue!22}{\strut\ 1\ } & \colorbox{blue!22}{\strut\ 7\ } & \strut\ 0\ & \strut\ 0\ \\
+    行 1 & \colorbox{blue!22}{\strut\ 5\ } & \strut\ 0\ & \colorbox{blue!22}{\strut\ 3\ } & \colorbox{blue!22}{\strut\ 9\ }\\
+    行 2 & \strut\ 0\ & \colorbox{blue!22}{\strut\ 2\ } & \colorbox{blue!22}{\strut\ 8\ } & \strut\ 0\ \\
+    行 3 & \strut\ 0\ & \strut\ 0\ & \strut\ 0\ & \colorbox{blue!22}{\strut\ 6\ }\\
+    \cline{2-5}
+  \end{tabular}
+  \caption{一个简单的稀疏矩阵示例。着色格子为非零元素；本章后续各节都以这个矩阵
+  作为统一示例，展示不同存储格式的表示方式}
+  \label{fig:17-1}
+\end{figure}
+
+用矩阵求解含 $N$ 个未知量、$M$ 个方程的线性方程组时，问题通常写成
+\[
+  A\times X + Y = 0,
+\]
+其中 $A$ 是 $M\times N$ 矩阵，$X$ 是 $N$ 维未知量向量，$Y$ 是 $M$ 维常数向量。
+目标是求出满足所有方程的 $X$。最直观的思路是求逆：$X = A^{-1}\times(-Y)$。对中等
+规模的矩阵，高斯消元一类方法确实可以做到这一点。但把它套用到真实的稀疏矩阵上有两个
+致命问题。第一，稀疏矩阵的规模往往大到让这种直接法完全不可行。第二，稀疏矩阵求逆
+的结果通常远比原矩阵稠密——消元过程会在原本为零的位置上生成大量新的非零元素，这些
+新增元素称为\textbf{填充元}（fill-in）。因此在实际问题中，计算并存储逆矩阵通常是
+不现实的。
+
+替代方案是迭代法。当稀疏矩阵 $A$ 正定（即对 $\mathbb{R}^n$ 中任意非零向量 $x$ 都有
+$x^{T}Ax>0$）时，可以用共轭梯度法\cite{hestenes1952cg}迭代求解对应的线性方程组，
+并且保证收敛。共轭梯度法的基本循环是：先猜一个 $X$，算出 $A\times X + Y$，看结果是否
+足够接近零向量；若不够接近，则用梯度公式修正 $X$，再算一轮 $A\times X + Y$。这类
+线性方程组的迭代解法，与第 \ref{chap:stencil-computation} 章介绍的微分方程迭代解法在思想上一脉相承。
+
+\noindent\textbf{译者注：}第 \ref{chap:stencil-computation} 章即模板计算一章。本译稿目前尚未
+译出第 11--16 章，本章的章节交叉引用只指向已完成的章节，其余仅以章号文字说明。
+
+迭代解法中最耗时的部分，正是反复计算 $A\times X + Y$。当 $A$ 为稀疏矩阵、而 $X$ 和
+$Y$ 通常是稠密向量（即绝大多数元素非零）时，这个运算被称为\textbf{SpMV}
+（Sparse Matrix-Vector multiplication and accumulation，稀疏矩阵向量乘加）。由于
+它的重要性，标准库普遍以 SpMV 之名提供该接口。本章就用 SpMV 作为载体，来比较不同
+存储格式之间的取舍。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c@{\ }c@{\ }c@{\ }c@{\ }c@{\ }c@{\ }c}
+    \begin{tabular}{|c|}
+      \hline
+      \strut\\[-0.2em]
+      \makebox[3.6cm][c]{稀疏矩阵 $A$}\\
+      \makebox[3.6cm][c]{\footnotesize（$M\times N$，绝大多数元素为零）}\\
+      \strut\\
+      \hline
+    \end{tabular}
+    & $\times$ &
+    \begin{tabular}{|c|}
+      \hline
+      \strut\\[-0.2em]
+      \makebox[0.9cm][c]{$X$}\\
+      \makebox[0.9cm][c]{\footnotesize 稠密}\\
+      \strut\\
+      \hline
+    \end{tabular}
+    & $+$ &
+    \begin{tabular}{|c|}
+      \hline
+      \strut\\[-0.2em]
+      \makebox[0.9cm][c]{$Y$}\\
+      \makebox[0.9cm][c]{\footnotesize 稠密}\\
+      \strut\\
+      \hline
+    \end{tabular}
+    & $=$ &
+    \begin{tabular}{|c|}
+      \hline
+      \strut\\[-0.2em]
+      \makebox[0.9cm][c]{结果}\\
+      \makebox[0.9cm][c]{\footnotesize 稠密}\\
+      \strut\\
+      \hline
+    \end{tabular}
+  \end{tabular}
+  \caption{矩阵向量乘加运算示意。矩阵 $A$ 稀疏，而向量 $X$ 与 $Y$ 通常稠密}
+  \label{fig:17-2}
+\end{figure}
+
+各种稀疏矩阵存储格式的首要目标，都是把零元素从表示中彻底剔除。这样做的收益不止于
+省下存储空间：它同时省去了从内存取回这些零元素的开销，也省去了与它们做无用乘加的
+计算开销，从而显著降低对内存带宽和计算资源的消耗。对超大规模矩阵而言，还有一层
+更实际的意义——压缩后的矩阵可能刚好能整个装进单个计算节点的内存。否则就只能求助于
+外存算法或分布式计算，而这两者都要付出高昂的 I/O 或网络通信延迟。
+
+设计一种稀疏矩阵存储格式时，需要权衡的关键因素包括：
+
+\begin{itemize}
+  \item \textbf{空间效率}（space efficiency，或称紧凑度）：用该格式表示矩阵需要
+  占用多少内存容量。
+  \item \textbf{灵活性}（flexibility）：向矩阵中增删非零元素有多容易。
+  \item \textbf{可访问性}（accessibility）：该格式让哪些类型的数据变得易于访问——
+  例如“给定一个非零元素，取它的行号和列号”，或者“给定一行，取该行全部非零元素”。
+  \item \textbf{内存访问效率}（memory access efficiency）：对某项具体计算而言，该
+  格式能否支撑高效的内存访问模式。这是规整化的一个侧面。
+  \item \textbf{负载均衡}（load balance）：对某项具体计算而言，该格式能否让不同线程
+  的工作量大致相当。这是规整化的另一个侧面。
+\end{itemize}
+
+本章接下来逐一介绍几种存储格式，并在每一节末尾用上述五个维度作统一比较。
+
+\section{COO 格式与最简单的 SpMV 内核}
+\label{sec:spmv-coo}
+
+第一种格式是\textbf{坐标格式}（Coordinate，简称 COO）。它的想法直白到近乎朴素：
+既然要把零元素扔掉，那就把每个非零元素连同它的“坐标”一起记下来。于是 COO 用三个
+等长的一维数组来表示矩阵——\code{value} 存非零值，\code{rowIdx} 存对应的行号，
+\code{colIdx} 存对应的列号。三个数组中下标相同的三个元素共同描述同一个非零元素。
+
+图 \ref{fig:17-3} 给出了图 \ref{fig:17-1} 中矩阵的 COO 表示。例如 $A[0,0]=1$ 被
+存放在 \code{value[0]}，它的行号 0 存在 \code{rowIdx[0]}，列号 0 存在
+\code{colIdx[0]}。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{r|c|c|c|c|c|c|c|c|}
+    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
+      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}
+      & \multicolumn{1}{c}{5} & \multicolumn{1}{c}{6} & \multicolumn{1}{c}{7}\\
+    \cline{2-9}
+    \code{rowIdx} & 0 & 0 & 1 & 1 & 1 & 2 & 2 & 3\\
+    \cline{2-9}
+    \code{colIdx} & 0 & 1 & 0 & 2 & 3 & 1 & 2 & 3\\
+    \cline{2-9}
+    \code{value}  & 1 & 7 & 5 & 3 & 9 & 2 & 8 & 6\\
+    \cline{2-9}
+  \end{tabular}
+  \caption{图 \ref{fig:17-1} 中矩阵的 COO 表示。三个数组等长，长度等于非零元素个数}
+  \label{fig:17-3}
+\end{figure}
+
+COO 把零元素清除得干干净净，但它引入了 \code{rowIdx} 和 \code{colIdx} 两个额外
+数组作为开销。对图 \ref{fig:17-1} 这样零元素并不比非零元素多多少的小例子，这份开销
+甚至超过了省下的空间。但只要矩阵足够稀疏，收益就会压倒开销：如果一个矩阵只有 $1\%$
+的元素非零，那么包含全部索引开销在内，COO 表示大约只占稠密表示的 $3\%$。
+
+图 \ref{fig:17-3} 中的非零元素是先按行号、再按列号排好序的。实践中 COO 数据往往
+确实是有序的，但\textbf{排序并非 COO 的要求}。本节给出的 SpMV 内核对无序的 COO
+数据同样正确。
+
+\subsection*{并行化：一个线程负责一个非零元素}
+
+用 COO 表示做并行 SpMV 的一种自然方式，是给每个非零元素分配一个线程。图
+\ref{fig:17-4} 展示了这种划分：8 个非零元素对应 8 个线程，线程 $i$ 只处理
+\code{value[i]}。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{r|c|c|c|c|c|c|c|c|}
+    \multicolumn{1}{c}{} & \multicolumn{1}{c}{$T_0$} & \multicolumn{1}{c}{$T_1$}
+      & \multicolumn{1}{c}{$T_2$} & \multicolumn{1}{c}{$T_3$} & \multicolumn{1}{c}{$T_4$}
+      & \multicolumn{1}{c}{$T_5$} & \multicolumn{1}{c}{$T_6$} & \multicolumn{1}{c}{$T_7$}\\
+    \cline{2-9}
+    \code{rowIdx} & \colorbox{red!18}{\strut 0} & \colorbox{red!18}{\strut 0}
+      & \colorbox{green!22}{\strut 1} & \colorbox{green!22}{\strut 1} & \colorbox{green!22}{\strut 1}
+      & \colorbox{yellow!35}{\strut 2} & \colorbox{yellow!35}{\strut 2} & \colorbox{blue!18}{\strut 3}\\
+    \cline{2-9}
+    \code{colIdx} & 0 & 1 & 0 & 2 & 3 & 1 & 2 & 3\\
+    \cline{2-9}
+    \code{value}  & 1 & 7 & 5 & 3 & 9 & 2 & 8 & 6\\
+    \cline{2-9}
+  \end{tabular}
+  \\[0.6em]
+  \begin{tabular}{c@{\quad$\longrightarrow$\quad}l}
+    $T_0,T_1$ & 都要更新 \code{y[0]}，必须用原子加\\
+    $T_2,T_3,T_4$ & 都要更新 \code{y[1]}，必须用原子加\\
+    $T_5,T_6$ & 都要更新 \code{y[2]}，必须用原子加\\
+    $T_7$ & 更新 \code{y[3]}
+  \end{tabular}
+  \caption{以 COO 格式并行化 SpMV：每个线程负责一个非零元素。同色的线程映射到同一行，
+  因而会写同一个输出元素}
+  \label{fig:17-4}
+\end{figure}
+
+对应的内核见图 \ref{fig:17-5}。线程先算出自己负责的非零元素下标并做边界检查，然后
+分别从 \code{rowIdx}、\code{colIdx} 和 \code{value} 三个数组中取出该元素的行号、
+列号和数值，接着用列号去输入向量 \code{x} 中取值、与非零值相乘，最后把乘积累加到
+行号对应的输出元素上。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.94\textwidth}
+  \begin{lstlisting}[language=C++,numbers=left]
+__global__ void spmv_coo_kernel(COOMatrix cooMatrix, float* x, float* y) {
+    unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
+    if(i < cooMatrix.numNonzeros) {
+        unsigned int row = cooMatrix.rowIdx[i];
+        unsigned int col = cooMatrix.colIdx[i];
+        float value = cooMatrix.value[i];
+        atomicAdd(&y[row], x[col]*value);
+    }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{并行 SpMV/COO 内核}
+  \label{fig:17-5}
+\end{figure}
+
+累加\textbf{必须}使用原子操作。原因在图 \ref{fig:17-4} 中一目了然：映射到同一行的
+多个线程会同时更新同一个输出元素，$T_0$ 和 $T_1$ 都要写 \code{y[0]}。
+
+由于 SpMV 的代码总是与它所假设的存储格式绑死，本章统一在内核名字里带上格式后缀，
+把图 \ref{fig:17-5} 的代码称为 SpMV/COO。
+
+\noindent\textbf{译者注：}上面的内核只做累加、不做初始化，因此调用前必须保证
+\code{y} 已按 $Y$ 的值（或按 $0$）填好。这与 $A\times X+Y$ 的“乘加”语义一致，但很
+容易被忽略。底本对此未作说明，本译稿在此提醒。
+
+\subsection*{COO 的五维评价}
+
+\textbf{空间效率}：留到介绍完其他格式后再一并比较。
+
+\textbf{灵活性}：COO 极为灵活。只要三个数组同步地重排，非零元素在数组中的顺序可以
+任意打乱而不丢失任何信息。图 \ref{fig:17-6} 演示了这一点：重排之后
+\code{value[0]} 装的是原矩阵第 1 行第 3 列的元素，但因为行号和列号跟着一起搬了家，
+它在原矩阵中的位置仍能被正确还原。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{r|c|c|c|c|c|c|c|c|}
+    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
+      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}
+      & \multicolumn{1}{c}{5} & \multicolumn{1}{c}{6} & \multicolumn{1}{c}{7}\\
+    \cline{2-9}
+    \code{rowIdx} & 1 & 3 & 0 & 2 & 1 & 0 & 2 & 1\\
+    \cline{2-9}
+    \code{colIdx} & 3 & 3 & 1 & 2 & 0 & 0 & 1 & 2\\
+    \cline{2-9}
+    \code{value}  & 9 & 6 & 7 & 8 & 5 & 1 & 2 & 3\\
+    \cline{2-9}
+  \end{tabular}
+  \caption{重排后的 COO 表示。三个数组同步重排，表示的矩阵与图 \ref{fig:17-3} 完全相同}
+  \label{fig:17-6}
+\end{figure}
+
+换句话说，SpMV/COO 可以按任意顺序处理这些元素：只要保证 \code{value} 中每个元素都
+被处理过一次，\code{rowIdx[i]} 指定的那个 $y$ 元素总会收到
+$\code{value[i]}\times\code{x[colIdx[i]]}$ 这份贡献，最终结果与处理顺序无关。
+
+读者也许会问：为什么要重排？一个原因是数据可能来自某个不按特定顺序给出非零元素的
+文件，而我们仍需要一种一致的表示方式；正因为如此，COO 是矩阵\textbf{构建阶段}的
+常用格式。另一个原因是，不要求任何顺序保证，就意味着新增非零元素只需在三个数组
+末尾各追加一项即可；正因为如此，COO 也是矩阵在计算过程中\textbf{需要被修改}时的
+常用格式。第 \ref{sec:spmv-hybrid} 节还会展示 COO 灵活性的另一处妙用。
+
+\textbf{可访问性}：COO 让“给定一个非零元素，取它的行号和列号”变得非常容易，这正是
+SpMV/COO 能够按非零元素并行的前提。反过来，COO 并不方便“给定一行（或一列），取出
+该行（列）的全部非零元素”。因此，如果计算需要按行或按列遍历矩阵，COO 就不是好选择。
+
+\textbf{内存访问效率}：参见图 \ref{fig:17-4} 中线程与数组元素的对应关系——相邻线程
+访问三个数组中的相邻元素。因此 SpMV/COO 对矩阵数据的访问是\textbf{合并}的。
+
+\textbf{负载均衡}：每个线程只负责一个非零元素，工作量完全相同，因此除边界线程外
+不会出现控制流分歧。
+
+SpMV/COO 的主要缺陷是必须使用原子操作，而这有两重麻烦。其一，正如前面各章所见，
+原子操作延迟高、吞吐量低。其二，多个原子操作作用于同一输出元素的\textbf{先后顺序
+是不确定的}；当操作对象是浮点数时，这种不确定性会带来数值稳定性问题（参见附录 A）。
+
+要避免原子操作，就得让同一行的所有非零元素都归同一个线程处理，使该线程成为对应
+输出元素的唯一写者。但 COO 恰恰不提供这种可访问性。下一节介绍的格式正好补上这一块。
+
+\section{用 CSR 格式按行分组非零元素}
+\label{sec:spmv-csr}
+
+上一节的结论是：只要能“给定一行，取出该行全部非零元素”，就能把整行交给同一个线程，
+从而彻底摆脱原子操作。提供这种可访问性的格式是\textbf{压缩稀疏行格式}
+（Compressed Sparse Row，简称 CSR）。
+
+CSR 与 COO 一样，把非零值放在一维的 \code{value} 数组里，把每个非零值的列号放在
+\code{colIdx} 数组的相同位置上。区别在于两点。第一，CSR 中的非零元素\textbf{按行
+分组}：先放第 0 行的全部非零元素，再放第 1 行的，依此类推。第二，CSR 用一个
+\code{rowPtrs} 数组取代了 COO 的 \code{rowIdx} 数组。
+
+图 \ref{fig:17-7} 给出了图 \ref{fig:17-1} 中矩阵的 CSR 表示。第 0 行的非零元素
+（1 和 7）排在最前，接着是第 1 行的（5、3、9），然后是第 2 行的（2、8），最后是
+第 3 行的（6）。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{r|c|c|c|c|c|}
+    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
+      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}\\
+    \cline{2-6}
+    \code{rowPtrs} & 0 & 2 & 5 & 7 & 8\\
+    \cline{2-6}
+  \end{tabular}
+  \\[0.7em]
+  \begin{tabular}{r|c|c|c|c|c|c|c|c|}
+    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
+      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}
+      & \multicolumn{1}{c}{5} & \multicolumn{1}{c}{6} & \multicolumn{1}{c}{7}\\
+    \cline{2-9}
+    \code{colIdx} & \multicolumn{1}{|c}{\colorbox{red!18}{\strut 0}} & \colorbox{red!18}{\strut 1}
+      & \multicolumn{1}{|c}{\colorbox{green!22}{\strut 0}} & \colorbox{green!22}{\strut 2} & \colorbox{green!22}{\strut 3}
+      & \multicolumn{1}{|c}{\colorbox{yellow!35}{\strut 1}} & \colorbox{yellow!35}{\strut 2}
+      & \multicolumn{1}{|c|}{\colorbox{blue!18}{\strut 3}}\\
+    \cline{2-9}
+    \code{value} & \multicolumn{1}{|c}{\colorbox{red!18}{\strut 1}} & \colorbox{red!18}{\strut 7}
+      & \multicolumn{1}{|c}{\colorbox{green!22}{\strut 5}} & \colorbox{green!22}{\strut 3} & \colorbox{green!22}{\strut 9}
+      & \multicolumn{1}{|c}{\colorbox{yellow!35}{\strut 2}} & \colorbox{yellow!35}{\strut 8}
+      & \multicolumn{1}{|c|}{\colorbox{blue!18}{\strut 6}}\\
+    \cline{2-9}
+    \multicolumn{1}{c}{} & \multicolumn{2}{c}{\footnotesize 行 0} & \multicolumn{3}{c}{\footnotesize 行 1}
+      & \multicolumn{2}{c}{\footnotesize 行 2} & \multicolumn{1}{c}{\footnotesize 行 3}
+  \end{tabular}
+  \caption{图 \ref{fig:17-1} 中矩阵的 CSR 表示。非零元素按行分组，\code{rowPtrs}
+  记录每行在 \code{value}/\code{colIdx} 中的起始偏移}
+  \label{fig:17-7}
+\end{figure}
+
+数组 \code{rowPtrs} 的第 $r$ 项，给出第 $r$ 行的非零元素在 \code{colIdx} 和
+\code{value} 中的起始位置。例如它的第 0 项为 0，表示第 0 行从 \code{value[0]}
+开始；第 1 项为 2，表示第 1 行从 \code{value[2]} 开始，依此类推。注意
+\code{rowPtrs} 的长度是行数加一：最后一项的值 8，记录的是一个并不存在的
+“第 4 行”的起始位置。这个额外的哨兵项纯粹是为了方便——许多算法需要用“下一行的
+起始位置”来界定当前行的结束位置，有了它，第 3 行的结束位置就无须特殊处理。
+
+图 \ref{fig:17-7} 中每一行内部的非零元素还按列号升序排好了序。这样排序能带来更好的
+内存访问模式，但\textbf{同样不是必需的}：行内非零元素乱序时，本节的内核依然正确。
+当行内确实按列号有序时，\code{value} 数组（以及 \code{colIdx} 数组）的布局可以
+理解为“把所有零元素剔除之后的矩阵行主序布局”。
+
+\subsection*{并行化：一个线程负责一行}
+
+用 CSR 做并行 SpMV 的自然方式是给每一行分配一个线程，如图 \ref{fig:17-8} 所示。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{r|c|c|c|c|c|c|c|c|}
+    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
+      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}
+      & \multicolumn{1}{c}{5} & \multicolumn{1}{c}{6} & \multicolumn{1}{c}{7}\\
+    \cline{2-9}
+    \code{value} & 1 & 7 & 5 & 3 & 9 & 2 & 8 & 6\\
+    \cline{2-9}
+    \multicolumn{1}{c}{} & \multicolumn{1}{c}{$\uparrow$} & \multicolumn{1}{c}{}
+      & \multicolumn{1}{c}{$\uparrow$} & \multicolumn{1}{c}{} & \multicolumn{1}{c}{}
+      & \multicolumn{1}{c}{$\uparrow$} & \multicolumn{1}{c}{} & \multicolumn{1}{c}{$\uparrow$}\\
+    \multicolumn{1}{c}{} & \multicolumn{1}{c}{$T_0$} & \multicolumn{1}{c}{}
+      & \multicolumn{1}{c}{$T_1$} & \multicolumn{1}{c}{} & \multicolumn{1}{c}{}
+      & \multicolumn{1}{c}{$T_2$} & \multicolumn{1}{c}{} & \multicolumn{1}{c}{$T_3$}
+  \end{tabular}
+  \\[0.7em]
+  \begin{tabular}{c@{\quad}c@{\quad}c@{\quad}c}
+    \multicolumn{4}{c}{\footnotesize 各线程在点积循环中依次访问的下标}\\[0.3em]
+    $T_0$：0, 1 & $T_1$：2, 3, 4 & $T_2$：5, 6 & $T_3$：7
+  \end{tabular}
+  \caption{以 CSR 格式并行化 SpMV：每个线程负责一行。第一次迭代时，四个线程分别
+  访问 \code{value[0]}、\code{value[2]}、\code{value[5]} 和 \code{value[7]}，
+  彼此相隔很远}
+  \label{fig:17-8}
+\end{figure}
+
+对应的内核见图 \ref{fig:17-9}。线程先确定自己负责的行号并做边界检查，然后用
+\code{rowPtrs} 中相邻的两项分别找到该行非零元素的起点和终点，在这个区间上做点积
+循环。循环体中，线程取出当前非零元素的列号和数值，用列号去
+\code{x} 中查值、相乘，并累加到局部变量 \code{sum} 上。循环开始前 \code{sum} 被
+初始化为 0，循环结束后再一次性写回输出向量。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.94\textwidth}
+  \begin{lstlisting}[language=C++,numbers=left]
+__global__ void spmv_csr_kernel(CSRMatrix csrMatrix, float* x, float* y) {
+    unsigned int row = blockIdx.x*blockDim.x + threadIdx.x;
+    if(row < csrMatrix.numRows) {
+        float sum = 0.0f;
+        for(unsigned int i = csrMatrix.rowPtrs[row];
+                         i < csrMatrix.rowPtrs[row + 1]; ++i) {
+            unsigned int col = csrMatrix.colIdx[i];
+            float value = csrMatrix.value[i];
+            sum += x[col]*value;
+        }
+        y[row] += sum;
+    }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{并行 SpMV/CSR 内核}
+  \label{fig:17-9}
+\end{figure}
+
+请注意，把 \code{sum} 累加到输出向量时\textbf{不需要原子操作}：每一行只由一个线程
+遍历，因此每个线程写的都是互不相同的输出元素。这正是 CSR 相对 COO 的核心收益。
+
+\subsection*{CSR 的五维评价}
+
+\textbf{空间效率}：CSR 比 COO 更省空间。COO 需要 \code{rowIdx}、\code{colIdx} 和
+\code{value} 三个数组，长度都等于非零元素个数。CSR 只有 \code{colIdx} 和
+\code{value} 两个数组的长度等于非零元素个数，第三个数组 \code{rowPtrs} 的长度只是
+行数加一，通常远小于非零元素个数。
+
+\textbf{灵活性}：在增加非零元素这件事上，CSR 不如 COO 灵活。COO 只需在数组末尾
+追加（前提是预留了足够空间），而 CSR 必须把新元素插进它所属的那一行——这意味着
+后续所有行的非零元素都要向后搬移，\code{rowPtrs} 中后续所有行的偏移也都要递增。
+因此向 CSR 矩阵中添加非零元素的代价远高于 COO。
+
+\textbf{可访问性}：CSR 让“给定一行，取出该行全部非零元素”变得容易，这正是
+SpMV/CSR 能够按行并行、从而免去原子操作的基础。在真实的稀疏矩阵应用中，矩阵通常有
+数千到数百万行，每行含有几十到几百个非零元素，按行并行看起来非常合适：线程数量足够
+多，每个线程的工作量也足够可观。但也有例外——某些应用中矩阵的行数可能不足以喂饱
+GPU 的全部线程，这时 COO 反而能榨出更多并行度，因为非零元素总是比行多。此外，CSR
+并不方便“给定一列，取出该列全部非零元素”；若应用确实需要按列访问，可能得额外维护一份
+按列组织的表示，例如第 \ref{sec:spmv-csc} 节介绍的 CSC 格式。
+
+\textbf{内存访问效率}：这是 CSR 的软肋。看图 \ref{fig:17-8} 中点积循环第一次迭代
+时的访问模式——相邻线程访问的数据元素相距甚远：线程 0、1、2、3 分别访问
+\code{value[0]}、\code{value[2]}、\code{value[5]} 和 \code{value[7]}；第二次迭代
+它们分别访问 \code{value[1]}、\code{value[3]}、\code{value[6]}，而线程 3 已经无事
+可做。结果是 SpMV/CSR 对矩阵的访问\textbf{无法合并}，内存带宽利用效率低下。
+
+\textbf{负载均衡}：这是 CSR 的另一个软肋。线程在点积循环中的迭代次数取决于它负责的
+那一行有多少非零元素。而非零元素在各行之间的分布可能相当随机，相邻的两行完全可能
+一行有 3 个非零元素、另一行有 300 个。结果是大多数甚至全部 warp 中都可能出现严重的
+控制流分歧。
+
+小结一下：CSR 相对 COO 的优势是空间效率更高，并且提供了“按行访问”的能力，从而让
+SpMV/CSR 能够按行并行、避开原子操作；劣势则是增删非零元素不灵活、内存访问不合并、
+控制分歧严重。接下来几节讨论的格式，会用一部分空间效率去交换更好的访问合并与更低的
+控制分歧。
+
+\noindent 顺带一提，\textbf{在 GPU 上把 COO 转换成 CSR} 是一道很好的练习题：它恰好
+要用到直方图（统计每行的非零元素个数）和前缀和（把计数转成偏移）这两个基础并行原语，
+参见本章练习 3。
+
+\section{用 ELL 格式改善内存访问合并}
+\label{sec:spmv-ell}
+
+SpMV/CSR 访问不合并的根源在于：每一行的长度不同，所以各行的起始偏移在
+\code{value} 数组中毫无规律，相邻线程自然落在相距甚远的位置上。要修好这一点，就得
+先把“行长参差”这个不规整性消掉。办法是\textbf{填充}（padding）加\textbf{转置}
+（transposition）。这正是 ELL 格式的思路，它的名字来自求解椭圆边值问题的软件包
+ELLPACK 中的稀疏矩阵模块\cite{rice2012ellpack}。
+
+理解 ELL 最方便的途径是从 CSR 出发，如图 \ref{fig:17-10} 所示。第一步，找出非零
+元素最多的那一行，然后给其余各行在末尾补上\textbf{填充元素}，让所有行等长。这样，
+原本参差不齐的行就被拉成了一个规整的矩形。在我们的小例子里，第 1 行最长（3 个非零
+元素），于是给第 0 行补 1 个、第 2 行补 1 个、第 3 行补 2 个填充元素，图中用带
+$*$ 的格子表示。注意 \code{colIdx} 数组也要同步填充，以保持与 \code{value} 的
+一一对应。
+
+第二步，把这个矩形按\textbf{列主序}铺开：先把第 0 列的所有元素放在连续的内存位置上，
+接着放第 1 列的所有元素，依此类推。这等价于把矩形按 C 语言的行主序做一次转置。在
+我们的例子里，转置之后 \code{value[0]} 到 \code{value[3]} 依次是 1、5、2、6，也就
+是各行的第 0 个元素；\code{colIdx[0]} 到 \code{colIdx[3]} 则是这些元素的列号。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c}
+  \textbf{(a) 填充成矩形（每行补齐到 3 个元素）}\\[0.5em]
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{r|c|c|c|}
+    \cline{2-4}
+    行 0 & \colorbox{red!18}{\strut\ 1\ } & \colorbox{red!18}{\strut\ 7\ } & \strut\ *\ \\
+    \cline{2-4}
+    行 1 & \colorbox{green!22}{\strut\ 5\ } & \colorbox{green!22}{\strut\ 3\ } & \colorbox{green!22}{\strut\ 9\ }\\
+    \cline{2-4}
+    行 2 & \colorbox{yellow!35}{\strut\ 2\ } & \colorbox{yellow!35}{\strut\ 8\ } & \strut\ *\ \\
+    \cline{2-4}
+    行 3 & \colorbox{blue!18}{\strut\ 6\ } & \strut\ *\ & \strut\ *\ \\
+    \cline{2-4}
+  \end{tabular}
+  \qquad
+  \begin{tabular}{r|c|c|c|}
+    \cline{2-4}
+    行 0 & 0 & 1 & * \\
+    \cline{2-4}
+    行 1 & 0 & 2 & 3 \\
+    \cline{2-4}
+    行 2 & 1 & 2 & * \\
+    \cline{2-4}
+    行 3 & 3 & * & * \\
+    \cline{2-4}
+  \end{tabular}
+  \\[1.2em]
+  \textbf{(b) 按列主序铺开}\\[0.5em]
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{r|c|c|c|c|c|c|c|c|c|c|c|c|}
+    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
+      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}
+      & \multicolumn{1}{c}{5} & \multicolumn{1}{c}{6} & \multicolumn{1}{c}{7}
+      & \multicolumn{1}{c}{8} & \multicolumn{1}{c}{9} & \multicolumn{1}{c}{10}
+      & \multicolumn{1}{c}{11}\\
+    \cline{2-13}
+    \code{colIdx} & 0 & 0 & 1 & 3 & 1 & 2 & 2 & * & * & 3 & * & *\\
+    \cline{2-13}
+    \code{value}  & 1 & 5 & 2 & 6 & 7 & 3 & 8 & * & * & 9 & * & *\\
+    \cline{2-13}
+    \multicolumn{1}{c}{} & \multicolumn{4}{c}{\footnotesize 第 0 次迭代}
+      & \multicolumn{4}{c}{\footnotesize 第 1 次迭代} & \multicolumn{4}{c}{\footnotesize 第 2 次迭代}
+  \end{tabular}
+  \\[0.6em]
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{r|c|c|c|c|}
+    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
+      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3}\\
+    \cline{2-5}
+    \code{nnzPerRow} & 2 & 3 & 2 & 1\\
+    \cline{2-5}
+  \end{tabular}
+  \end{tabular}
+  \caption{ELL 存储格式示例。先把各行填充到等长，再按列主序铺开；$*$ 表示填充元素}
+  \label{fig:17-10}
+\end{figure}
+
+由于所有行等长，\code{rowPtrs} 数组不再需要了：第 $r$ 行的起点就是
+\code{value[r]}。而从第 $r$ 行的当前元素走到下一个元素，只需把下标加上原矩阵的
+行数。例如第 2 行的第 0 个元素在 \code{value[2]}，它的下一个元素就在
+\code{value[2+4]}，即 \code{value[6]}——这里的 4 就是原矩阵的行数。
+
+\subsection*{并行化：一个线程负责一行，但按列主序取数}
+
+图 \ref{fig:17-11} 展示了 SpMV/ELL 的并行划分，图 \ref{fig:17-12} 给出对应内核。
+与 CSR 一样，每个线程负责一行；不同之处在于线程取数的下标算法。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{r|c|c|c|c|c|c|c|c|c|c|c|c|}
+    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
+      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}
+      & \multicolumn{1}{c}{5} & \multicolumn{1}{c}{6} & \multicolumn{1}{c}{7}
+      & \multicolumn{1}{c}{8} & \multicolumn{1}{c}{9} & \multicolumn{1}{c}{10}
+      & \multicolumn{1}{c}{11}\\
+    \cline{2-13}
+    \code{value} & \colorbox{red!18}{\strut 1} & \colorbox{green!22}{\strut 5}
+      & \colorbox{yellow!35}{\strut 2} & \colorbox{blue!18}{\strut 6}
+      & \colorbox{red!18}{\strut 7} & \colorbox{green!22}{\strut 3}
+      & \colorbox{yellow!35}{\strut 8} & \strut * & \strut *
+      & \colorbox{green!22}{\strut 9} & \strut * & \strut *\\
+    \cline{2-13}
+    \multicolumn{1}{c}{} & \multicolumn{1}{c}{$T_0$} & \multicolumn{1}{c}{$T_1$}
+      & \multicolumn{1}{c}{$T_2$} & \multicolumn{1}{c}{$T_3$}
+      & \multicolumn{1}{c}{$T_0$} & \multicolumn{1}{c}{$T_1$}
+      & \multicolumn{1}{c}{$T_2$} & \multicolumn{1}{c}{} & \multicolumn{1}{c}{}
+      & \multicolumn{1}{c}{$T_1$} & \multicolumn{1}{c}{} & \multicolumn{1}{c}{}
+  \end{tabular}
+  \caption{以 ELL 格式并行化 SpMV。第 0 次迭代中四个线程访问 \code{value[0..3]}，
+  地址连续，访问得以合并}
+  \label{fig:17-11}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.94\textwidth}
+  \begin{lstlisting}[language=C++,numbers=left]
+__global__ void spmv_ell_kernel(ELLMatrix ellMatrix, float* x, float* y) {
+    unsigned int row = blockIdx.x*blockDim.x + threadIdx.x;
+    if(row < ellMatrix.numRows) {
+        float sum = 0.0f;
+        for(unsigned int t = 0; t < ellMatrix.nnzPerRow[row]; ++t) {
+            unsigned int i = t*ellMatrix.numRows + row;
+            unsigned int col = ellMatrix.colIdx[i];
+            float value = ellMatrix.value[i];
+            sum += x[col]*value;
+        }
+        y[row] += sum;
+    }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{并行 SpMV/ELL 内核}
+  \label{fig:17-12}
+\end{figure}
+
+内核假设输入矩阵带有一个 \code{nnzPerRow} 向量，记录每行真实的非零元素个数，使
+线程只需在自己那一行的有效元素上迭代。即使没有这个向量也不影响正确性——线程可以
+一律迭代到最大行长，因为填充元素的值为 0，乘进去不会改变结果，只是白白多做了几轮
+乘加。
+
+由于压缩后的矩阵按列主序存放，第 $t$ 次迭代中该元素在一维数组里的下标为
+\[
+  i = t\times\code{numRows} + \code{row}.
+\]
+\code{row} 是由 \code{threadIdx.x} 直接导出的，所以\textbf{相邻线程的 $i$ 也相邻}
+——对 \code{value} 和 \code{colIdx} 的访问因此是合并的。这正是 ELL 相对 CSR 的
+核心收益。
+
+\subsection*{ELL 的五维评价}
+
+\textbf{空间效率}：ELL 因填充元素而比 CSR 更费空间，而且开销的大小\textbf{高度
+依赖非零元素的分布}。最糟糕的情形是极少数行的非零元素特别多——这时所有其他行都要
+被填充到那个极端长度，产生海量填充元素。
+
+举个更贴近现实的例子。设一个 $1000\times1000$ 的稀疏矩阵有 $1\%$ 的元素非零，即
+平均每行 10 个非零元素。算上索引开销，CSR 表示大约只占稠密表示的 $2\%$。现在假设
+其中恰好有一行含 200 个非零值，而其余各行都不到 10 个。用 ELL 就得把所有行都填充
+到 200 个元素，表示规模一举膨胀到稠密表示的约 $40\%$，是 CSR 表示的 20 倍。
+
+这说明我们需要一种手段，在从 CSR 转换到 ELL 时\textbf{控制填充元素的数量}。第
+\ref{sec:spmv-hybrid} 节给出的正是这样一种手段。
+
+\textbf{灵活性}：在增加非零元素这件事上，ELL 反而比 CSR 灵活。CSR 中插入一个非零
+元素要搬移后续所有行、并更新它们的行偏移；而在 ELL 中，只要目标行还有填充元素，
+直接把某个填充元素替换成真实值即可。更进一步，如果给 ELL 数组预留了余量，那么即使
+向最长的那一行添加元素，也只需把矩形整体扩出一列、给其他行各补一个填充元素，无须
+搬移任何已有元素。在这种情形下，ELL 的灵活性与 COO 相当。
+
+\textbf{可访问性}：ELL 同时具备 CSR 和 COO 两种可访问性。图 \ref{fig:17-12} 已经
+展示了如何“给定行号，访问该行的非零元素”。而“给定非零元素的下标，反推它的行号和
+列号”同样可行：列号可以直接从 \code{colIdx[i]} 读出；行号则可以利用填充后表示的
+规整性算出来。由下标公式 $i = t\times\code{numRows} + \code{row}$ 以及
+$\code{row} < \code{numRows}$ 可得
+\[
+  \code{row} = i \bmod \code{numRows}.
+\]
+这种双向可访问性让 ELL 既能按行并行、也能按非零元素并行。不过，按非零元素并行时会有
+一部分线程被分配到填充元素上，白做无用功——这是它相对 COO 的一处劣势。
+
+\textbf{内存访问效率}：如前所述，按列主序排布让相邻线程访问相邻内存位置，访问得以
+合并，内存带宽利用率因而显著提升。某些 GPU 架构（尤其是较老的世代）对访问合并有
+更严格的地址对齐要求；这时可以在转置之前给矩阵末尾补上几行，强制 SpMV/ELL 内核的
+每一次迭代都对齐到架构规定的对齐单位（例如 64 字节）。
+
+\textbf{负载均衡}：ELL 在这方面\textbf{毫无改善}。每个线程仍然要按自己那一行的
+非零元素个数循环，因此 SpMV/ELL 的控制分歧与 SpMV/CSR 一样严重。
+
+小结：ELL 相对 CSR 的改进在于增删更灵活、可访问性更强，以及最关键的——为
+SpMV/ELL 带来了内存访问合并。代价是空间效率不如 CSR，而控制分歧问题依然存在。
+下一节将同时改善这两点。
+
+\noindent\textbf{译者注：}底本在推导 $\code{row} = i \bmod \code{numRows}$ 时把
+下标公式的出处误标为“图 17.9”（SpMV/CSR 内核），实际应为图 17.12（SpMV/ELL 内核）。
+本译稿已改为指向对应的 SpMV/ELL 内核，即图 \ref{fig:17-12}。
+
+\section{用混合 ELL-COO 格式调节填充量}
+\label{sec:spmv-hybrid}
+
+ELL 的两个毛病——空间效率低和控制分歧——有一个共同的病灶：极少数超长行拖累了全体。
+只要有办法把这些超长行的“超出部分”\textbf{挪走}，填充量和迭代次数就会同时下降。而
+挪到哪里去呢？答案正是 COO——第 \ref{sec:spmv-coo} 节埋下的伏笔在这里揭晓。
+
+具体做法是：在把稀疏矩阵转成 ELL 之前，先设定一个每行保留的元素上限 $K$；超过 $K$ 的
+那些非零元素被摘出来，单独放进一份 COO 表示。剩下的部分用 SpMV/ELL 计算，摘出来的
+部分用 SpMV/COO 计算，两者的结果累加到同一个输出向量上即可——回忆一下，COO 允许
+以任意顺序处理元素，而且它本来就用原子加写输出，所以两份贡献能安全地汇合。这种
+“用两种格式协同完成一次计算”的思路，通称\textbf{混合方法}（hybrid method）。
+
+图 \ref{fig:17-13} 用一个 7 行的矩阵演示了这一过程。若单用 ELL，第 1 行（5 个非零
+元素）和第 6 行（4 个非零元素）拉高了行长上限，其余各行要被填充到 5 个元素，全表
+共 $7\times5=35$ 个槽位承载 17 个非零元素，填充元素多达 18 个，而且所有线程都得循环
+5 次。取 $K=2$，把第 1 行末尾的 3 个元素和第 6 行末尾的 2 个元素移入 COO 后，ELL 部分
+缩成 $7\times2=14$ 个槽位，填充元素只剩 2 个，所有线程只需循环 2 次。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c}
+  \textbf{(a) 原矩阵各行的非零元素（列号:值）}\\[0.5em]
+  \setlength{\tabcolsep}{5pt}
+  \begin{tabular}{r|l|c}
+    \hline
+    行 & 非零元素 & 个数\\
+    \hline
+    0 & (0:3) (3:1) & 2\\
+    1 & (0:2) (1:4) \colorbox{orange!30}{(2:1)} \colorbox{orange!30}{(5:5)} \colorbox{orange!30}{(7:7)} & 5\\
+    2 & (4:9) & 1\\
+    3 & (2:6) (6:2) & 2\\
+    4 & (1:8) (5:3) & 2\\
+    5 & (7:4) & 1\\
+    6 & (0:1) (2:5) \colorbox{orange!30}{(3:2)} \colorbox{orange!30}{(6:6)} & 4\\
+    \hline
+    \multicolumn{3}{l}{\footnotesize 着色部分被移入 COO 部分}\\
+  \end{tabular}
+  \\[1.2em]
+  \textbf{(b) ELL 部分（$K=2$，按列主序）}\\[0.5em]
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{r|c|c|c|c|c|c|c|c|c|c|c|c|c|c|}
+    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
+      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}
+      & \multicolumn{1}{c}{5} & \multicolumn{1}{c}{6} & \multicolumn{1}{c}{7}
+      & \multicolumn{1}{c}{8} & \multicolumn{1}{c}{9} & \multicolumn{1}{c}{10}
+      & \multicolumn{1}{c}{11} & \multicolumn{1}{c}{12} & \multicolumn{1}{c}{13}\\
+    \cline{2-15}
+    \code{colIdx} & 0 & 0 & 4 & 2 & 1 & 7 & 0 & 3 & 1 & * & 6 & 5 & * & 2\\
+    \cline{2-15}
+    \code{value}  & 3 & 2 & 9 & 6 & 8 & 4 & 1 & 1 & 4 & * & 2 & 3 & * & 5\\
+    \cline{2-15}
+    \multicolumn{1}{c}{} & \multicolumn{7}{c}{\footnotesize 第 0 次迭代}
+      & \multicolumn{7}{c}{\footnotesize 第 1 次迭代}
+  \end{tabular}
+  \\[1.2em]
+  \textbf{(c) COO 部分（被摘出的 5 个元素）}\\[0.5em]
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{r|c|c|c|c|c|}
+    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
+      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}\\
+    \cline{2-6}
+    \code{rowIdx} & 1 & 1 & 1 & 6 & 6\\
+    \cline{2-6}
+    \code{colIdx} & 2 & 5 & 7 & 3 & 6\\
+    \cline{2-6}
+    \code{value}  & 1 & 5 & 7 & 2 & 6\\
+    \cline{2-6}
+  \end{tabular}
+  \end{tabular}
+  \caption{混合 ELL-COO 表示示例。把超长行的尾部元素移入 COO 后，ELL 部分的填充
+  元素从 18 个降到 2 个，迭代次数从 5 次降到 2 次}
+  \label{fig:17-13}
+\end{figure}
+
+读者可能会担心：为了分离出 COO 部分而额外做的这些工作，会不会得不偿失？答案是
+\textbf{看情况}。如果一个稀疏矩阵只参与一次 SpMV，这份额外开销确实可能相当可观。
+但在大量真实应用中，SpMV 是在迭代求解器里\textbf{对同一个稀疏矩阵反复执行}的：每次
+迭代变化的只是 $x$ 和 $y$ 向量，而矩阵元素对应的是被求解线性方程组的系数，逐次迭代
+并不改变。因此，构造混合表示的一次性开销可以被摊薄到成百上千次迭代上。第
+\ref{sec:spmv-jds} 节还会再次用到这个“预处理开销可摊薄”的论证。
+
+\subsection*{混合 ELL-COO 的五维评价}
+
+\textbf{空间效率}：优于纯 ELL，因为填充量被显著压低了。
+
+\textbf{灵活性}：优于纯 ELL。两种格式都可以通过“替换填充元素”来向有余量的行添加
+非零元素；区别在于当目标行已经没有填充元素时——纯 ELL 必须整体扩出一列，而混合格式
+只需往 COO 部分末尾追加一项。
+
+\textbf{可访问性}：这是混合格式付出的代价。“给定行号，取出该行全部非零元素”不再
+总是可行了——只有完全装进 ELL 部分的行才能这样访问；一旦某行溢出到了 COO 部分，
+要凑齐它的全部非零元素就得去 COO 里做一次昂贵的搜索。
+
+\textbf{内存访问效率}：SpMV/ELL 和 SpMV/COO 对矩阵的访问都是合并的，两者的组合
+自然也是合并的。
+
+\textbf{负载均衡}：把超长行的尾巴摘掉之后，ELL 部分各行的长度趋于一致，
+SpMV/ELL 的控制分歧随之下降；而被摘走的那些元素落到了 COO 部分，那里本来就是
+“一个线程一个非零元素”，不存在控制分歧。两头都受益。
+
+小结：相对于纯 ELL，混合 ELL-COO 格式减少了填充从而提升了空间效率，保留了添加
+非零元素的灵活性，保留了合并的内存访问模式，并降低了控制分歧。付出的代价是可访问性
+上的一点损失：对溢出到 COO 部分的行，要取齐它的全部非零元素变得困难。
+
+\noindent\textbf{译者注：}底本在描述这一节的示例时，先说“第 1 行和第 6 行的非零
+元素最多”，随后又说“移走第 2 行末尾的 3 个元素和第 6 行末尾的 2 个元素”，行号
+前后不一致。本译稿改用自建的 7 行示例，行号、元素个数和填充量前后自洽，读者对照
+原书图 17.13 时请留意这一处编辑疏漏。
+
+\section{用 JDS 格式降低控制分歧}
+\label{sec:spmv-jds}
+
+上一节用“摘掉超长行的尾巴”来同时改善空间效率和控制分歧。本节介绍另一条路：
+\textbf{完全不做填充}，而是把行\textbf{按长度排序}后再按列主序铺开。排序之后的矩阵
+形似一个三角形（各行长度单调变化，边缘呈锯齿状），这种格式因此得名\textbf{锯齿对角
+存储格式}（Jagged Diagonal Storage，简称 JDS）。
+
+图 \ref{fig:17-14} 演示了如何用 JDS 存储图 \ref{fig:17-1} 中的矩阵。步骤如下。
+
+第一步，和 CSR、ELL 一样，把非零元素按行分组。
+
+第二步，按每行的非零元素个数对行排序（这里采用从多到少的降序）。排序时要额外维护
+一个 \code{row} 数组，记录每个位置上的行在\textbf{原矩阵}中的行号；每交换两行，就
+同步交换 \code{row} 数组中对应的两项。这样就始终能追溯回原始位置。在我们的例子中，
+各行的非零元素个数依次为 2、3、2、1，降序排序后的顺序是原来的第 1、0、2、3 行，
+于是 $\code{row}=[1,0,2,3]$。
+
+第三步，把排好序的非零元素及其列号\textbf{按列主序}存入 \code{value} 和
+\code{colIdx}。因为没有填充，各“列”的长度并不相同，所以需要一个 \code{iterPtr}
+数组来标记每一次迭代所对应的那一段非零元素从哪里开始。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c}
+  \textbf{(a) 按行长降序排序}\\[0.5em]
+  \setlength{\tabcolsep}{5pt}
+  \begin{tabular}{r|c|l|c}
+    \hline
+    位置 & \code{row}（原行号） & 非零元素（列号:值） & 个数\\
+    \hline
+    0 & 1 & (0:5) (2:3) (3:9) & 3\\
+    1 & 0 & (0:1) (1:7) & 2\\
+    2 & 2 & (1:2) (2:8) & 2\\
+    3 & 3 & (3:6) & 1\\
+    \hline
+  \end{tabular}
+  \\[1.2em]
+  \textbf{(b) 按列主序铺开，无填充}\\[0.5em]
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{r|c|c|c|c|c|c|c|c|}
+    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
+      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}
+      & \multicolumn{1}{c}{5} & \multicolumn{1}{c}{6} & \multicolumn{1}{c}{7}\\
+    \cline{2-9}
+    \code{colIdx} & 0 & 0 & 1 & 3 & 2 & 1 & 2 & 3\\
+    \cline{2-9}
+    \code{value}  & 5 & 1 & 2 & 6 & 3 & 7 & 8 & 9\\
+    \cline{2-9}
+    \multicolumn{1}{c}{} & \multicolumn{4}{c}{\footnotesize 第 0 次迭代}
+      & \multicolumn{3}{c}{\footnotesize 第 1 次迭代} & \multicolumn{1}{c}{\footnotesize 第 2 次}
+  \end{tabular}
+  \\[0.7em]
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{r|c|c|c|c|}
+    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
+      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3}\\
+    \cline{2-5}
+    \code{iterPtr} & 0 & 4 & 7 & 8\\
+    \cline{2-5}
+  \end{tabular}
+  \end{tabular}
+  \caption{JDS 存储格式示例。行按长度排序后按列主序铺开，无须任何填充元素；
+  \code{iterPtr} 标记每次迭代对应的段起点，\code{row} 保存原始行号}
+  \label{fig:17-14}
+\end{figure}
+
+图 \ref{fig:17-15} 展示了 SpMV/JDS 的并行划分。每个线程负责排序后的一行，沿着该行的
+非零元素做点积，并用 \code{iterPtr} 定位每次迭代的起点。从图中可以看出，同一次迭代
+中各线程访问的是 \code{value} 和 \code{colIdx} 中的\textbf{连续}位置，因此访问是
+合并的。SpMV/JDS 内核的实现留作练习（见本章练习 5）。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{r|c|c|c|c|c|c|c|c|}
+    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
+      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}
+      & \multicolumn{1}{c}{5} & \multicolumn{1}{c}{6} & \multicolumn{1}{c}{7}\\
+    \cline{2-9}
+    \code{value} & \colorbox{green!22}{\strut 5} & \colorbox{red!18}{\strut 1}
+      & \colorbox{yellow!35}{\strut 2} & \colorbox{blue!18}{\strut 6}
+      & \colorbox{green!22}{\strut 3} & \colorbox{red!18}{\strut 7}
+      & \colorbox{yellow!35}{\strut 8} & \colorbox{green!22}{\strut 9}\\
+    \cline{2-9}
+    \multicolumn{1}{c}{} & \multicolumn{1}{c}{$T_0$} & \multicolumn{1}{c}{$T_1$}
+      & \multicolumn{1}{c}{$T_2$} & \multicolumn{1}{c}{$T_3$}
+      & \multicolumn{1}{c}{$T_0$} & \multicolumn{1}{c}{$T_1$}
+      & \multicolumn{1}{c}{$T_2$} & \multicolumn{1}{c}{$T_0$}\\
+    \multicolumn{1}{c}{} & \multicolumn{4}{c}{\footnotesize 第 0 次迭代：4 个线程全部活跃}
+      & \multicolumn{3}{c}{\footnotesize 第 1 次：3 个} & \multicolumn{1}{c}{\footnotesize 第 2 次：1 个}
+  \end{tabular}
+  \caption{以 JDS 格式并行化 SpMV。因为行已按长度排序，同一 warp 内的线程迭代次数
+  接近，控制分歧显著降低}
+  \label{fig:17-15}
+\end{figure}
+
+\subsection*{分段变体}
+
+JDS 还有一个常见变体：行排好序之后，把它们\textbf{切分成若干段}。由于已经排过序，
+同一段内各行的非零元素个数大致相当。于是可以为\textbf{每一段}单独生成一份 ELL 表示
+——段内只需把各行填充到\textbf{本段最长行}的长度即可。相比对整个矩阵做一份 ELL，
+这样能大幅削减填充元素。在这个变体中，\code{iterPtr} 不再需要，取而代之的是一个
+记录各 ELL 段起始位置的段偏移数组。
+
+\subsection*{排序会不会算错？开销值不值？}
+
+读者应当追问两个问题。
+
+第一个问题：把行重新排序，会不会导致线性方程组的解出错？不会。回忆线性代数中的
+基本事实——\textbf{任意交换方程组中方程的次序，解不变}。矩阵的每一行就是一个方程，
+只要在重排行的同时把 $y$ 向量的对应元素一起重排，就等价于重排了方程的次序，解
+依然正确。唯一需要补做的一步是：算完之后用 \code{row} 数组把结果向量还原回原来的
+次序。
+
+第二个问题：排序的开销会不会太大？这里的答案与上一节的混合方法如出一辙——只要
+SpMV/JDS 是被放在迭代求解器里反复调用的，排序以及最终结果的还原都只需做一次，其
+成本可以摊薄到求解器的成百上千次迭代上。
+
+\subsection*{JDS 的五维评价}
+
+\textbf{空间效率}：JDS 比 ELL 更省空间，因为它完全不做填充。分段 ELL 变体虽然有
+填充，但填充量也远少于对整个矩阵做一份 ELL。
+
+\textbf{灵活性}：JDS 在添加非零元素上很不方便，甚至比 CSR 还差——添加元素会改变
+行的长度，而行长一变就可能需要重新排序。
+
+\textbf{可访问性}：JDS 类似 CSR，允许“给定行号，访问该行的非零元素”；但不像 COO 和
+ELL 那样，能“给定一个非零元素，直接反推它的行号和列号”。
+
+\textbf{内存访问效率}：JDS 和 ELL 一样按列主序存放非零元素，因此访问同样是合并的。
+但两者有一点微妙差别：JDS 不做填充，各次迭代的起始地址（见图 \ref{fig:17-15} 中
+\code{iterPtr} 标出的段边界）可以落在任意位置，没有简单廉价的办法把它们强制对齐到
+架构规定的对齐边界上。因此在对对齐敏感的架构上，JDS 的访存效率可能略逊于 ELL。
+
+\textbf{负载均衡}：这是 JDS 最独特的价值。行按长度排序之后，同一个 warp 内的线程
+所负责的行长度相近，迭代次数因而接近一致。所以 JDS 在\textbf{降低控制分歧}方面
+非常有效。
+
+\noindent\textbf{译者注：}底本在本节开头说“把行按长度排序，比如从最长到最短”，
+随后描述具体步骤时却写成“按每行非零元素个数\emph{升序}排序”，前后不一致；而其后
+“排序后的矩阵形似三角矩阵”的说法，以及 JDS 这一名称的由来，都对应降序排列。本译稿
+统一采用降序（从最长到最短），图 \ref{fig:17-14} 与图 \ref{fig:17-15} 均按此绘制。
+需要说明的是，就 SpMV 的正确性和降低控制分歧的效果而言，升序与降序并无本质差别，
+关键只在于\textbf{让长度相近的行落进同一个 warp}。
+
+\section{用 CSC 格式支持按列访问}
+\label{sec:spmv-csc}
+
+到目前为止，COO 和 ELL 让我们能“给定一个非零元素，取它的行号和列号”，而 CSR、ELL
+和 JDS 让我们能“给定一行，取该行的全部非零元素”。但对 SpMV 之外的某些计算，我们
+关心的是\textbf{按列遍历}——给定一列，取出该列的全部非零元素。这时该用
+\textbf{压缩稀疏列格式}（Compressed Sparse Column，简称 CSC）。
+
+CSC 与 CSR 高度对称，只是把行和列的角色互换了。非零值仍然存在一维的 \code{value}
+数组里，但这次是\textbf{按列分组}：先放第 0 列的非零元素，再放第 1 列的，依此类推。
+每个非零值的\textbf{行号}存在 \code{rowIdx} 数组的相同位置上。最后，一个
+\code{colPtrs} 数组记录每一列的非零元素在 \code{rowIdx}/\code{value} 中的起始偏移，
+其长度为列数加一，末项同样是界定最后一列结束位置的哨兵。
+
+图 \ref{fig:17-16} 给出了图 \ref{fig:17-1} 中矩阵的 CSC 表示：第 0 列的非零元素是
+1 和 5，第 1 列是 7 和 2，第 2 列是 3 和 8，第 3 列是 9 和 6。与 CSR 一样，列内
+非零元素按行号升序排列并非必需。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{r|c|c|c|c|c|}
+    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
+      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}\\
+    \cline{2-6}
+    \code{colPtrs} & 0 & 2 & 4 & 6 & 8\\
+    \cline{2-6}
+  \end{tabular}
+  \\[0.7em]
+  \begin{tabular}{r|c|c|c|c|c|c|c|c|}
+    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
+      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}
+      & \multicolumn{1}{c}{5} & \multicolumn{1}{c}{6} & \multicolumn{1}{c}{7}\\
+    \cline{2-9}
+    \code{rowIdx} & \multicolumn{1}{|c}{\colorbox{red!18}{\strut 0}} & \colorbox{red!18}{\strut 1}
+      & \multicolumn{1}{|c}{\colorbox{green!22}{\strut 0}} & \colorbox{green!22}{\strut 2}
+      & \multicolumn{1}{|c}{\colorbox{yellow!35}{\strut 1}} & \colorbox{yellow!35}{\strut 2}
+      & \multicolumn{1}{|c}{\colorbox{blue!18}{\strut 1}} & \multicolumn{1}{c|}{\colorbox{blue!18}{\strut 3}}\\
+    \cline{2-9}
+    \code{value} & \multicolumn{1}{|c}{\colorbox{red!18}{\strut 1}} & \colorbox{red!18}{\strut 5}
+      & \multicolumn{1}{|c}{\colorbox{green!22}{\strut 7}} & \colorbox{green!22}{\strut 2}
+      & \multicolumn{1}{|c}{\colorbox{yellow!35}{\strut 3}} & \colorbox{yellow!35}{\strut 8}
+      & \multicolumn{1}{|c}{\colorbox{blue!18}{\strut 9}} & \multicolumn{1}{c|}{\colorbox{blue!18}{\strut 6}}\\
+    \cline{2-9}
+    \multicolumn{1}{c}{} & \multicolumn{2}{c}{\footnotesize 列 0} & \multicolumn{2}{c}{\footnotesize 列 1}
+      & \multicolumn{2}{c}{\footnotesize 列 2} & \multicolumn{2}{c}{\footnotesize 列 3}
+  \end{tabular}
+  \caption{图 \ref{fig:17-1} 中矩阵的 CSC 表示。与 CSR 对称，只是行列角色互换}
+  \label{fig:17-16}
+\end{figure}
+
+\subsection*{用 CSC 做 SpMV：一个反面教材}
+
+CSC 本来就不是为 SpMV 设计的。但把它用在 SpMV 上仍有价值——作为一个对照，它能把
+前面几节反复出现的各项取舍集中呈现出来。
+
+用 CSC 做 SpMV 时，给每一列分配一个线程。线程先取出该列对应的输入向量元素
+\code{x[col]}，然后沿着该列的非零元素循环：对每个非零元素，取出它的行号，把
+\code{x[col]} 与非零值相乘，再\textbf{原子地}累加到行号对应的输出元素上。内核见图
+\ref{fig:17-17}。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.94\textwidth}
+  \begin{lstlisting}[language=C++,numbers=left]
+__global__ void spmv_csc_kernel(CSCMatrix cscMatrix, float* x, float* y) {
+    unsigned int col = blockIdx.x*blockDim.x + threadIdx.x;
+    if(col < cscMatrix.numCols) {
+        float x_val = x[col];
+        for(unsigned int i = cscMatrix.colPtrs[col];
+                         i < cscMatrix.colPtrs[col + 1]; ++i) {
+            unsigned int row = cscMatrix.rowIdx[i];
+            float value = cscMatrix.value[i];
+            atomicAdd(&y[row], x_val*value);
+        }
+    }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{并行 SpMV/CSC 内核}
+  \label{fig:17-17}
+\end{figure}
+
+这里必须用原子操作：遍历不同列的线程完全可能同时去更新同一个输出元素——在图
+\ref{fig:17-1} 的矩阵中，负责第 0 列和第 1 列的两个线程就都要写 \code{y[0]}。
+
+\noindent\textbf{译者注：}底本中这段 SpMV/CSC 内核所配的图题（图 17.18）误写成
+“A parallel SpMV/CSR kernel”，与代码内容不符；本译稿已在图 \ref{fig:17-17} 的
+标题中改正为 SpMV/CSC。
+
+\subsection*{CSC 的五维评价}
+
+\textbf{空间效率}：在行数与列数相当的前提下，CSC 与 CSR 相同——两个长度等于非零
+元素个数的数组（\code{rowIdx} 和 \code{value}），加上一个长度为列数加一的
+\code{colPtrs}。
+
+\textbf{灵活性}：与 CSR 一样不灵活。新增的非零元素必须插进它所属的那一列，后续所有
+列的元素都要搬移，\code{colPtrs} 中后续所有偏移都要递增。
+
+\textbf{可访问性}：CSC 让“给定一列，取该列的全部非零元素”变得容易。如前所述，这种
+可访问性对 SpMV 并无帮助（SpMV 不需要按列遍历），但对另一些计算很有用，稍后再谈。
+
+\textbf{内存访问效率}：与 CSR 同病相怜。看图 \ref{fig:17-1} 的 CSC 表示，线程 0、
+1、2、3 在第一次迭代中分别访问 \code{value[0]}、\code{value[2]}、\code{value[4]}
+和 \code{value[6]}，第二次迭代分别访问 \code{value[1]}、\code{value[3]}、
+\code{value[5]} 和 \code{value[7]}——相邻线程访问的位置彼此相隔很远，因此
+SpMV/CSC 对矩阵的访问\textbf{不合并}。此外，对输出向量的访问还需要原子操作。
+
+\textbf{负载均衡}：与 CSR 同样糟糕。线程的迭代次数取决于它负责的那一列有多少非零
+元素，而非零元素在各列间的分布可能相当随机，于是大多数甚至全部 warp 中都可能出现
+严重的控制分歧。（图 \ref{fig:17-1} 这个小例子恰好每列都是 2 个非零元素，掩盖了
+这个问题；真实矩阵中各列长度差异可以非常大。）
+
+综合来看，用 CSC 做 SpMV 简直是把 COO 和 CSR 的缺点集于一身：像 COO 一样需要对
+输出向量做原子操作，又像 CSR 一样对输入矩阵访问不合并、且控制分歧严重。后两个问题
+可以借鉴 ELL 和 JDS 的手法（填充加转置、按长度排序）来部分缓解，但对输出向量的原子
+操作是躲不掉的。
+
+不过 CSC 在 SpMV 中也并非一无是处，它有一个独特优点：\textbf{对输入向量的访问模式
+极好}。其他所有格式的 SpMV 内核都是用列号去 \code{x} 中随机取值，而 SpMV/CSC 是
+相邻线程负责相邻列、因而加载 \code{x} 中相邻的值（图 \ref{fig:17-17} 第 4 行），
+访问是合并的；更妙的是，\code{x} 中每个值只被加载一次，然后被该列的所有非零元素
+复用。可惜这一点优点抵不过对矩阵和输出向量的种种不利，更别提控制分歧，所以就 SpMV
+而言 CSC 整体上仍是不合适的格式。
+
+\subsection*{CSC 真正的用武之地}
+
+CSC 适用于那些\textbf{按列遍历更自然}的计算。举两个例子。
+
+其一，若要做的是\textbf{向量矩阵乘法}而非矩阵向量乘法，即输入向量作第一个操作数、
+矩阵作第二个操作数，那么输出向量的每个元素就是输入向量与矩阵对应\textbf{列}的点积。
+这本质上就是一次按列遍历，CSC 天然契合。
+
+其二，若做的仍是矩阵向量乘法，但\textbf{输入向量本身也是稀疏的}——这种运算称为
+稀疏矩阵稀疏向量乘法（SpMSpV）——那么我们可以利用输入向量的稀疏性：凡是输入向量中
+取值为零的分量，其对应的整\textbf{列}矩阵元素都可以整体跳过。而“整列跳过”之所以
+可行，正是因为 CSC 把同一列的非零元素聚在了一起。
+
+\section{小结}
+\label{sec:spmv-summary}
+
+本章把稀疏矩阵计算作为一种重要的并行模式加以介绍。稀疏矩阵广泛出现在各类复杂现象的
+建模中。由于零元素数量巨大，人们用紧凑化技术削减存储、内存访问和无效计算；而紧凑化
+带来的不规整性，又要靠\textbf{规整化}手段来补救——本章展示的两类规整化手段分别是
+\textbf{混合方法}（ELL-COO）与\textbf{排序/分段}（JDS）。有意思的是，某些规整化技术
+（如 ELL 的填充）反而会把零元素重新塞回压缩表示中；而混合方法的作用，恰恰是遏制
+“塞回去的零太多”这种病态情形。
+
+各格式在五个设计维度上的对比汇总于表 \ref{tab:17-1}。
+
+\begin{table}[htbp]
+  \centering
+  \small
+  \setlength{\tabcolsep}{4pt}
+  \renewcommand{\arraystretch}{1.25}
+  \begin{tabular}{l|c|c|c|c|c}
+    \hline
+    维度 & COO & CSR & ELL & 混合 ELL-COO & JDS\\
+    \hline
+    空间效率 & 中 & 高 & 低（填充） & 较高 & 高（无填充）\\
+    增删灵活性 & 高 & 低 & 较高 & 高 & 很低（需重排序）\\
+    按非零访问行列号 & 是 & 否 & 是 & 部分 & 否\\
+    按行取全部非零 & 否 & 是 & 是 & 部分 & 是\\
+    访问是否合并 & 是 & 否 & 是 & 是 & 是（难对齐）\\
+    控制分歧 & 无 & 严重 & 严重 & 较低 & 低\\
+    是否需要原子操作 & 是 & 否 & 否 & 是（COO 部分） & 否\\
+    \hline
+  \end{tabular}
+  \caption{本章各稀疏矩阵存储格式在 SpMV 场景下的对比。CSC 未列入，因为它并非为
+  SpMV 设计；就 SpMV 而言它兼有 COO 的原子操作开销与 CSR 的访问不合并和控制分歧}
+  \label{tab:17-1}
+\end{table}
+
+需要强调的是：并行 SpMV 内核的执行效率和内存带宽效率，都\textbf{取决于输入矩阵中
+数据的分布}。这与本书此前研究的绝大多数内核截然不同，但这种“性能依赖数据”的行为在
+真实应用中相当普遍。这正是并行 SpMV 之所以是一个重要并行模式的原因之一——它足够
+简单，却揭示了许多复杂并行应用中的关键行为。建议读者用不同的稀疏数据集实际做些
+实验\cite{bell2009spmv}，亲身体会本章各个 SpMV 内核在性能上的数据依赖性。
+
+还要指出，稀疏表示相对稠密表示的优势，只有在矩阵\textbf{非常稀疏}时才真正兑现。
+稠密矩阵的好处是下标是隐式的，而且很容易做分块以优化数据在存储层次中的搬运；稀疏
+格式则必须显式存储并访问索引，也更难施加分块技术。只有当稀疏度足够高、被剔除的零
+元素足够多时，付出这些代价才划算。
+
+一个常被提及的现象是：无论在 CPU 还是 GPU 上，稀疏矩阵计算能达到的 FLOPS 数值都
+远低于稠密矩阵计算，低到常常令人意外。读完本章之后，就不该再感到意外了。
+
+最后，鉴于稀疏矩阵计算的重要性，cuSPARSE 库\cite{nvidia-cusparse2025}为多种稀疏
+矩阵存储格式提供了 GPU 加速的基础线性代数例程。本章的内容为读者有效使用这类库、或者
+针对自己关心的特定稀疏计算开发更精巧的格式与例程，打下了必要的基础。
+
+\phantomsection
+\section*{练习}
+\addcontentsline{toc}{section}{练习}
+
+\begin{enumerate}[label=\arabic*.,leftmargin=2.7em]
+  \item 考虑下面这个稀疏矩阵：
+  \[
+    \begin{bmatrix}
+      1 & 0 & 7 & 0\\
+      0 & 0 & 8 & 0\\
+      0 & 4 & 3 & 0\\
+      2 & 0 & 0 & 1
+    \end{bmatrix}
+  \]
+  分别写出它在以下格式下的表示：(a) COO；(b) CSR；(c) ELL；(d) JDS；(e) CSC。
+
+  \item 设有一个整数稀疏矩阵，含 $m$ 行、$n$ 列、$z$ 个非零元素。分别写出用
+  (a) COO、(b) CSR、(c) ELL、(d) JDS 表示该矩阵各需要多少个整数。若已知信息不足以
+  作答，请指出还缺少哪些信息。
+
+  \item 用直方图和前缀和这两个基础并行原语，实现从 COO 到 CSR 的格式转换。
+
+  \item 实现构造混合 ELL-COO 表示的主机端代码，并用它完成一次 SpMV：ELL 部分在设备
+  上通过内核计算，COO 部分的贡献在主机上计算。
+
+  \item 实现一个使用 JDS 格式的并行 SpMV 内核。
+
+  \item 第 \ref{sec:spmv-jds} 节指出，SpMV/JDS 各次迭代的起始地址难以对齐到架构
+  规定的边界。请说明：如果把 JDS 改造成第 \ref{sec:spmv-jds} 节提到的“分段 ELL”
+  变体，这个对齐问题能否得到缓解？代价是什么？
+
+  \item 第 \ref{sec:spmv-coo} 节提到，SpMV/COO 中原子操作的执行顺序不确定，可能带来
+  浮点数值稳定性问题。请说明：SpMV/CSR 是否也存在同样的问题？为什么？
+
+  \item 混合 ELL-COO 格式中，每行保留的元素上限 $K$ 是一个可调参数。请分析：$K$ 取
+  得过大或过小分别会带来什么后果？如果已知矩阵各行长度的分布，你会如何选择 $K$？
+\end{enumerate}
+
+\begin{chapterbibliography}{9}
+  \bibitem{hestenes1952cg}
+  M.R. Hestenes, E. Stiefel, et al., \emph{Methods of Conjugate Gradients for
+  Solving Linear Systems}, vol.~49, NBS, Washington, DC, 1952.
+
+  \bibitem{rice2012ellpack}
+  J.R. Rice, R.F. Boisvert, \emph{Solving Elliptic Problems Using ELLPACK},
+  vol.~2, Springer Science \& Business Media, 2012.
+
+  \bibitem{bell2009spmv}
+  N. Bell, M. Garland, Implementing sparse matrix-vector multiplication on
+  through\-put-oriented processors, in: \emph{Proc. Conf. on High Performance
+  Computing Networking, Storage and Analysis}, 2009, pp. 1--11.
+
+  \bibitem{nvidia-cusparse2025}
+  NVIDIA, cuSPARSE, 2025. \url{http://docs.nvidia.com/cuda/cusparse}.
+\end{chapterbibliography}
