@@ -10,7 +10,6 @@
 - [x] 第 4 章：Compute architecture and scheduling —— 计算架构与调度（初译，已完成底本对照、CUDA 代码核对、图示重绘和编译/视觉验收）
 - [x] 第 5 章：Memory architecture and data locality —— 内存架构与数据局部性（初译，已完成底本对照、CUDA 代码核对、图示重绘和编译/视觉验收）
 - [x] 第 6 章：Performance considerations —— 性能考量（初译，已完成底本对照、CUDA 代码核对、图示重绘和编译/视觉验收）
-- [x] 第 20 章：Large language models —— 大语言模型（初译，已完成底本对照、公式、CUDA 代码、临时图示、练习、参考文献和整书编译/视觉验收）
 
 ## 待处理
 
