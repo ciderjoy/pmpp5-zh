@@ -1,0 +1,1039 @@
+\chapter{直方图}
+\label{chap:histogram}
+
+\setcounter{footnote}{0}
+
+到目前为止，我们介绍的并行计算模式都可以把每个输出元素的计算工作排他地分配给
+某个线程，也就是说，每个输出元素都有自己的“所有者”。因此，这些模式都适用
+\textbf{所有者计算规则（owner-computes rule）}：每个线程只写入指定给自己的输出
+元素，无须担心其他线程的干扰。本章介绍并行直方图模式。在这种模式中，每个输出
+元素都有可能被任意线程更新。多个线程更新输出元素时必须彼此协调，以免相互干扰，
+破坏最终结果。
+
+实际应用中还有许多重要的并行计算模式，其输出干扰并不容易消除。并行直方图模式
+为这类干扰提供了一个典型例子。我们先考察一种基线方法：用原子操作把对每个元素
+的更新串行化。这种方法简单，却不够高效，执行速度往往令人失望。随后介绍几种广泛
+使用的优化技术，其中最重要的是私有化；这些技术在保证正确性的同时，可以显著提高
+执行速度。它们的成本和收益既取决于底层硬件，也取决于输入数据的特征。因此，开发
+人员必须理解这些技术的核心思想，并能判断它们在不同情形下是否适用。
+
+\section{背景}
+\label{sec:histogram-background}
+
+\textbf{直方图（histogram）}用来显示数据集中各个数据值的出现次数。最常见的
+直方图把取值区间画在横轴上，再用从横轴向上延伸的矩形（即柱）的高度表示各区间内
+数据值的频数。例如，图 \ref{fig:9-1}(b) 是图 \ref{fig:9-1}(a) 中树木灰度图像的
+像素强度直方图。灰度图像的像素强度通常介于 0 和 255 之间，其中 0 表示黑色，255
+表示白色。图 \ref{fig:9-1}(b) 把这一范围分成四个区间，每个区间包含 64 个取值。
+描绘树干的 6 个黑色像素计入区间 $[0,63]$；描绘树叶的 12 个深灰色像素计入
+$[64,127]$；描绘树木周围草地的 14 个浅灰色像素计入 $[128,191]$；描绘天空的
+32 个白色像素计入 $[192,255]$。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c@{\hspace{2.5em}}c}
+    \begin{minipage}{0.40\textwidth}
+      \centering
+      \setlength{\fboxsep}{0pt}
+      \setlength{\tabcolsep}{0pt}
+      \begin{tabular}{*{8}{c}}
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}\\[-0.2em]
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!70}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!70}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}\\[-0.2em]
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!70}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!70}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!70}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!70}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}\\[-0.2em]
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!70}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!70}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!70}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!70}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}\\[-0.2em]
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!70}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{black}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{black}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!70}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}\\[-0.2em]
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{black}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{black}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{white}{\phantom{\rule{0.42cm}{0.42cm}}}}\\[-0.2em]
+        \fbox{\colorbox{gray!35}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!35}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!35}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{black}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{black}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!35}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!35}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!35}{\phantom{\rule{0.42cm}{0.42cm}}}}\\[-0.2em]
+        \fbox{\colorbox{gray!35}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!35}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!35}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!35}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!35}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!35}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!35}{\phantom{\rule{0.42cm}{0.42cm}}}}&
+        \fbox{\colorbox{gray!35}{\phantom{\rule{0.42cm}{0.42cm}}}}
+      \end{tabular}\\[0.4em]
+      (a) 树木图像
+    \end{minipage}
+    &
+    \begin{minipage}{0.40\textwidth}
+      \centering
+      \begin{tabular}[b]{c@{\hspace{0.15em}}c@{\hspace{0.15em}}c@{\hspace{0.15em}}c}
+        6 & 12 & 14 & 32\\[-0.1em]
+        \colorbox{black}{\phantom{\rule{0.62cm}{0.55cm}}} &
+        \colorbox{gray!70}{\phantom{\rule{0.62cm}{1.05cm}}} &
+        \colorbox{gray!35}{\phantom{\rule{0.62cm}{1.22cm}}} &
+        \fbox{\rule{0pt}{2.75cm}\rule{0.60cm}{0pt}}\\[-0.2em]
+        \rotatebox{45}{$[0,63]$} & \rotatebox{45}{$[64,127]$} &
+        \rotatebox{45}{$[128,191]$} & \rotatebox{45}{$[192,255]$}
+      \end{tabular}\\[0.7em]
+      像素强度\qquad 纵轴：频数\\[0.4em]
+      (b) 图像直方图
+    \end{minipage}
+  \end{tabular}
+  \caption{图像直方图示例}
+  \label{fig:9-1}
+\end{figure}
+
+直方图能为数据集提供有用的概括。在本例中，图像像素大量集中于明亮的高强度区间，
+而落在较暗的低强度区间中的像素很少。直方图的这种形状有时称为数据集的
+\textbf{特征（feature）}，可以帮助我们迅速判断数据中是否存在显著现象，例如图像
+曝光偏低还是偏高。再举一例，信用卡账户在购买类别和购买地点上的直方图形状可以
+用于检测欺诈性使用。一旦直方图的形状明显偏离常态，系统便会标记潜在风险。
+
+许多应用领域都依靠直方图概括数据集，以便开展数据分析，计算机视觉就是其中之一。
+不同类型的物体图像（例如人脸和汽车）往往具有不同形状的直方图。正如前例所示，
+我们既可以绘制整幅图像的像素强度直方图，也可以只绘制图像某一区域的直方图。晴天
+天空的直方图可能只在光强谱的高强度区间出现少数几根很高的柱。把图像划分为多个
+子区域并分析各区域的直方图，就能快速找出可能包含目标物体、值得进一步处理的区域。
+
+计算图像子区域的直方图，是计算机视觉中提取特征的一种重要方法；这里的“特征”是
+指图像中值得关注的模式。一般来说，只要需要从海量数据中提炼有意义的事件，直方图
+就很可能充当基础计算。信用卡欺诈检测和计算机视觉显然符合这一描述。其他具有类似
+需求的应用还包括语音识别、网站购买推荐，以及科学数据分析，例如关联天体物理学中
+不同天体的运动。
+
+直方图很容易按顺序方式计算。图 \ref{fig:9-2} 给出了计算图像直方图的顺序函数。
+C 代码假设输入图像存放在 \code{unsigned char} 数组 \code{image} 中，每个元素
+给出一个像素的灰度强度（第 1 行）；直方图写入 \code{unsigned int} 数组
+\code{bins}（第 1 行）。图像的像素数由函数参数 \code{width} 和 \code{height}
+指定（第 2 行）。for 循环（第 3 行）依次遍历图像像素。由于像素的二维下标与这项
+计算无关，代码把图像视为长度为 \code{width*height} 的一维数组。它从图像中加载
+像素值（第 4 行），再递增与该像素值对应的直方图\textbf{分箱（bin）}（第 5 行）。
+这里假设每个分箱只代表一个像素值。如果分箱像图 \ref{fig:9-1} 那样表示一个像素值
+区间，那么在索引分箱数组之前，应先用像素值除以区间宽度。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.94\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\small]
+void histogram_sequential(unsigned char* image, unsigned int* bins,
+                          unsigned int width, unsigned int height) {
+  for(unsigned int i = 0; i < width*height; ++i) {
+    unsigned char b = image[i];
+    ++bins[b];
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{计算灰度图像直方图的简单 C 函数}
+  \label{fig:9-2}
+\end{figure}
+
+图 \ref{fig:9-2} 中的 C 代码简单而高效。算法的计算复杂度为 $O(N)$，其中 $N$ 是
+输入数据元素个数。for 循环按顺序访问 \code{image} 数组元素，因此从系统 DRAM
+取入 CPU 缓存行后，缓存行中的数据能够得到充分利用。
+\code{bins} 数组很小，完全可以放入 CPU 的一级（L1）数据缓存，从而快速更新其中
+的元素。对大多数现代 CPU 而言，这段代码的执行速度预计会受内存限制，也就是受
+数据元素从 DRAM 搬入 CPU 缓存的速率限制。
+
+\section{原子操作与基本直方图内核}
+\label{sec:histogram-atomic-basic}
+
+并行化直方图计算最直接的办法，是启动与输入元素同样多的线程，让每个线程处理一个
+输入元素。每个线程读取分配给自己的像素值，并递增对应的分箱。图 \ref{fig:9-3}
+给出了这种并行化策略的示例。多个线程可能分到取值相同的像素，因而需要更新同一个
+分箱；这种冲突称为\textbf{输出干扰（output interference）}。要在并行代码中可靠
+地处理此类输出干扰，程序员必须理解竞态条件和原子操作。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c}
+    \textbf{输入图像}\quad
+    \fbox{3}\,\fbox{0}\,\fbox{3}\,\fbox{1}\,\fbox{3}\,\fbox{2}\,
+    \fbox{3}\,\fbox{255}\,\fbox{3}\,\fbox{254}\,\fbox{3}\,\fbox{$\cdots$}\\[0.5em]
+    $\downarrow T_0\quad\downarrow T_1\quad\downarrow T_2\quad
+     \downarrow T_3\quad\downarrow T_4\quad\downarrow T_5\quad
+     \downarrow T_6\quad\downarrow T_7\quad\downarrow T_8\quad
+     \downarrow T_9\quad\downarrow T_{10}$\\[0.8em]
+    \multicolumn{1}{c}{多个线程可能汇聚到同一分箱（例如取值 3）}\\[0.5em]
+    \textbf{分箱数组}\quad
+    \fbox{0}\,\fbox{1}\,\fbox{2}\,\fbox{3}\,\fbox{$\cdots$}\,
+    \fbox{254}\,\fbox{255}
+  \end{tabular}
+  \caption{图像直方图的基本并行化方式}
+  \label{fig:9-3}
+\end{figure}
+
+递增 \code{bins} 数组中的某个分箱计数器，是对一个内存位置执行的更新操作，也就是
+\textbf{读--改--写（read-modify-write）}操作。它先读取内存位置中的值（读），给
+原值加 1（改），再把新值写回该内存位置（写）。读--改--写经常用于协调多个参与者
+共同完成的活动。
+
+例如，通过航空公司预订航班时，我们先调出座位图寻找空位（读），选择一个要预订的
+座位（改），再把座位图中该座位的状态改为不可用（写）。以下情况可能导致错误：
+
+\begin{itemize}
+  \item 两位乘客同时打开同一航班的座位图；
+  \item 两人都选择了同一个座位，例如 9C；
+  \item 两人都把座位 9C 的状态改为不可用。
+\end{itemize}
+
+上述操作完成后，两位乘客都以为自己订到了 9C。登机时，他们才会发现其中一人无法
+使用预订座位，场面自然很不愉快。尽管听起来不可思议，现实中确实会因为航空订票
+软件的缺陷发生这类问题。
+
+再举一个例子。有些商店让顾客取号候客，无须一直排队。顾客从某台取号机领取号码，
+显示屏则显示下一位接受服务的号码。服务人员空闲后，会请持有对应号码票据的顾客
+上前，核对票据，再把显示屏上的号码加一。理想情况下，所有顾客都会按进入商店的
+先后顺序得到服务。一种不希望出现的结果是，两位顾客同时在两台取号机上登记，却
+拿到了相同号码。当服务人员呼叫这个号码时，两人都会认为应该轮到自己。
+
+这两个例子中的错误结果都源于\textbf{读--改--写竞态条件（read-modify-write race
+condition）}：两个或更多更新操作同时发生时，结果会随这些操作相对时序的不同而
+变化，有些时序得到正确结果，有些则得到错误结果。图 \ref{fig:9-4} 展示了图像直方图
+示例中两个线程试图更新同一 \code{bins} 元素时的竞态条件。图中每一行对应一个时间
+段，时间从上向下推进。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c@{\hspace{1.5em}}c}
+    \begin{tabular}{c|l|l}
+      \textbf{时间} & \textbf{线程 1} & \textbf{线程 2}\\\hline
+      1 & (0) \code{old <- bins[x]} & \\
+      2 & (1) \code{new <- old + 1} & \\
+      3 & (1) \code{bins[x] <- new} & \\
+      4 & & (1) \code{old <- bins[x]}\\
+      5 & & (2) \code{new <- old + 1}\\
+      6 & & (2) \code{bins[x] <- new}
+    \end{tabular}
+    &
+    \begin{tabular}{c|l|l}
+      \textbf{时间} & \textbf{线程 1} & \textbf{线程 2}\\\hline
+      1 & (0) \code{old <- bins[x]} & \\
+      2 & (1) \code{new <- old + 1} & \\
+      3 & & (0) \code{old <- bins[x]}\\
+      4 & (1) \code{bins[x] <- new} & \\
+      5 & & (1) \code{new <- old + 1}\\
+      6 & & (1) \code{bins[x] <- new}
+    \end{tabular}\\[0.4em]
+    (a) 正确：线程 1 先完成 & (b) 错误：两个更新交叠
+  \end{tabular}
+  \caption{更新 \code{bins} 数组元素时的竞态条件}
+  \label{fig:9-4}
+\end{figure}
+
+图 \ref{fig:9-4}(a) 描绘了这样一种时序：线程 1 在时间段 1--3 完成读--改--写的
+全部三步，线程 2 到时间段 4 才开始自己的操作序列。每项操作前括号内的数值表示写入
+目标的值，并假定 \code{bins[x]} 的初值为 0。执行完毕后，
+\code{bins[x]} 的值是 2，正是预期结果：两个线程都成功把它递增了一次，元素值从
+0 变成 2。
+
+图 \ref{fig:9-4}(b) 中，两个线程的读--改--写序列发生交叠。线程 1 在时间段 4 才
+把新值写入 \code{bins[x]}；线程 2 在时间段 3 读取 \code{bins[x]} 时，看到的仍是
+0。因此，它计算并最终写入 \code{bins[x]} 的新值是 1，而不是 2。问题在于线程 2
+读取 \code{bins[x]} 太早，发生在线程 1 完成更新之前。最终 \code{bins[x]} 的值为
+1，这是错误的；线程 1 的更新丢失了。
+
+并行执行时，线程之间可能以任意相对顺序运行。在本例中，线程 2 完全可能先于线程 1
+开始更新。图 \ref{fig:9-5} 给出了两种这种时序。图 \ref{fig:9-5}(a) 中，线程 2
+在线程 1 开始之前完成更新；图 \ref{fig:9-5}(b) 中，线程 1 在线程 2 完成之前开始
+更新。图 \ref{fig:9-5}(a) 中的序列会得到正确的 \code{bins[x]}，而图
+\ref{fig:9-5}(b) 中的序列会得到错误结果。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c@{\hspace{1.5em}}c}
+    \begin{tabular}{c|l|l}
+      \textbf{时间} & \textbf{线程 1} & \textbf{线程 2}\\\hline
+      1 & & (0) \code{old <- bins[x]}\\
+      2 & & (1) \code{new <- old + 1}\\
+      3 & & (1) \code{bins[x] <- new}\\
+      4 & (1) \code{old <- bins[x]} & \\
+      5 & (2) \code{new <- old + 1} & \\
+      6 & (2) \code{bins[x] <- new} &
+    \end{tabular}
+    &
+    \begin{tabular}{c|l|l}
+      \textbf{时间} & \textbf{线程 1} & \textbf{线程 2}\\\hline
+      1 & & (0) \code{old <- bins[x]}\\
+      2 & & (1) \code{new <- old + 1}\\
+      3 & (0) \code{old <- bins[x]} & \\
+      4 & & (1) \code{bins[x] <- new}\\
+      5 & (1) \code{new <- old + 1} & \\
+      6 & (1) \code{bins[x] <- new} &
+    \end{tabular}\\[0.4em]
+    (a) 正确：线程 2 先完成 & (b) 错误：两个更新交叠
+  \end{tabular}
+  \caption{线程 2 先于线程 1 运行时的竞态条件}
+  \label{fig:9-5}
+\end{figure}
+
+\code{bins[x]} 的最终值随操作相对时序变化，这一事实表明确实存在竞态条件。要消除
+这种变化，就必须排除线程 1 和线程 2 的操作序列相互交错的可能性。也就是说，我们
+希望允许图 \ref{fig:9-4}(a) 和图 \ref{fig:9-5}(a) 所示的时序，同时排除图
+\ref{fig:9-4}(b) 和图 \ref{fig:9-5}(b) 的情况。原子操作可以做到这一点。
+
+对某个内存位置执行\textbf{原子操作（atomic operation）}，是指以如下方式完成该
+位置上的读--改--写序列：其他任何针对同一位置的读--改--写序列都不能与它交叠。
+换句话说，读、改、写三个部分形成一个不可再分的整体，“原子”一名正源于此。实际
+硬件会锁住该位置，在当前操作完成之前排斥对同一位置的其他操作。在本例中，后到的
+线程必须等先到的线程完成更新序列才能开始，因此图 \ref{fig:9-4}(b) 和图
+\ref{fig:9-5}(b) 的情况不再可能发生。
+
+务必记住，原子操作不会在线程之间强制规定某个特定执行顺序。在本例中，图
+\ref{fig:9-4}(a) 和图 \ref{fig:9-5}(a) 的两种顺序都允许出现：线程 1 既可以先于
+线程 2，也可以落后于线程 2。原子操作施加的规则是：如果两个线程都对同一内存位置
+执行原子操作，后到线程的原子操作必须等先到线程的原子操作完成后才能开始。这实际
+上把针对同一内存位置的原子操作串行化了。
+
+CUDA 可以通过 C++ 原子对象、原子引用对象以及这些对象的方法函数执行原子操作。
+\footnote{不熟悉 C++ 对象、类和命名空间概念的读者，可以参考 C++ 文档
+\cite{cppreference2025} 深入了解。概括地说，C++ 类规定如何创建某种对象；对象由
+一组数据和一组能够操作这些数据的方法函数组成。这里的类以模板形式定义，因而是
+泛型的。直观地说，模板允许库开发者给出通用对象，再由用户应用按数据类型和方法
+函数选项将其特化。}CUDA 扩展了 C++ 原子库，可以这样包含相应头文件：
+
+\begin{lstlisting}[language=C++,numbers=none]
+#include <cuda/atomic>
+\end{lstlisting}
+
+包含原子库后，要对一个对象执行原子操作，第一步是用
+\code{cuda::atomic_ref} 类为它创建原子引用。\footnote{另一种做法是使用
+\code{cuda::atomic} 类，在对象创建之初就把它声明为原子对象。这样可以保证对象
+自创建起所有访问都是原子的。本例使用原子引用，是因为代码的其他部分可能仍需以
+非原子方式访问 \code{bins}。}原子引用使我们能够对所引用的对象执行原子操作。
+CUDA C++ 库中 \code{cuda::atomic_ref} 类的定义如下：
+
+\begin{lstlisting}[language=C++,numbers=none]
+template <typename T, cuda::thread_scope>
+class cuda::atomic_ref;
+\end{lstlisting}
+
+\code{atomic_ref} 类模板在尖括号内接受两个参数。第一个模板参数 \code{T} 指定
+对象的类型，常用类型包括 \code{int}、\code{unsigned int} 和 \code{float}。
+第二个模板参数用于指定能够通过该类方法函数彼此同步的线程作用域，其名称是
+\code{cuda::thread_scope}。常见作用域包括同一线程块内、同一 GPU 设备内，以及
+同一多 GPU 系统的所有 GPU 设备。前缀 \code{cuda::} 表明 \code{atomic_ref}
+声明在 CUDA 命名空间中。
+更多细节可参阅 CUDA 编程指南。
+
+现在可以实现图 \ref{fig:9-3} 所示的基本并行直方图方法了。图 \ref{fig:9-6} 给出
+一个 CUDA 内核，它利用原子操作保证对 \code{bins} 元素的并发递增是正确的。代码
+与图 \ref{fig:9-2} 的顺序版本相似，主要有两点区别。第一，遍历输入元素的循环改为
+线程索引计算（第 3 行）和边界检查（第 4 行），从而为每个输入图像元素分配一个
+线程。第二，图 \ref{fig:9-2} 中的递增表达式
+
+\begin{lstlisting}[language=C++,numbers=none]
+++bins[b];
+\end{lstlisting}
+
+被图 \ref{fig:9-6} 的第 6--7 行取代。这两行代码保证不同线程对同一 \code{bins}
+数组元素的并发更新以原子方式正确串行化。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__global__ void histogram_kernel(unsigned char* image, unsigned int* bins,
+                                 unsigned int width, unsigned int height) {
+  unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
+  if(i < width*height) {
+    unsigned char b = image[i];
+    cuda::atomic_ref<unsigned int, cuda::thread_scope_device> bins_ref(bins[b]);
+    bins_ref.fetch_add(1, cuda::memory_order_relaxed);
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{计算直方图的 CUDA 内核}
+  \label{fig:9-6}
+\end{figure}
+
+要以原子方式执行更新，先为 \code{bins[b]} 构造名为 \code{bins_ref} 的原子引用
+（第 6 行）。回忆一下，\code{cuda::atomic_ref} 类是模板。第 6 行的第一个模板参数
+\code{unsigned int} 表示要对无符号整数对象执行原子操作；这里的对象就是
+\code{bins} 数组中的一个元素。第二个模板参数
+\code{cuda::thread_scope_device} 是预定义的编译期常量，表示该原子操作必须允许
+不同线程块中的线程彼此同步。无论对同一 \code{bins} 元素的递增来自同一线程块，
+还是同一 GPU 设备上的不同线程块，都要串行化。这样便构造出原子引用
+\code{bins_ref}，供代码对选定的 \code{bins[b]} 执行原子操作。第 6 行的构造表达式
+看起来很复杂，但它实际上主要是告诉 CUDA C++ 编译器如何为第 7 行生成代码，运行时
+开销很小。
+
+构造原子引用后，就可以调用它的方法函数，对所引用的对象执行原子操作。CUDA 原子
+引用类提供了加、最小值、最大值、与、或、异或等多种操作。直方图内核需要执行整数
+递增：先取得旧值，加 1 得到新值，再把新值写入 \code{bins} 元素。执行原子加法的
+方法函数是 \code{fetch_add}；CUDA C++ 库把它定义为
+\code{cuda::atomic_ref} 类的泛型方法函数：
+
+\begin{lstlisting}[language=C++,numbers=none]
+T fetch_add(T arg, cuda::std::memory_order order)
+\end{lstlisting}
+
+\code{fetch_add} 函数接受两个参数。第一个参数 \code{arg} 指定要加上的值，本例中
+是 1。这个值必须与定义 \code{fetch_add} 的原子引用类的第一个模板参数类型
+\code{T} 相同，从而保证加数与对象本身类型一致。图 \ref{fig:9-6} 第 7 行对无符号
+整数对象 \code{bins[b]} 调用 \code{fetch_add}；编译器会把传入的第一个实参，即
+常量 1，按无符号整数常量处理。
+
+第二个参数 \code{order} 是 C++ 标准库定义的编译期常量，用于限制当前原子操作相对
+于调用线程其他内存访问的重排方式。编译器或硬件可能重排内存访问的执行次序，以
+优化代码性能；\code{order} 参数按照程序员意图指定允许哪类重排。本例中，调用线程
+只有另一项内存访问，即把 \code{image[i]} 读入局部变量 \code{b}。由于 \code{b}
+用于选择执行原子操作的对象，编译器无法把原子操作重排到这次内存访问之前。运行时，
+这种选择关系又会向硬件调度器呈现指令级数据依赖：原子操作自然必须等待读取
+\code{image[i]} 的内存访问完成。因此，无须再增加限制来阻止二者相互重排。
+图 \ref{fig:9-6} 第 7 行使用的编译期常量 \code{cuda::memory_order_relaxed} 表示，
+除指令级已有约束外不施加更多限制。第 11 章会遇到必须为内存访问重排指定额外限制的
+用例。
+
+\code{fetch_add} 函数还会返回一个与第一个模板参数同类型（\code{T}）的值：在把
+第一个参数原子地加到对象上之前，对象原来的值。图 \ref{fig:9-6} 第 7 行没有使用
+这个返回值，因为该线程的任务只是递增所选分箱，并不关心递增前的旧值。第 12 章和
+第 18 章还会看到需要使用 \code{fetch_add} 返回值的情形。
+
+\section{原子操作的延迟与吞吐量}
+\label{sec:histogram-atomic-latency-throughput}
+
+图 \ref{fig:9-6} 的内核利用原子操作，把针对某个位置同时发生的更新串行化，从而
+保证更新结果正确。大规模并行程序的任何一部分一旦串行化，都可能显著延长执行时间、
+降低程序速度。因此，必须尽可能缩短这类串行操作占用的执行时间。
+
+第 5 章已经介绍过，访问 DRAM 数据可能需要数百个时钟周期。第 4 章说明 GPU 如何
+通过零周期上下文切换容忍这类延迟。第 6 章又指出，只要有许多线程的内存访问延迟
+能够彼此重叠，执行速度就由内存系统的吞吐量决定。因此，GPU 必须充分利用 DRAM
+突发、bank 和通道，才能获得较高的内存访问吞吐量。
+
+读者此时应该已经很清楚：要提高内存访问吞吐量，关键是让许多 DRAM 访问同时进行。
+遗憾的是，当大量原子操作更新同一个内存位置时，这一策略就会失效。后到线程的
+读--改--写序列必须等先到线程的读--改--写序列结束后才能开始。如图
+\ref{fig:9-7} 所示，在同一内存位置上，任何时刻只能有一个原子操作正在进行。每个
+原子操作的持续时间近似等于一次内存加载的延迟（图中原子操作时间的左半段）加上
+一次内存存储的延迟（右半段）。每个读--改--写操作的这些时间段通常长达数百个时钟
+周期，决定了服务一个原子操作所需的最短时间，因而限制了原子操作的吞吐量，也就是
+单位时间能够完成的原子操作数。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c}
+    时间 $\longrightarrow$\\[0.7em]
+    \begin{tabular}{c@{}c@{\hspace{0.6em}}c@{}c}
+      \fbox{\parbox[c][0.55cm][c]{2.2cm}{\centering DRAM 加载延迟}} &
+      \fbox{\parbox[c][0.55cm][c]{2.2cm}{\centering DRAM 存储延迟}} &
+      \fbox{\parbox[c][0.55cm][c]{2.2cm}{\centering DRAM 加载延迟}} &
+      \fbox{\parbox[c][0.55cm][c]{2.2cm}{\centering DRAM 存储延迟}}
+      \\[-0.1em]
+      \multicolumn{2}{c}{\colorbox{gray!75}{\parbox[c][0.48cm][c]{4.55cm}
+        {\centering\color{white}原子操作 $N$}}} &
+      \multicolumn{2}{c}{\colorbox{gray!75}{\parbox[c][0.48cm][c]{4.55cm}
+        {\centering\color{white}原子操作 $N+1$}}}
+    \end{tabular}\\[0.4em]
+    \scriptsize 两个操作之间还可能包含传输延迟；同一位置上的操作不能重叠
+  \end{tabular}
+  \caption{原子操作的吞吐量由内存访问延迟决定}
+  \label{fig:9-7}
+\end{figure}
+
+例如，假设一个内存系统的每条通道都有 64 位（8 B）双倍数据速率 DRAM 接口，共有
+8 条通道，时钟频率为 1 GHz，典型访问延迟为 200 个周期。该系统的峰值访问吞吐量为
+\[
+  8\ \text{B/传输}
+  \times 2\ \text{传输/(周期$\cdot$通道)}
+  \times 10^9\ \text{周期/s}
+  \times 8\ \text{通道}
+  = 128\ \text{GB/s}.
+\]
+若每个被访问的数据元素占 4 B，则峰值访问吞吐量为每秒 320 亿个数据元素。
+
+然而，对某一个特定内存位置执行原子操作时，能达到的最高吞吐量是每 400 个周期完成
+一次原子操作，其中读取用 200 个周期，写入再用 200 个周期。换算后得到
+\[
+  \frac{1}{400}\ \text{原子操作/周期}
+  \times 10^9\ \text{周期/s}
+  = 2.5\times10^6\ \text{原子操作/s}.
+\]
+这个结果远低于大多数用户对 GPU 内存系统的预期。此外，这串原子操作的长延迟很
+可能支配内核执行时间，导致内核执行速度大幅下降。
+
+实际程序并不会把所有原子操作都施加到同一个内存位置。图像直方图示例包含 256 个
+分箱。如果输入像素的亮度均匀分布，原子操作也会均匀分散到各个 \code{bins} 元素，
+吞吐量就可以提高到
+\[
+  256\times 2.5\times10^6
+  = 6.4\times10^8\ \text{原子操作/s}.
+\]
+现实中的提升倍数通常远小于直方图的分箱数，因为像素亮度往往存在偏斜分布。例如，
+图 \ref{fig:9-1} 中的像素就明显偏向较亮的强度级。大量更新高亮度分箱的争用流量，
+很可能显著压低实际可达到的吞吐量。
+
+提高原子操作吞吐量的一种办法，是缩短对高争用位置的访问延迟。缓存正是降低内存
+访问延迟的主要工具。为此，现代 GPU 允许在所有 SM 共享的末级缓存中执行设备作用域
+的原子操作。如果待更新变量已经在末级缓存中，原子操作就在缓存内更新它；如果不在，
+则触发缓存未命中，把变量取入缓存后再更新。由原子操作更新的变量通常会被许多线程
+频繁访问，因此在线程持续执行原子操作期间，这些变量往往能够留在缓存中。末级缓存
+的访问时间只有数十个周期，而不是数百个周期，所以这种方法至少可以把原子操作吞吐量
+提高一个数量级。这也是大多数现代 GPU 在末级缓存中支持原子操作的重要原因。
+
+\section{私有化}
+\label{sec:histogram-privatization}
+
+提高原子操作吞吐量的另一种办法，是把访问流量从高争用位置引开，缓解争用。并行
+计算中经常使用\textbf{私有化（privatization）}技术解决严重的输出干扰问题。其
+基本思路是为高争用的输出数据结构复制若干私有副本，让每个线程子集更新自己的
+副本。私有副本受到的争用少得多，访问延迟也往往更低，因此可以显著提高更新数据
+结构的吞吐量。代价是计算结束后必须把这些私有副本合并到最终输出数据结构中。设计
+时需要仔细权衡争用程度和合并成本。因此，在大规模并行系统中，私有化通常针对线程
+子集进行，而不是为每个线程都建立一份副本。
+
+在本章的直方图示例中，可以建立多个私有直方图，并指定各线程子集更新其中一份。
+例如，建立两个私有副本，让索引为偶数的线程块更新一份，索引为奇数的线程块更新
+另一份。也可以建立四个副本，让索引为 $i$ 的线程块更新编号为 $i\bmod 4$ 的副本。
+一种常见做法是为每个线程块建立一个私有副本，后文会看到它有多项优点。无论采用
+哪种分配方式，私有直方图计算完成后，都要把它们逐项相加并合并到公共副本。由于
+加法满足交换律和结合律，各私有副本加到公共副本中的次序并不重要。
+
+\noindent\textbf{译者注：}原书本段把示例写成“text histogram example”，但本章
+前后及图 9.1、图 9.3 均讨论图像直方图；译稿按上下文译为“本章的直方图示例”。
+
+图 \ref{fig:9-8} 展示了如何把私有化用于图 \ref{fig:9-3} 的图像直方图示例。线程
+被组织成线程块，本玩具示例中每块包含 8 个线程，实际线程块要大得多。每个线程块
+得到一份由它更新的私有直方图。这样，更新同一分箱时的争用不再发生于所有线程之间，
+而只发生于同一线程块内的线程之间，以及最后合并私有副本时的不同线程块之间。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c}
+    \textbf{输入图像}\quad
+    \fbox{3}\,\fbox{0}\,\fbox{3}\,\fbox{1}\,\fbox{3}\,\fbox{2}\,\fbox{3}\,\fbox{3}
+    \quad
+    \fbox{3}\,\fbox{4}\,\fbox{3}\,\fbox{1}\,\fbox{5}\,\fbox{2}\,\fbox{3}\,\fbox{3}
+    \quad
+    \fbox{3}\,\fbox{0}\,\fbox{6}\,\fbox{1}\,\fbox{3}\,\fbox{2}\,\fbox{3}\,\fbox{3}
+    \\[0.35em]
+    $\underbrace{\hspace{3.05cm}}_{\text{线程块 0}}$\qquad
+    $\underbrace{\hspace{3.05cm}}_{\text{线程块 1}}$\qquad
+    $\underbrace{\hspace{3.05cm}}_{\text{线程块 2}}$\\[0.7em]
+    $\downarrow$\hspace{3.2cm}$\downarrow$\hspace{3.2cm}$\downarrow$\\[0.4em]
+    \fbox{\scriptsize 私有分箱 0--255}\hspace{1.25cm}
+    \fbox{\scriptsize 私有分箱 0--255}\hspace{1.25cm}
+    \fbox{\scriptsize 私有分箱 0--255}\\[0.7em]
+    $\searrow\hspace{2.5cm}\downarrow\hspace{2.5cm}\swarrow$\\[0.4em]
+    \textbf{公共分箱数组}\quad
+    \fbox{0}\,\fbox{1}\,\fbox{2}\,\fbox{3}\,\fbox{$\cdots$}\,\fbox{254}\,\fbox{255}
+  \end{tabular}
+  \caption{直方图的私有副本能够减少原子操作的争用}
+  \label{fig:9-8}
+\end{figure}
+
+图 \ref{fig:9-9} 给出一个简单内核，为每个线程块建立并关联一份私有直方图。在这种
+方案下，同一份私有直方图最多由 1024 个线程协作更新，这是当前硬件允许的每块最大
+线程数。这个内核把私有直方图放在全局内存中；它们很可能被缓存，从而降低延迟、提高
+吞吐量。
+
+图 \ref{fig:9-9} 的内核新增了参数 \code{bins_pool}（第 2 行），它指向主机分配的
+一片全局内存，用于存放所有直方图私有副本，总容量为
+\code{gridDim.x*NUM_BINS} 个整数。每个线程在 \code{bins_pool} 数组上加上偏移
+\code{blockIdx.x*NUM_BINS}，找到所属线程块的私有分箱数组 \code{bins_priv}。
+该偏移把位置移动到当前线程所属线程块的私有副本。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__global__ void histogram_kernel(unsigned char* image, unsigned int* bins,
+                                 unsigned int* bins_pool,
+                                 unsigned int width, unsigned int height) {
+  unsigned int* bins_priv = &bins_pool[blockIdx.x*NUM_BINS];
+
+  unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
+  if(i < width*height) {
+    unsigned char b = image[i];
+    cuda::atomic_ref<unsigned int, cuda::thread_scope_block>
+        bins_priv_ref(bins_priv[b]);
+    bins_priv_ref.fetch_add(1, cuda::memory_order_relaxed);
+  }
+  __syncthreads();
+
+  for(unsigned int b = threadIdx.x; b < NUM_BINS; b += blockDim.x) {
+    if(bins_priv[b] > 0) {
+      cuda::atomic_ref<unsigned int, cuda::thread_scope_device>
+          bins_ref(bins[b]);
+      bins_ref.fetch_add(bins_priv[b], cuda::memory_order_relaxed);
+    }
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{每个线程块在全局内存中拥有私有分箱的直方图内核}
+  \label{fig:9-9}
+\end{figure}
+
+\noindent\textbf{译者注：}原书图 9.9 没有在内核中初始化 \code{bins_pool}。要使
+代码正确，主机端必须在启动内核前把这片
+\code{gridDim.x*NUM_BINS*sizeof(unsigned int)} 字节的内存清零；公共
+\code{bins} 数组也必须按直方图累加的通常约定预先清零。代码清单保留底本结构，
+这里明确补出其隐含前置条件。
+
+图 \ref{fig:9-9} 第 6--12 行与图 \ref{fig:9-6} 的内核相似，主要有两点区别。
+第一，代码使用 \code{bins_priv} 而不是 \code{bins}，所以每个线程块只更新自己的
+私有分箱。这时，争用程度大致按所有 SM 上活动线程块的总数成比例下降，因而可能
+显著提高内核的更新吞吐量。
+
+第二，原子引用使用 \code{cuda::thread_scope_block} 作用域（第 9 行），也就是线程
+块作用域，而不是设备作用域。换句话说，通过这个引用发起的原子操作只需与同一线程
+块内的其他线程同步，不必覆盖整个设备。具体收益取决于硬件怎样实现原子操作；更窄
+的作用域可能带来更短的延迟和更高的吞吐量。之所以能缩小作用域，是因为只有同一
+线程块中的线程会争用该块私有直方图中的分箱。
+
+执行末尾，每个线程块把私有副本中的值提交到 \code{bins} 指向的公共副本（第
+15--21 行）。块内线程先互相等待，直到所有线程都完成对私有副本的更新（第 13 行）。
+接着，线程遍历私有直方图的分箱（第 15 行），每个线程负责提交一个或多个私有分箱。
+采用循环是为了支持任意分箱数，包括分箱数大于块内线程数的情形。每次迭代中，线程
+读取自己负责的私有分箱，检查它是否非零（第 16 行）；如果非零，就以原子加法把该值
+提交到公共副本（第 17--19 行）。加法必须是原子的，因为多个线程块中的线程可能
+同时向同一位置相加。在内核执行的这一阶段，每个线程块只有一个线程更新任意给定的
+\code{bins} 数组元素，所以各位置的争用程度不高。
+
+按线程块建立私有直方图有一项好处：提交私有副本之前，块内线程可以使用
+\code{__syncthreads()} 互相等待。另一项好处是，如果直方图的分箱足够少，就可以
+把私有副本声明在线程块的共享内存中。回忆一下，延迟只要降低，就会直接提高同一
+内存位置上原子操作的吞吐量。因此，把分箱放入共享内存可以显著缩短访问延迟。共享
+内存在物理上位于 SM 内，由各线程块私有使用，访问延迟只有几个周期。这一延迟降幅
+会直接转化为原子操作吞吐量的大幅提升。
+
+对支持线程块集群和分布式共享内存的 GPU，还可以为每个集群建立一份私有直方图。
+同一集群中的线程块可以使用集群级屏障同步，在把私有副本提交到公共副本之前互相
+等待。它们还可以把私有直方图放入分布式共享内存，从而支持更多分箱。
+
+图 \ref{fig:9-10} 给出了一个私有化直方图内核，它把私有副本放在共享内存中，而
+不是全局内存中。它与图 \ref{fig:9-9} 的关键区别是：私有直方图分配在共享内存数组
+\code{bins_s} 中（第 4 行），由块内线程并行初始化为 0（第 5--7 行）。屏障同步
+（第 8 行）保证私有直方图的全部分箱都正确初始化后，才有线程开始更新它们。其余
+代码与图 \ref{fig:9-9} 相同，只有一处差别：第一次原子操作针对共享内存数组
+\code{bins_s} 的元素执行（第 14 行），之后也从该数组读取私有分箱值（第 20 行）。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__global__ void histogram_kernel(unsigned char* image, unsigned int* bins,
+                                 unsigned int width, unsigned int height) {
+
+  __shared__ unsigned int bins_s[NUM_BINS];
+  for(unsigned int b = threadIdx.x; b < NUM_BINS; b += blockDim.x) {
+    bins_s[b] = 0;
+  }
+  __syncthreads();
+
+  unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
+  if(i < width*height) {
+    unsigned char b = image[i];
+    cuda::atomic_ref<unsigned int, cuda::thread_scope_block>
+        bins_s_ref(bins_s[b]);
+    bins_s_ref.fetch_add(1, cuda::memory_order_relaxed);
+  }
+  __syncthreads();
+
+  for(unsigned int b = threadIdx.x; b < NUM_BINS; b += blockDim.x) {
+    if(bins_s[b] > 0) {
+      cuda::atomic_ref<unsigned int, cuda::thread_scope_device>
+          bins_ref(bins[b]);
+      bins_ref.fetch_add(bins_s[b], cuda::memory_order_relaxed);
+    }
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{共享内存私有分箱直方图内核}
+  \label{fig:9-10}
+\end{figure}
+
+\section{线程粗化}
+\label{sec:histogram-thread-coarsening}
+
+前文已经看到，私有化能够有效减少原子操作的争用，把私有直方图放入共享内存又能
+缩短每次原子操作的延迟。不过，私有化需要初始化直方图私有副本，并在最后把这些
+副本提交到公共副本，这就是它的额外开销。每个线程块都要执行一次初始化和提交，
+所以线程块越多，开销越大。如果各线程块能够并行执行，这笔开销通常值得付出；但若
+启动的线程块数超过硬件能够同时执行的数量，硬件调度器就会把部分线程块串行执行，
+此时有些私有化开销便没有必要。
+
+线程粗化可以降低私有化开销。具体来说，我们减少线程块数，让每个线程处理多个输入
+元素，从而减少需要初始化和提交到公共副本的私有副本数。本节考察两种把多个输入
+元素分配给线程的策略：\textbf{连续划分（contiguous partitioning）}和
+\textbf{交错划分（interleaved partitioning）}。
+
+图 \ref{fig:9-11} 给出了连续划分策略的示例。输入被切分为多个连续段，每一段分配
+给一个线程。图中采用粗化因子 4；在第一次迭代中，每个线程访问自己连续段的第一个
+元素，在第二次迭代中访问第二个元素，后续迭代以此类推。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \setlength{\tabcolsep}{2pt}
+  \begin{tabular}{c@{\hspace{0.5em}}cccccccc}
+    第一次迭代 &
+    \fbox{\shortstack{$T_0\downarrow$\\\textbf{0}\\1,2,3}} &
+    \fbox{\shortstack{$T_1\downarrow$\\\textbf{4}\\5,6,7}} &
+    \fbox{\shortstack{$T_2\downarrow$\\\textbf{8}\\9,10,11}} &
+    \fbox{\shortstack{$T_3\downarrow$\\\textbf{12}\\13,14,15}} &
+    \fbox{\shortstack{$T_4\downarrow$\\\textbf{16}\\17,18,19}} &
+    \fbox{\shortstack{$T_5\downarrow$\\\textbf{20}\\21,22,23}} &
+    \fbox{\shortstack{$T_6\downarrow$\\\textbf{24}\\25,26,27}} &
+    \fbox{\shortstack{$T_7\downarrow$\\\textbf{28}\\29,30,31}}\\[0.8em]
+    第二次迭代 &
+    \fbox{\shortstack{$T_0\downarrow$\\0,\textbf{1}\\2,3}} &
+    \fbox{\shortstack{$T_1\downarrow$\\4,\textbf{5}\\6,7}} &
+    \fbox{\shortstack{$T_2\downarrow$\\8,\textbf{9}\\10,11}} &
+    \fbox{\shortstack{$T_3\downarrow$\\12,\textbf{13}\\14,15}} &
+    \fbox{\shortstack{$T_4\downarrow$\\16,\textbf{17}\\18,19}} &
+    \fbox{\shortstack{$T_5\downarrow$\\20,\textbf{21}\\22,23}} &
+    \fbox{\shortstack{$T_6\downarrow$\\24,\textbf{25}\\26,27}} &
+    \fbox{\shortstack{$T_7\downarrow$\\28,\textbf{29}\\30,31}}
+  \end{tabular}
+  \caption{输入元素的连续划分}
+  \label{fig:9-11}
+\end{figure}
+
+图 \ref{fig:9-12} 展示了采用连续划分进行线程粗化的直方图内核。它与图
+\ref{fig:9-10} 的区别在第 10--12 行。图 \ref{fig:9-10} 中，输入元素索引
+\code{i} 就是全局线程索引，所以每个线程只得到一个输入元素。图
+\ref{fig:9-12} 中，每个线程块分到一个连续的\textbf{块段（block segment）}，段
+大小等于粗化因子 \code{COARSE_FACTOR} 乘以块内线程数 \code{blockDim.x}。块段
+偏移 \code{segment} 由线程块索引乘以段大小得到（第 10 行）。在每个块段内部，
+每个线程又得到一个大小为 \code{COARSE_FACTOR} 的连续\textbf{线程段（thread
+segment）}。粗化循环遍历该线程段（第 11 行）。每次循环迭代中，线程的输入元素
+索引 \code{i} 等于块段偏移 \code{segment}、线程段在块内的偏移
+\code{threadIdx.x*COARSE_FACTOR} 与粗化计数器 \code{c} 三者之和（第 12 行）。
+因此，每个线程都会访问一段连续的输入元素。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__global__ void histogram_kernel(unsigned char* image, unsigned int* bins,
+                                 unsigned int width, unsigned int height) {
+
+  __shared__ unsigned int bins_s[NUM_BINS];
+  for(unsigned int b = threadIdx.x; b < NUM_BINS; b += blockDim.x) {
+    bins_s[b] = 0;
+  }
+  __syncthreads();
+
+  unsigned int segment = COARSE_FACTOR*blockIdx.x*blockDim.x;
+  for(unsigned int c = 0; c < COARSE_FACTOR; ++c) {
+    unsigned int i = segment + threadIdx.x*COARSE_FACTOR + c;
+    if(i < width*height) {
+      unsigned char b = image[i];
+      cuda::atomic_ref<unsigned int, cuda::thread_scope_block>
+          bins_s_ref(bins_s[b]);
+      bins_s_ref.fetch_add(1, cuda::memory_order_relaxed);
+    }
+  }
+  __syncthreads();
+
+  for(unsigned int b = threadIdx.x; b < NUM_BINS; b += blockDim.x) {
+    if(bins_s[b] > 0) {
+      cuda::atomic_ref<unsigned int, cuda::thread_scope_device>
+          bins_ref(bins[b]);
+      bins_ref.fetch_add(bins_s[b], cuda::memory_order_relaxed);
+    }
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{采用连续划分进行线程粗化的直方图内核}
+  \label{fig:9-12}
+\end{figure}
+
+把数据划分成连续段，在概念上简单直观。CPU 的并行执行通常只涉及少量线程，因此
+连续划分往往性能最好：每个线程按顺序访问数据，能够充分利用缓存行。每个 CPU 缓存
+通常只服务少量线程，不同线程之间对缓存的干扰很小。一条缓存行为某线程取入后，其中
+的数据通常能够一直保留到该线程完成后续访问。
+
+相比之下，在 GPU 上使用连续划分会产生次优的内存访问模式。第 6 章已经说明，SM 中
+同时活动的大量线程往往会造成严重的缓存干扰，不能指望某线程顺序访问所需的数据
+始终留在缓存中。我们应当保证一个 warp 中的线程访问连续位置，以便合并内存访问。
+这一观察引出了交错划分。
+
+图 \ref{fig:9-13} 给出了交错划分策略的示例。第一次迭代中，8 个线程访问像素
+0--7；借助内存访问合并，这些元素只需最少数量的内存事务即可取回。第二次迭代中，
+8 个线程同样以合并方式访问像素 8--15。之所以称为交错划分，是因为不同线程负责的
+分区彼此交错。显然，这只是一个玩具示例，实际程序会有更多线程，也有更细致的性能
+考量。例如，为充分利用缓存与 SM 之间的互连带宽，每个线程在每次迭代中应处理四个
+像素，也就是一个 32 位字。
+
+\noindent\textbf{译者注：}原书此处把图 9.13 第二次迭代写成“4 个线程访问字符
+8--15”，但图中明确画出 8 个线程，处理对象也一直是图像像素。译稿按图示和算法
+含义改为“8 个线程访问像素 8--15”。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \resizebox{0.96\textwidth}{!}{%
+  \begin{tabular}{c@{\hspace{1em}}c@{\hspace{0.8em}}c}
+    第一次迭代 &
+    \fbox{\shortstack{$T_0\downarrow\ T_1\downarrow\ T_2\downarrow\ T_3\downarrow\
+      T_4\downarrow\ T_5\downarrow\ T_6\downarrow\ T_7\downarrow$\\
+      \textbf{0\quad1\quad2\quad3\quad4\quad5\quad6\quad7}}} &
+    \fbox{\shortstack{8\quad9\quad10\quad11\quad12\quad13\quad14\quad15\\
+      （后续迭代）}}\\[0.8em]
+    第二次迭代 &
+    \fbox{\shortstack{0\quad1\quad2\quad3\quad4\quad5\quad6\quad7\\
+      （已处理）}} &
+    \fbox{\shortstack{$T_0\downarrow\ T_1\downarrow\ T_2\downarrow\ T_3\downarrow\
+      T_4\downarrow\ T_5\downarrow\ T_6\downarrow\ T_7\downarrow$\\
+      \textbf{8\quad9\quad10\quad11\quad12\quad13\quad14\quad15}}}
+  \end{tabular}
+  }
+  \caption{输入元素的交错划分}
+  \label{fig:9-13}
+\end{figure}
+
+图 \ref{fig:9-14} 给出了采用交错划分进行线程粗化的直方图内核。它与图
+\ref{fig:9-12} 的区别只有第 12 行。循环第一次迭代时 \code{c} 为 0，每个线程使用
+自己的局部线程索引 \code{threadIdx.x} 访问块段中的数据：线程 0 访问
+\code{segment + 0}，线程 1 访问 \code{segment + 1}，线程 2 访问
+\code{segment + 2}，依此类推。因此，所有线程共同处理块段开头的
+\code{blockDim.x} 个元素。第二次迭代中 \code{c} 为 1，所有线程都在索引上加
+\code{blockDim.x}，共同处理接下来的 \code{blockDim.x} 个元素。一般而言，在第
+\code{c} 次迭代中，每个线程都在首元素索引
+\code{segment + threadIdx.x} 上加 \code{c*blockDim.x}，得到本次应处理的元素。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__global__ void histogram_kernel(unsigned char* image, unsigned int* bins,
+                                 unsigned int width, unsigned int height) {
+
+  __shared__ unsigned int bins_s[NUM_BINS];
+  for(unsigned int b = threadIdx.x; b < NUM_BINS; b += blockDim.x) {
+    bins_s[b] = 0;
+  }
+  __syncthreads();
+
+  unsigned int segment = COARSE_FACTOR*blockIdx.x*blockDim.x;
+  for(unsigned int c = 0; c < COARSE_FACTOR; ++c) {
+    unsigned int i = segment + c*blockDim.x + threadIdx.x;
+    if(i < width*height) {
+      unsigned char b = image[i];
+      cuda::atomic_ref<unsigned int, cuda::thread_scope_block>
+          bins_s_ref(bins_s[b]);
+      bins_s_ref.fetch_add(1, cuda::memory_order_relaxed);
+    }
+  }
+  __syncthreads();
+
+  for(unsigned int b = threadIdx.x; b < NUM_BINS; b += blockDim.x) {
+    if(bins_s[b] > 0) {
+      cuda::atomic_ref<unsigned int, cuda::thread_scope_device>
+          bins_ref(bins[b]);
+      bins_ref.fetch_add(bins_s[b], cuda::memory_order_relaxed);
+    }
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{采用交错划分进行线程粗化的直方图内核}
+  \label{fig:9-14}
+\end{figure}
+
+\section{线程级私有化}
+\label{sec:histogram-thread-level-privatization}
+
+对直方图内核应用线程粗化后，每个线程都会处理多个输入元素，这就为线程层级的另一
+次私有化创造了机会。我们可以为每个线程建立一份私有直方图，线程更新这份副本时
+无须使用原子操作。线程处理完自己的所有输入元素后，再用原子操作把线程级私有
+直方图提交到块级私有直方图。
+
+这项优化受到直方图分箱数的限制。如果分箱很少，为每个线程分配一份直方图是可行的，
+线程甚至可以把副本放在共享内存或自己的寄存器中。但如果分箱很多，为每个线程都
+分配一份直方图就会代价过高。
+
+一种折中方法是不为每个分箱都保存私有副本，只保存频繁访问的分箱。某些数据集会在
+局部区域中集中出现大量相同数据值，因此可以采用这种方法。例如，天空图像中可能有
+大片取值完全相同的像素。相同值的高度集中会给并行直方图计算造成严重争用，降低
+吞吐量，却也为线程级私有化提供了很好的机会。对这类数据集，一种简单而有效的优化
+是：如果一连串更新都针对直方图的同一元素，每个线程就把这些连续更新聚合成一次
+更新。
+
+线程级私有化让每个线程先在该线程私有的分箱中累计计数，从而减少对高争用直方图
+分箱的原子操作次数，提高计算的有效吞吐量。
+
+图 \ref{fig:9-15} 给出一个图像直方图内核，其中每个线程只私有化一个直方图分箱，
+即最近访问的分箱。与图 \ref{fig:9-14} 相比，主要变化如下。线程先在边界检查
+（第 11 行）后加载自己负责的第一个像素（第 12 行），并把线程级私有分箱计数
+\code{bin_r} 初始化为 1（第 13 行）。由于第一个输入像素已经加载，粗化循环从
+\code{c = 1} 开始（第 14 行）。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__global__ void histogram_kernel(unsigned char* image, unsigned int* bins,
+                                 unsigned int width, unsigned int height) {
+
+  __shared__ unsigned int bins_s[NUM_BINS];
+  for(unsigned int b = threadIdx.x; b < NUM_BINS; b += blockDim.x) {
+    bins_s[b] = 0;
+  }
+  __syncthreads();
+
+  unsigned int segment = COARSE_FACTOR*blockIdx.x*blockDim.x;
+  if(segment + threadIdx.x < width*height) {
+    unsigned int b = image[segment + threadIdx.x];
+    unsigned int bin_r = 1;
+    for(unsigned int c = 1; c < COARSE_FACTOR; ++c) {
+      unsigned int i = segment + c*blockDim.x + threadIdx.x;
+      if(i < width*height) {
+        unsigned char bNext = image[i];
+        if(bNext == b) {
+          ++bin_r;
+        } else {
+          cuda::atomic_ref<unsigned int, cuda::thread_scope_block>
+              bins_s_ref(bins_s[b]);
+          bins_s_ref.fetch_add(bin_r, cuda::memory_order_relaxed);
+          b = bNext;
+          bin_r = 1;
+        }
+      }
+    }
+    cuda::atomic_ref<unsigned int, cuda::thread_scope_block>
+        bins_s_ref(bins_s[b]);
+    bins_s_ref.fetch_add(bin_r, cuda::memory_order_relaxed);
+  }
+  __syncthreads();
+
+  for(unsigned int b = threadIdx.x; b < NUM_BINS; b += blockDim.x) {
+    if(bins_s[b] > 0) {
+      cuda::atomic_ref<unsigned int, cuda::thread_scope_device>
+          bins_ref(bins[b]);
+      bins_ref.fetch_add(bins_s[b], cuda::memory_order_relaxed);
+    }
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{采用线程级私有化的直方图内核}
+  \label{fig:9-15}
+\end{figure}
+
+每当新像素加载到 \code{bNext}（第 17 行），代码就把它与线程级私有分箱所对应的
+像素值比较（第 18 行）。如果二者相同，线程只需递增线程级私有分箱计数（第 19 行）。
+如果不同，线程便用原子操作把线程级私有分箱的旧计数加到块级私有分箱中（第
+21--23 行），再把线程级私有分箱的像素值更新为刚刚加载的值（第 24 行），并把
+分箱计数器重置为 1（第 25 行）。
+
+采用这种方案时，直方图更新总是至少落后一个元素。极端情况下，如果线程处理的像素
+从未出现相邻相同值，那么每项更新都会恰好落后一次循环迭代。因此，线程处理完所有
+输入像素并退出循环后，还要为最后一个像素再执行一次原子操作（第 29--31 行）。
+
+需要注意，采用线程级私有化的内核使用了更多语句和变量。因此，如果连续像素值之间
+很少相同，它可能比前一个内核运行得更慢；但如果数据分布具有很强的重复性，线程级
+私有化就可能显著提速。新增的 if 语句可能产生控制流分歧。不过，当相似度极低或
+极高时，控制流分歧都很少，因为各线程要么都递增私有分箱，要么都执行原子操作。
+即使确实出现控制流分歧，减少争用带来的收益也很可能抵消这部分代价。
+
+\section{小结}
+\label{sec:histogram-summary}
+
+直方图计算对分析大规模数据集十分重要。它也代表了一类重要的并行计算模式：每个
+线程写入哪个输出位置由数据决定，因此无法应用所有者计算规则。这一模式很自然地
+引出了读--改--写竞态条件，以及原子操作的实际用法；原子操作能够保证针对同一内存
+位置的并发读--改--写操作不会破坏数据完整性。
+
+遗憾的是，正如本章所述，原子操作的吞吐量远低于简单的内存读取或写入，因为它近似
+等于两倍内存延迟的倒数。因此，存在严重争用时，直方图计算的吞吐量可能低得出人
+意料。私有化是一项重要优化技术，它系统地减少争用，还使程序可以进一步采用低延迟、
+高吞吐量的共享内存。事实上，让同一线程块中的线程快速执行原子操作，正是共享内存
+的重要用例之一。
+
+本章还用线程粗化减少需要合并的私有副本数，并比较了连续划分与交错划分两种粗化
+策略。最后，对于不同数据元素之间相似度很高的数据集，线程级私有化还可以进一步
+减少原子操作的争用。
+
+\phantomsection
+\section*{练习}
+\addcontentsline{toc}{section}{练习}
+
+\begin{enumerate}[label=\arabic*.,leftmargin=2.7em]
+  \item 假设 DRAM 系统中每次原子操作的总延迟为 100 ns。针对同一个全局内存变量
+  执行原子操作时，能够获得的最大吞吐量是多少？
+
+  \item 某处理器支持在 L2 缓存中执行原子操作。假设每次原子操作在 L2 缓存中需要
+  4 ns，在 DRAM 中需要 100 ns，并且 90\% 的原子操作命中 L2 缓存。针对同一个
+  全局内存变量执行原子操作时，近似吞吐量是多少？
+
+  \item 在第 1 题的条件下，假设内核每执行一次原子操作就执行 5 次浮点运算。受
+  原子操作吞吐量限制时，内核执行能达到的最大浮点吞吐量是多少？
+
+  \item 在第 1 题的条件下，假设内核把全局内存变量私有化为共享内存变量，共享
+  内存访问延迟为 1 ns。原来的全局内存原子操作全部改成共享内存原子操作。为简化
+  分析，假设把私有变量累加到全局变量所增加的全局内存原子操作，会使总执行时间
+  增加 10\%。又假设内核每执行一次原子操作就执行 5 次浮点运算。受原子操作吞吐量
+  限制时，内核执行能达到的最大浮点吞吐量是多少？
+
+  \item 某直方图内核处理包含 524,288 个元素的输入，生成包含 128 个分箱的直方图。
+  内核配置为每块 1024 个线程。
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item 图 \ref{fig:9-6} 的内核不使用私有化、共享内存和线程粗化，它会在全局
+    内存上执行多少次原子操作？
+    \item 图 \ref{fig:9-10} 的内核使用私有化和共享内存，但不使用线程粗化。它在
+    全局内存上最多可能执行多少次原子操作？
+    \item 图 \ref{fig:9-14} 的内核使用私有化、共享内存和线程粗化，粗化因子为 4。
+    它在全局内存上最多可能执行多少次原子操作？
+  \end{enumerate}
+\end{enumerate}
+
+\begin{chapterbibliography}{9}
+  \bibitem{cppreference2025}
+  C++ reference, 2025.
+  \url{https://cppreference.com}.
+\end{chapterbibliography}
