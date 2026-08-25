@@ -1,0 +1,1226 @@
+\chapter{图遍历}
+\label{chap:graph-traversal}
+
+\setcounter{footnote}{0}
+
+\noindent\textit{John Owens 和 Juan G\'omez-Luna 特别参与撰写。}
+
+图（graph）是一种表示实体间关系的数据结构，其中实体表示为\textbf{顶点}（vertex），
+关系表示为\textbf{边}（edge）。许多重要的现实问题都可以自然地表述为大规模图问题，
+并从大规模并行计算中受益；社交网络和驾车路线地图服务就是其中的典型例子。图计算有
+多种并行化策略：有些以并行处理顶点为中心，另一些则以并行处理边为中心。图与稀疏矩阵
+有着内在联系，因为图的邻接矩阵通常非常稀疏。图计算可以表述为方阵上的稀疏矩阵运算；
+不过，若能利用当前这类图计算特有的性质，往往还可以进一步提高效率。本章聚焦于
+\textbf{广度优先搜索}（breadth-first search，BFS），它是一种构成许多现实应用基础的
+图遍历计算。
+
+\section{背景}
+\label{sec:graph-background}
+
+图数据结构表示实体之间的关系。例如在社交媒体中，实体是用户，关系是用户之间的连接；
+在驾车路线地图服务中，实体是地点，关系则是地点之间的道路。有些关系是双向的，例如
+社交网络中的好友连接；另一些关系具有方向，例如道路网络中的单行道。本章将重点讨论
+有向关系。双向关系可以用两个方向相反的有向关系来表示。
+
+图 \ref{fig:18-1} 给出了一个带有向边的简单图示例。有向关系表示为一条从源顶点指向
+目的顶点的带箭头边。我们为每个顶点分配唯一的编号，也称为\textbf{顶点 ID}。例如，
+图中有一条边从顶点 0 指向顶点 1，另有一条边从顶点 0 指向顶点 2，依此类推。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[
+    v/.style={circle,draw=black!65,fill=gray!55,text=white,minimum size=7mm,inner sep=0pt},
+    e/.style={-{Stealth[length=2.2mm]},line width=0.8pt,black!75}
+  ]
+    \node[v] (v0) at (0,0) {0};
+    \node[v] (v1) at (1.2,1.0) {1};
+    \node[v] (v2) at (1.55,-0.45) {2};
+    \node[v] (v3) at (2.15,2.0) {3};
+    \node[v] (v4) at (3.0,1.0) {4};
+    \node[v] (v5) at (3.1,-0.2) {5};
+    \node[v] (v6) at (3.6,-1.35) {6};
+    \node[v] (v7) at (1.55,-1.75) {7};
+    \node[v] (v8) at (4.55,0.95) {8};
+    \draw[e] (v0)--(v1); \draw[e] (v0)--(v2);
+    \draw[e] (v1)--(v3); \draw[e] (v1)--(v4);
+    \draw[e] (v2)--(v5); \draw[e] (v2)--(v6); \draw[e] (v2)--(v7);
+    \draw[e] (v3)--(v4); \draw[e] (v3)--(v8);
+    \draw[e] (v4)--(v5); \draw[e] (v4)--(v8);
+    \draw[e] (v5)--(v6); \draw[e] (v6)--(v8);
+    \draw[e] (v7)--(v0); \draw[e] (v7)--(v6);
+  \end{tikzpicture}
+  \caption{含 9 个顶点和 15 条有向边的简单图示例。依据原书图 18.1 重绘}
+  \label{fig:18-1}
+\end{figure}
+
+图的一种直观表示是\textbf{邻接矩阵}（adjacency matrix）。在邻接矩阵 $A$ 中，若有
+一条边从源顶点 $i$ 指向目的顶点 $j$，则邻接矩阵元素 $A[i,j]$ 的值为 1；否则为 0。
+图 \ref{fig:18-2} 给出了图 \ref{fig:18-1} 中简单图的邻接矩阵。由于分别存在从顶点 1
+到顶点 3、从顶点 4 到顶点 5 的边，所以 $A[1,3]$ 和 $A[4,5]$ 都是 1。为使图示清楚，
+矩阵中省略了值为 0 的元素；空白元素均应理解为 0。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \setlength{\tabcolsep}{4.2pt}
+  \renewcommand{\arraystretch}{1.15}
+  \begin{tabular}{c|*{9}{c|}}
+    \multicolumn{1}{c}{\raisebox{0.5ex}{源}} &
+    \multicolumn{9}{c}{目的顶点 $j$}\\
+    $i$ & 0&1&2&3&4&5&6&7&8\\ \hline
+    0&&1&1&&&&&&\\ \hline
+    1&&&&1&1&&&&\\ \hline
+    2&&&&&&1&1&1&\\ \hline
+    3&&&&&1&&&&1\\ \hline
+    4&&&&&&1&&&1\\ \hline
+    5&&&&&&&1&&\\ \hline
+    6&&&&&&&&&1\\ \hline
+    7&1&&&&&&1&&\\ \hline
+    8&&&&&&&&&\\ \hline
+  \end{tabular}
+  \caption{图 \ref{fig:18-1} 中简单图的邻接矩阵表示。依据原书图 18.2 重排}
+  \label{fig:18-2}
+\end{figure}
+
+若一个含 $N$ 个顶点的图是完全连通的，也就是说每个顶点都与其他所有顶点相连，那么
+每个顶点应有 $N-1$ 条出边。由于没有从顶点指向自身的边，图中总计应有
+$N(N-1)$ 条边。例如，若这个 9 顶点图完全连通，每个顶点应有 8 条出边，边的总数应为
+72。显然，图 \ref{fig:18-1} 的连通程度低得多，每个顶点最多只有 3 条出边。这样的图称为
+\textbf{稀疏连接图}（sparsely connected graph），即每个顶点的平均出边数远小于
+$N-1$。
+
+读者此时很可能已经正确地意识到：稀疏连接图应该能从稀疏矩阵表示中受益。正如第
+\ref{chap:sparse-matrix} 章所见，采用矩阵的压缩表示可以大幅减少存储需求，以及在零
+元素上浪费的运算。现实中的许多图确实是稀疏连接的。例如，在社交网络中，每个用户的
+平均连接数远小于用户总数，因此邻接矩阵中的非零元素数远小于元素总数。
+
+图 \ref{fig:18-3} 用 CSR、CSC 和 COO 三种存储格式表示同一个简单图。这里把行下标数组
+和行偏移数组分别称为 \code{src} 和 \code{srcPtrs}，把列下标数组和列偏移数组分别称为
+\code{dst} 和 \code{dstPtrs}。以 CSR 为例，第 \ref{chap:sparse-matrix} 章已经说明，
+CSR 稀疏矩阵的 \code{rowPtrs} 数组中，每个行偏移都给出相应行非零元素的起始位置。
+类似地，在图的 CSR 表示中，\code{srcPtrs} 数组中每个源顶点的偏移，都给出该顶点出边的
+起始位置。
+
+例如，\code{srcPtrs[3]=7} 给出原邻接矩阵第 3 行非零元素的起始位置，
+\code{srcPtrs[4]=9} 则给出第 4 行非零元素的起始位置。因此，第 3 行的非零数据位于
+\code{data[7]} 和 \code{data[8]}，相应的列下标（目的顶点）位于 \code{dst[7]} 和
+\code{dst[8]}。这些正是离开顶点 3 的两条边的数据和列下标。之所以把列下标数组称为
+\code{dst}，是因为邻接矩阵元素的列下标给出了该边的目的顶点。在本例中，以顶点 3 为
+源的两条边分别指向 \code{dst[7]=4} 和 \code{dst[8]=8}。CSC 和 COO 表示与矩阵格式
+之间的类似对应关系留给读者自行推导。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \setlength{\tabcolsep}{2.7pt}
+  \renewcommand{\arraystretch}{1.18}
+  \begin{tabular}{r|*{10}{c|}}
+    \multicolumn{11}{c}{\textbf{(a) CSR 表示}}\\
+    \code{srcPtrs[10]}&0&2&4&7&9&11&12&13&15&15\\ \hline
+  \end{tabular}
+  \\[0.35em]
+  \begin{tabular}{r|*{15}{c|}}
+    \code{dst[15]}&1&2&3&4&5&6&7&4&8&5&8&6&8&0&6\\ \hline
+    \code{data[15]}&1&1&1&1&1&1&1&1&1&1&1&1&1&1&1\\ \hline
+  \end{tabular}
+  \\[0.8em]
+  \begin{tabular}{r|*{10}{c|}}
+    \multicolumn{11}{c}{\textbf{(b) CSC 表示}}\\
+    \code{dstPtrs[10]}&0&1&2&3&4&6&8&11&12&15\\ \hline
+  \end{tabular}
+  \\[0.35em]
+  \begin{tabular}{r|*{15}{c|}}
+    \code{src[15]}&7&0&0&1&1&3&2&4&2&5&7&2&3&4&6\\ \hline
+    \code{data[15]}&1&1&1&1&1&1&1&1&1&1&1&1&1&1&1\\ \hline
+  \end{tabular}
+  \\[0.8em]
+  \begin{tabular}{r|*{15}{c|}}
+    \multicolumn{16}{c}{\textbf{(c) COO 表示}}\\
+    \code{src[15]}&0&0&1&1&2&2&2&3&3&4&4&5&6&7&7\\ \hline
+    \code{dst[15]}&1&2&3&4&5&6&7&4&8&5&8&6&8&0&6\\ \hline
+    \code{data[15]}&1&1&1&1&1&1&1&1&1&1&1&1&1&1&1\\ \hline
+  \end{tabular}
+  \caption{邻接矩阵的三种稀疏表示：(a) CSR；(b) CSC；(c) COO。依据原书图 18.3 重排}
+  \label{fig:18-3}
+\end{figure}
+
+本例中的 \code{data} 数组并非必需，因为其中所有元素都为 1，无须实际存储。我们可以
+让数据成为隐式信息：只要存在一个非零元素，就直接假定它的值为 1。例如，CSR 表示的
+目的数组中每出现一个列下标，就意味着存在一条边。不过在某些应用中，邻接矩阵还会保存
+关于关系的附加信息，例如两个地点间的距离，或两个社交网络用户建立连接的日期；此时就
+必须显式存储 \code{data} 数组。
+
+稀疏表示可以显著节省邻接矩阵的存储空间。在本例中，假设可以省略 \code{data} 数组，
+CSR 表示需要 25 个存储位置；若保存完整邻接矩阵，则需要 $9^2=81$ 个位置。现实问题中
+邻接矩阵往往只有极小一部分元素非零，节省的空间会相当可观。
+
+\noindent\textbf{译者注：}底本 PDF 的正文视觉内容为 $9^2=81$，但文本提取层把上标 2
+错误地提取成了普通数字，形成“92=81”。本译稿按原页数学排版还原为 $9^2=81$。
+
+不同图的结构可能有天壤之别。描述这些结构的一种方法，是观察每个顶点所连边数的分布，
+也就是\textbf{顶点度}（vertex degree）的分布。若把道路网络表示为图，其度分布通常
+比较均匀，每个顶点的平均度较低，因为每个道路交叉口（顶点）一般只连接少量道路（边）。
+另一方面，在社交网络的关注关系图中，每条入边表示一次“关注”，顶点度的分布要宽得多；
+度很大的顶点代表一位很受欢迎的用户。图的结构会影响具体图应用对算法的选择。
+
+回忆第 \ref{chap:sparse-matrix} 章，每种稀疏矩阵表示对所表示数据提供的可访问性不同，
+因此图的表示选择会影响图遍历算法能够方便取得哪些信息。CSR 表示便于访问给定顶点的
+出边；CSC 表示便于访问给定顶点的入边；COO 表示则便于访问给定边的源顶点和目的顶点。
+所以，图表示的选择与图遍历算法的选择相伴而生。本章将考察 BFS 的多种并行实现，以此
+贯穿展示这一概念。
+
+\section{广度优先搜索}
+\label{sec:breadth-first-search}
+
+\textbf{广度优先搜索}（BFS）是一种重要的图遍历计算。它常用于确定从一个顶点到图中
+任意其他顶点至少需要经过多少条边。在图 \ref{fig:18-1} 的例子中，我们可能需要寻找从
+顶点 0 所代表的地点到顶点 5 所代表地点的所有备选路线。观察图可知有三条可能的路径：
+$0\to1\to3\to4\to5$、$0\to1\to4\to5$ 和 $0\to2\to5$，其中
+$0\to2\to5$ 最短。BFS 遍历结果有多种汇总方式。其中一种是指定一个称为\textbf{根}
+（root）的顶点，并用从根到该顶点至少需要经过的边数为每个顶点加上标记。BFS 的结果
+也可以帮助理解图的拓扑结构。
+
+图 \ref{fig:18-4}(a) 给出以顶点 0 为根时所需的 BFS 结果。经过一条边可以到达顶点 1
+和 2，所以把它们标为第 1 层。再经过一条边，可以到达顶点 3（经顶点 1）、顶点 4
+（经顶点 1）、顶点 5（经顶点 2）、顶点 6（经顶点 2）和顶点 7（经顶点 2），因此把
+这些顶点标为第 2 层。最后，再经过一条边可以从顶点 3、4 或 6 到达顶点 8。
+
+若换一个顶点作为根，BFS 的结果会大不相同。图 \ref{fig:18-4}(b) 给出以顶点 2 为根的
+结果。第 1 层顶点是 5、6 和 7；第 2 层顶点是顶点 8（经顶点 6）和顶点 0（经顶点 7）；
+只有顶点 1 位于第 3 层（经顶点 0）；最后，顶点 3 和 4 都位于第 4 层（均经顶点 1）。
+值得注意的是，虽然新根与原根只相隔一条边，两个结果却有很大差别。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[
+    scale=.78,transform shape,
+    v/.style={circle,draw=black!55,minimum size=7mm,inner sep=0pt},
+    e/.style={-{Stealth[length=2mm]},line width=.65pt,black!70},
+    lab/.style={font=\scriptsize}
+  ]
+    \begin{scope}[xshift=-4.1cm]
+      \node[v,fill=gray!55,text=white] (a0) at (0,0) {0};
+      \node[v,fill=blue!35] (a1) at (1.2,1) {1}; \node[v,fill=blue!35] (a2) at (1.55,-.45) {2};
+      \node[v,fill=green!35] (a3) at (2.15,2) {3}; \node[v,fill=green!35] (a4) at (3,1) {4};
+      \node[v,fill=green!35] (a5) at (3.1,-.2) {5}; \node[v,fill=green!35] (a6) at (3.6,-1.35) {6};
+      \node[v,fill=green!35] (a7) at (1.55,-1.75) {7}; \node[v,fill=orange!45] (a8) at (4.55,.95) {8};
+      \foreach \s/\t in {a0/a1,a0/a2,a1/a3,a1/a4,a2/a5,a2/a6,a2/a7,a3/a4,a3/a8,a4/a5,a4/a8,a5/a6,a6/a8,a7/a0,a7/a6} {\draw[e] (\s)--(\t);}
+      \node[lab,left] at (a0.west) {0}; \node[lab,above left] at (a1) {1}; \node[lab,above left] at (a2) {1};
+      \node[lab,above] at (a3) {2}; \node[lab,above] at (a4) {2}; \node[lab,right] at (a5) {2};
+      \node[lab,right] at (a6) {2}; \node[lab,below] at (a7) {2}; \node[lab,right] at (a8) {3};
+      \node[font=\small] at (2.25,-2.55) {(a) 顶点 0 为根};
+    \end{scope}
+    \begin{scope}[xshift=3.2cm]
+      \node[v,fill=green!35] (b0) at (0,0) {0};
+      \node[v,fill=orange!45] (b1) at (1.2,1) {1}; \node[v,fill=gray!55,text=white] (b2) at (1.55,-.45) {2};
+      \node[v,fill=pink!45] (b3) at (2.15,2) {3}; \node[v,fill=pink!45] (b4) at (3,1) {4};
+      \node[v,fill=blue!35] (b5) at (3.1,-.2) {5}; \node[v,fill=blue!35] (b6) at (3.6,-1.35) {6};
+      \node[v,fill=blue!35] (b7) at (1.55,-1.75) {7}; \node[v,fill=green!35] (b8) at (4.55,.95) {8};
+      \foreach \s/\t in {b0/b1,b0/b2,b1/b3,b1/b4,b2/b5,b2/b6,b2/b7,b3/b4,b3/b8,b4/b5,b4/b8,b5/b6,b6/b8,b7/b0,b7/b6} {\draw[e] (\s)--(\t);}
+      \node[lab,left] at (b0.west) {2}; \node[lab,above left] at (b1) {3}; \node[lab,above left] at (b2) {0};
+      \node[lab,above] at (b3) {4}; \node[lab,above] at (b4) {4}; \node[lab,right] at (b5) {1};
+      \node[lab,right] at (b6) {1}; \node[lab,below] at (b7) {1}; \node[lab,right] at (b8) {2};
+      \node[font=\small] at (2.25,-2.55) {(b) 顶点 2 为根};
+    \end{scope}
+  \end{tikzpicture}
+  \caption{两个不同根顶点对应的 BFS 结果。顶点旁的数字表示距根的边数（深度）。
+  依据原书图 18.4 重绘}
+  \label{fig:18-4}
+\end{figure}
+
+可以把 BFS 的标记过程看作构造一棵以搜索根为根节点的\textbf{BFS 树}。这棵树包含
+所有已标记顶点，但只包含搜索中实际经过的、从某一层顶点指向下一层顶点的边。给所有
+顶点标出层号以后，就很容易找到一条从根到任意顶点、且所经边数等于该顶点层号的路径。
+例如在图 \ref{fig:18-4}(b) 中，顶点 1 被标为第 3 层，所以根（顶点 2）到顶点 1 的
+最少边数为 3。若要找出具体路径，可以从目的顶点开始反向追溯到根：每一步都选择一个
+层号比当前顶点少 1 的前驱。若同一层有多个前驱，可以任取一个；其中任何一个都能给出
+有效解。存在多个可选前驱，也就意味着问题有多个同样好的解。本例中，从顶点 1 出发，
+依次选择顶点 0、7 和 2，便得到从顶点 2 到顶点 1 的最短路径 $2\to7\to0\to1$。
+当然，这要求每个顶点都带有其全部入边源顶点的列表，才能找到给定顶点的前驱。
+
+图 \ref{fig:18-5} 展示了 BFS 在计算机辅助设计（CAD）中的一项重要应用。设计集成电路
+芯片时，需要连接许多电子元件才能完成设计。这些元件的连接器称为\textbf{网络端点}
+（net terminal）。图 \ref{fig:18-5}(a) 用两个圆点表示这样的端点：一个属于芯片左上部
+的元件，另一个属于右下部的元件。假设设计要求连接这两个端点，就需要从第一个端点到
+第二个端点布设一条给定宽度的导线。
+
+布线软件把芯片表示为由布线块组成的网格，每个块都有可能成为导线的一部分。导线可以
+沿水平方向或垂直方向延伸。例如，图中芯片下半部黑色的 J 形障碍由 21 个布线块构成，
+并连接三个网络端点。一个布线块一旦成为某条导线的一部分，就不能再用于任何其他导线；
+它还会阻断周围布线块。导线不能从已用块的下邻块穿到上邻块，也不能从左邻块穿到右邻块，
+依此类推。形成一条导线以后，其他所有导线都必须绕开它。布线块也可能被电路元件占据，
+并施加与导线占用相同的阻断约束。这正是该问题称为\textbf{迷宫布线}（maze routing）
+的原因：已有电路元件和导线为尚未形成的导线构成了一座迷宫；迷宫布线软件必须在所有
+既有约束下，为每条新增导线寻找路线。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[x=.35cm,y=.35cm]
+    \begin{scope}
+      \fill[green!18] (0,0) rectangle (11,9);
+      \fill[green!28] (1,4) rectangle (7,8);
+      \fill[yellow!24] (2,5) rectangle (6,8);
+      \fill[orange!25] (3,6) rectangle (5,8);
+      \fill[black!75] (7,6) rectangle (8,9); \fill[black!75] (7,6) rectangle (11,7);
+      \fill[black!75] (1,3) rectangle (7,4); \fill[black!75] (5,1) rectangle (6,4);
+      \fill[black!75] (2,1) rectangle (6,2);
+      \draw[step=1,black!35,thin] (0,0) grid (11,9);
+      \fill[brown!80] (3.5,7.5) circle (2.3pt); \fill[brown!80] (7.5,2.5) circle (2.3pt);
+      \node[font=\scriptsize] at (5.5,-.8) {(a) BFS 波前};
+      \node[font=\tiny,anchor=west] at (.2,8.55) {第 3 层};
+      \node[font=\tiny,anchor=west] at (1.2,7.65) {第 2 层};
+      \node[font=\tiny,anchor=west] at (2.2,6.75) {第 1 层};
+    \end{scope}
+    \begin{scope}[xshift=5cm]
+      \fill[green!18] (0,0) rectangle (11,9);
+      \fill[black!75] (7,6) rectangle (8,9); \fill[black!75] (7,6) rectangle (11,7);
+      \fill[black!75] (1,3) rectangle (7,4); \fill[black!75] (5,1) rectangle (6,4);
+      \fill[black!75] (2,1) rectangle (6,2);
+      \draw[step=1,black!35,thin] (0,0) grid (11,9);
+      \draw[red!75!black,line width=1.2pt] (3.5,7.5)--(.5,7.5)--(.5,2.5)--(7.5,2.5);
+      \fill[brown!80] (3.5,7.5) circle (2.3pt); \fill[brown!80] (7.5,2.5) circle (2.3pt);
+      \node[font=\scriptsize] at (5.5,-.8) {(b) 确定布线路径};
+    \end{scope}
+    \fill[brown!80] (8.5,-2.0) circle (2.3pt); \node[font=\scriptsize,anchor=west] at (9,-2) {网络端点};
+    \fill[black!75] (13,-2.35) rectangle (13.8,-1.65); \node[font=\scriptsize,anchor=west] at (14.2,-2) {障碍};
+  \end{tikzpicture}
+  \caption{集成电路中的迷宫布线是 BFS 的一种应用：(a) 广度优先搜索；(b) 确定一条
+  布线路径。依据原书图 18.5 重绘的概念示意}
+  \label{fig:18-5}
+\end{figure}
+
+迷宫布线应用把芯片表示为图：布线块是顶点；从顶点 $i$ 到顶点 $j$ 的边表示导线可以
+从块 $i$ 延伸到块 $j$。一个块被导线或元件占用以后，应用会把它标为障碍顶点，或者直接
+从图中移除，具体取决于应用设计。图 \ref{fig:18-5} 表明，应用可以从根网络端点到目标
+网络端点做 BFS，求解迷宫布线问题。搜索从根顶点开始，逐层标记顶点：不是障碍的直接
+水平或垂直邻居（总共 4 个）被标为第 1 层；图中根的 4 个邻居都可到达，所以都会进入
+第 1 层。第 1 层顶点中既非障碍、也未被当前搜索访问的邻居被标为第 2 层。读者可以核实，
+原书图 18.5(a) 中有 4 个第 1 层顶点、8 个第 2 层顶点和 12 个第 3 层顶点，依此类推。
+可以看到，BFS 实质上为每一层形成一个顶点\textbf{波前}（wavefront）。第 1 层的波前
+很小，但在短短几层之内就可能迅速变得很大。
+
+图 \ref{fig:18-5}(b) 表明，BFS 完成后，可以通过寻找从根到目标的最短路径来形成导线。
+如前所述，只需从目标顶点出发，反向追溯层号比当前顶点少 1 的前驱。若有多个前驱的层号
+相同，就存在多条长度相同的路线。可以设计启发式规则来选择前驱，以尽量减轻尚未布设的
+导线将要面对的约束。
+
+\section{BFS 的顶点中心并行化}
+\label{sec:bfs-vertex-centric}
+
+并行化图算法的一种自然方法，是并行地对不同顶点或不同边执行操作。事实上，许多图算法
+的并行实现都可以分为\textbf{顶点中心}（vertex-centric）和\textbf{边中心}
+（edge-centric）两类。顶点中心实现把线程分配给顶点，让每个线程对自己的顶点执行操作，
+通常需要遍历该顶点的邻居。算法不同，所关注的邻居可能是经出边可达的顶点、经入边可达
+的顶点，或者两者兼有。与之相对，边中心实现把线程分配给边，让每个线程对自己的边执行
+操作，通常需要查找该边的源顶点和目的顶点。本节考察 BFS 的两种顶点中心并行实现：一种
+遍历出边，另一种遍历入边。第 \ref{sec:bfs-edge-centric} 节将考察边中心实现并加以比较。
+
+下面各并行实现在逐层迭代时采用相同策略。所有实现都先把根顶点标为第 0 层，然后调用
+一个内核，把根的全部邻居标为第 1 层；接着调用内核，把第 1 层顶点中尚未访问的邻居
+标为第 2 层；再调用内核，把第 2 层顶点中尚未访问的邻居标为第 3 层。这个过程一直持续，
+直到不再访问和标记任何新顶点。
+
+每一层都要单独调用一次内核，是因为必须等上一层的全部顶点标记完毕，才能继续标记下一层，
+否则可能给顶点标上错误的层号。本节余下部分聚焦于每层调用一次的这个内核：给定当前层，
+它根据此前各层顶点的标记，为属于当前层的全部顶点加上标记。第
+\ref{sec:bfs-cooperative-groups} 节将修改这种方法，在一次内核调用中迭代多个 BFS 层。
+
+第一种顶点中心并行实现给每个顶点分配一个线程，让线程遍历该顶点的出边。线程先检查
+自己的顶点是否属于上一层；若是，就遍历出边，把所有尚未访问的邻居标为当前层。这种
+顶点中心实现通常称为\textbf{自顶向下}（top-down）或\textbf{推送式}（push）实现。
+\footnote{若正在构造 BFS 树，这种实现可以看成把线程分配给 BFS 树中的父顶点，让它们
+寻找自己的子顶点，因而得名“自顶向下”。这种说法假定树根在上、叶节点在下。“推送”
+则是指每个活动顶点沿出边把自己的深度推送给全部邻居。}它要求能够访问给定源顶点的
+出边，也就是邻接矩阵给定行中的非零元素，因此需要 CSR 表示。
+
+图 \ref{fig:18-6} 给出顶点中心推送式内核，图 \ref{fig:18-7} 则展示该内核如何从第 1 层
+（上一层）遍历到第 2 层（当前层）。内核先给每个顶点分配一个线程（第 3 行），每个线程
+检查自己的顶点 ID 是否越界（第 4 行），然后检查该顶点是否属于上一层（第 5 行）。在
+图 \ref{fig:18-7} 中，只有分配到顶点 1 和 2 的线程通过这项检查。这些线程随后用 CSR 的
+\code{srcPtrs} 数组定位顶点的出边并逐条遍历（第 6--7 行）。对每条出边，线程用 CSR 的
+\code{dst} 数组找到边的目的邻居（第 8 行），再检查该邻居是否尚未访问（第 9 行）。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1,lastline=16]
+__global__ void bfs_kernel(CSRGraph csrGraph, unsigned int* level,
+                           unsigned int* newVertexVisited, unsigned int currLevel) {
+  unsigned int vertex = blockIdx.x*blockDim.x + threadIdx.x;
+  if(vertex < csrGraph.numVertices) {
+    if(level[vertex] == currLevel - 1) {
+      for(unsigned int edge = csrGraph.srcPtrs[vertex];
+                       edge < csrGraph.srcPtrs[vertex + 1]; ++edge) {
+        unsigned int neighbor = csrGraph.dst[edge];
+        if(level[neighbor] == UNVISITED) {
+          level[neighbor] = currLevel;
+          *newVertexVisited = 1;
+        }
+      }
+    }
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{顶点中心推送式（自顶向下）BFS 内核。依据原书图 18.6 逐字符重排}
+  \label{fig:18-6}
+\end{figure}
+
+为完成“尚未访问”的检查，所有顶点的层号起初都设为特殊值 \code{UNVISITED}。例如，
+可以把它设为无符号整数的最大可能值：
+\begin{lstlisting}[language=C++,numbers=none]
+cuda::std::numeric_limits<unsigned>::max()
+\end{lstlisting}
+因此，只要邻居的层号仍为
+\code{UNVISITED}，线程就知道它尚未访问。线程将未访问邻居标为当前层（第 10 行）；
+成功标记一个顶点后，再设置一个标志，表明已经访问了新顶点（第 11 行）。启动代码借助
+这个标志判断是需要为下一层启动新网格，还是已经抵达搜索终点。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[
+    scale=.9,transform shape,
+    v/.style={circle,draw=black!55,minimum size=7mm,inner sep=0pt},
+    e/.style={-{Stealth[length=2mm]},line width=.55pt,gray!60},
+    active/.style={-{Stealth[length=2.2mm]},line width=1.2pt,blue!70!black}
+  ]
+    \node[v,fill=gray!55,text=white] (v0) at (0,0) {0};
+    \node[v,fill=blue!35] (v1) at (1.2,1) {1}; \node[v,fill=blue!35] (v2) at (1.55,-.45) {2};
+    \node[v,fill=green!35] (v3) at (2.15,2) {3}; \node[v,fill=green!35] (v4) at (3,1) {4};
+    \node[v,fill=green!35] (v5) at (3.1,-.2) {5}; \node[v,fill=green!35] (v6) at (3.6,-1.35) {6};
+    \node[v,fill=green!35] (v7) at (1.55,-1.75) {7}; \node[v,fill=orange!45] (v8) at (4.55,.95) {8};
+    \foreach \s/\t in {v0/v1,v0/v2,v3/v4,v3/v8,v4/v5,v4/v8,v5/v6,v6/v8,v7/v0,v7/v6} {\draw[e] (\s)--(\t);}
+    \foreach \s/\t in {v1/v3,v1/v4,v2/v5,v2/v6,v2/v7} {\draw[active] (\s)--(\t);}
+    \node[draw=blue!70!black,rounded corners=1pt,align=left,font=\scriptsize,anchor=west] at (5.3,.2)
+      {活动线程：顶点 1、2\\遍历出边并标记邻居};
+  \end{tikzpicture}
+  \caption{顶点中心推送式 BFS 从第 1 层遍历到第 2 层的示例。蓝色粗边表示活动线程
+  遍历的出边。依据原书图 18.7 重绘}
+  \label{fig:18-7}
+\end{figure}
+
+请注意，多个线程可能把同一个顶点标为当前层，也可能有多个线程把标志写成 1。从技术上
+说，这两种情形都是竞态条件：多个线程无序地访问同一内存位置，且其中至少一次访问是写。
+正如第 14 章所讨论的，这类竞态在实践中通常是良性的，因为操作具有\textbf{幂等性}
+（idempotence），执行多少次效果都相同。不过，这段代码即使实践中可以工作，仍违反了
+C++ 内存模型，因而不受标准保证。采取保守做法的程序员应当对这两项操作使用原子操作。
+
+第二种顶点中心并行实现同样给每个顶点分配一个线程，但让线程遍历该顶点的入边。线程
+先检查自己的顶点是否已被访问；若尚未访问，就遍历入边，查找是否有邻居属于上一层。
+只要找到一个属于上一层的邻居，线程就把自己的顶点标为当前层。这种实现通常称为
+\textbf{自底向上}（bottom-up）或\textbf{拉取式}（pull）实现。\footnote{若正在构造
+BFS 树，这种实现可以看成把线程分配给 BFS 树中的潜在子顶点，让它们寻找自己的父顶点，
+因而得名“自底向上”。“拉取”则是指每个顶点回看其前驱，从中拉取活动状态。}它要求能够
+访问给定目的顶点的入边，也就是邻接矩阵给定列中的非零元素，因此需要 CSC 表示。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1,lastline=17]
+__global__ void bfs_kernel(CSCGraph cscGraph, unsigned int* level,
+                           unsigned int* newVertexVisited, unsigned int currLevel) {
+  unsigned int vertex = blockIdx.x*blockDim.x + threadIdx.x;
+  if(vertex < cscGraph.numVertices) {
+    if(level[vertex] == UNVISITED) {
+      for(unsigned int edge = cscGraph.dstPtrs[vertex];
+                       edge < cscGraph.dstPtrs[vertex + 1]; ++edge) {
+        unsigned int neighbor = cscGraph.src[edge];
+        if(level[neighbor] == currLevel - 1) {
+          level[vertex] = currLevel;
+          *newVertexVisited = 1;
+          break;
+        }
+      }
+    }
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{顶点中心拉取式（自底向上）BFS 内核。依据原书图 18.8 逐字符重排}
+  \label{fig:18-8}
+\end{figure}
+
+图 \ref{fig:18-8} 给出拉取式内核，图 \ref{fig:18-9} 展示它如何从第 1 层遍历到第 2 层。
+内核先给每个顶点分配线程（第 3 行）并做边界检查（第 4 行），然后检查自己的顶点是否
+尚未访问（第 5 行）。图 \ref{fig:18-9} 中，分配到顶点 3--8 的线程都通过这项检查。
+它们用 CSC 的 \code{dstPtrs} 数组定位顶点的入边并逐条遍历（第 6--7 行），再用 CSC 的
+\code{src} 数组找到每条入边源端的邻居（第 8 行）。线程检查该邻居是否属于上一层
+（第 9 行）；若是，就把自己的顶点标为当前层（第 10 行），设置新顶点访问标志（第 11 行），
+并跳出循环（第 12 行）。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[
+    scale=.9,transform shape,
+    v/.style={circle,draw=black!55,minimum size=7mm,inner sep=0pt},
+    e/.style={-{Stealth[length=2mm]},line width=.55pt,gray!60},
+    hit/.style={-{Stealth[length=2.2mm]},line width=1.2pt,green!55!black},
+    miss/.style={-{Stealth[length=2mm]},line width=1pt,dashed,orange!80!black}
+  ]
+    \node[v,fill=gray!55,text=white] (v0) at (0,0) {0};
+    \node[v,fill=blue!35] (v1) at (1.2,1) {1}; \node[v,fill=blue!35] (v2) at (1.55,-.45) {2};
+    \node[v,fill=green!35] (v3) at (2.15,2) {3}; \node[v,fill=green!35] (v4) at (3,1) {4};
+    \node[v,fill=green!35] (v5) at (3.1,-.2) {5}; \node[v,fill=green!35] (v6) at (3.6,-1.35) {6};
+    \node[v,fill=green!35] (v7) at (1.55,-1.75) {7}; \node[v,fill=orange!45] (v8) at (4.55,.95) {8};
+    \foreach \s/\t in {v0/v1,v0/v2,v3/v4,v3/v8,v4/v5,v4/v8,v5/v6,v6/v8,v7/v0,v7/v6} {\draw[e] (\s)--(\t);}
+    \foreach \s/\t in {v1/v3,v1/v4,v2/v5,v2/v6,v2/v7} {\draw[hit] (\s)--(\t);}
+    \draw[miss] (v6)--(v8);
+    \node[draw=green!55!black,align=left,font=\scriptsize,anchor=west] at (5.3,.35)
+      {顶点 3--7 找到上一层入邻居\\并标记自身};
+    \node[draw=orange!80!black,align=left,font=\scriptsize,anchor=west] at (5.3,-.75)
+      {顶点 8 检查全部入边\\但尚不能标记};
+  \end{tikzpicture}
+  \caption{顶点中心拉取式遍历从第 1 层到第 2 层的示例。依据原书图 18.9 重绘}
+  \label{fig:18-9}
+\end{figure}
+
+之所以可以跳出循环，是因为线程只要确认自己的顶点有一个邻居位于上一层，就足以证明
+自己的顶点位于当前层，无须继续检查其余邻居。只有那些没有任何上一层邻居的顶点所对应
+的线程，才会完整遍历邻居列表。在图 \ref{fig:18-9} 中，只有分配到顶点 8 的线程没有
+提前跳出，而是遍历完整个邻居列表。
+
+比较推送式和拉取式顶点中心实现时，有两个对性能影响很大的关键区别。第一个区别是，
+推送式实现中的线程会遍历其顶点的完整邻居列表，而拉取式实现中的线程可能提前跳出循环。
+对道路网络或 CAD 电路模型这类低顶点度、低方差的图而言，邻居列表很短、长度也相近，
+这项差异可能并不重要。但对社交网络这类高顶点度、高方差的图而言，邻居列表很长，长度
+也可能相差悬殊，造成严重负载不均衡和线程间控制流分歧。此时，提前跳出循环能够减少
+负载不均衡与控制流分歧，带来显著的性能收益。
+
+第二个重要区别是：推送式实现中，只有分配到上一层顶点的线程才遍历邻居列表；拉取式
+实现中，分配到任意未访问顶点的线程都会遍历邻居列表。在搜索前期，每层顶点数通常较少，
+而图中未访问顶点很多，所以推送式实现遍历的邻居列表更少，性能通常更好。到了搜索后期，
+每层顶点数通常更多，未访问顶点则更少；此外，拉取式实现找到已访问邻居并提前跳出的概率
+也更高，因此后期通常是拉取式实现表现更好。
+
+据此，一项常见优化是前期采用推送式实现，后期切换到拉取式实现。这通常称为
+\textbf{方向优化}（direction optimization）实现。何时切换通常取决于图的类型。平均
+顶点度和方差较低的图通常层数很多，需要经过较长时间，才会出现单层顶点很多且相当一部分
+顶点已经访问的局面。相反，平均顶点度和方差较高的图通常层数较少，各层规模增长很快。
+这类只经过几层就能从任意顶点抵达其他顶点的图，通常称为\textbf{小世界图}
+（small-world graph）。因此，高平均顶点度图从推送式切换到拉取式的时机，通常远早于
+低平均顶点度图。
+
+推送式实现使用图的 CSR 表示，拉取式实现则使用 CSC 表示。因此，若采用方向优化实现，
+就需要同时保存图的 CSR 和 CSC 表示。在社交网络或迷宫布线等许多应用中，图是无向的，
+这意味着邻接矩阵对称。此时 CSR 和 CSC 表示等价，只需保存一份，供两种实现共同使用。
+
+\section{BFS 的边中心并行化}
+\label{sec:bfs-edge-centric}
+
+现在考察 BFS 的一种边中心并行实现。每个线程分配到一条边，检查边的源顶点是否属于
+上一层、目的顶点是否尚未访问；若两项条件都满足，就把未访问的目的顶点标为当前层。
+这种实现需要能够访问给定边的源顶点和目的顶点，也就是给定非零元素的行、列下标，因此
+需要 COO 数据结构。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1,lastline=14]
+__global__ void bfs_kernel(COOGraph cooGraph, unsigned int* level,
+                           unsigned int* newVertexVisited, unsigned int currLevel) {
+  unsigned int edge = blockIdx.x*blockDim.x + threadIdx.x;
+  if(edge < cooGraph.numEdges) {
+    unsigned int vertex = cooGraph.src[edge];
+    if(level[vertex] == currLevel - 1) {
+      unsigned int neighbor = cooGraph.dst[edge];
+      if(level[neighbor] == UNVISITED) {
+        level[neighbor] = currLevel;
+        *newVertexVisited = 1;
+      }
+    }
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{边中心 BFS 内核。依据原书图 18.10 逐字符重排}
+  \label{fig:18-10}
+\end{figure}
+
+图 \ref{fig:18-10} 给出边中心内核，图 \ref{fig:18-11} 展示该内核如何从第 1 层遍历到
+第 2 层。内核先给每条边分配一个线程（第 3 行）并检查边 ID 是否越界（第 4 行）。
+线程用 COO 的 \code{src} 数组找到边的源顶点（第 5 行），并检查它是否属于上一层
+（第 6 行）。图 \ref{fig:18-11} 中，只有分配到顶点 1 和 2 出边的线程通过检查。这些
+线程用 COO 的 \code{dst} 数组定位边的目的邻居（第 7 行），并检查邻居是否尚未访问
+（第 8 行）；若是，就把它标为当前层（第 9 行），最后设置新顶点访问标志（第 10 行）。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[
+    scale=.9,transform shape,
+    v/.style={circle,draw=black!55,minimum size=7mm,inner sep=0pt},
+    e/.style={-{Stealth[length=2mm]},line width=.55pt,gray!55},
+    active/.style={-{Stealth[length=2.2mm]},line width=1.2pt,purple!75!black}
+  ]
+    \node[v,fill=gray!55,text=white] (v0) at (0,0) {0};
+    \node[v,fill=blue!35] (v1) at (1.2,1) {1}; \node[v,fill=blue!35] (v2) at (1.55,-.45) {2};
+    \node[v,fill=green!35] (v3) at (2.15,2) {3}; \node[v,fill=green!35] (v4) at (3,1) {4};
+    \node[v,fill=green!35] (v5) at (3.1,-.2) {5}; \node[v,fill=green!35] (v6) at (3.6,-1.35) {6};
+    \node[v,fill=green!35] (v7) at (1.55,-1.75) {7}; \node[v,fill=orange!45] (v8) at (4.55,.95) {8};
+    \foreach \s/\t in {v0/v1,v0/v2,v3/v4,v3/v8,v4/v5,v4/v8,v5/v6,v6/v8,v7/v0,v7/v6} {\draw[e] (\s)--(\t);}
+    \foreach \s/\t in {v1/v3,v1/v4,v2/v5,v2/v6,v2/v7} {\draw[active] (\s)--(\t);}
+    \node[draw=purple!75!black,align=left,font=\scriptsize,anchor=west] at (5.3,.15)
+      {每条边一个线程\\紫色边对应线程执行遍历};
+  \end{tikzpicture}
+  \caption{边中心实现从第 1 层遍历到第 2 层的示例。依据原书图 18.11 重绘}
+  \label{fig:18-11}
+\end{figure}
+
+相对顶点中心实现，边中心实现有两项主要优势。第一，它暴露的并行度更高。顶点中心实现
+面对顶点数很少的图时，可能无法启动足够多的线程来充分占用设备。图中的边通常远多于
+顶点，所以边中心实现可以启动更多线程，通常更适合小图。
+
+第二，边中心实现的负载不均衡和控制流分歧更少。在顶点中心实现中，每个线程遍历多少条
+边取决于分配到的顶点度；边中心实现中，每个线程只遍历一条边。相对于顶点中心实现，
+边中心实现正是第 6 章所讨论的“重新安排线程到工作/数据的映射以减少控制流分歧”的一个
+例子。它通常更适合平均顶点度较高、且各顶点度差异很大的图。
+
+边中心实现的缺点是必须检查图中的每一条边。顶点中心实现若判断一个顶点与当前层无关，
+就可以跳过整张边列表。例如，设顶点 $v$ 有 $n$ 条边，却与某一层无关。边中心实现会为
+这 $n$ 条边分别启动线程，每个线程都独立检查 $v$，然后发现自己的边无关；顶点中心实现
+只需为 $v$ 启动一个线程，检查一次 $v$ 后便跳过全部 $n$ 条边。边中心实现的另一项缺点
+是采用 COO；与顶点中心实现采用的 CSR 和 CSC 相比，COO 需要更多空间来存边。
+
+读者也许已经发现，本节和上一节的代码示例与第 \ref{chap:sparse-matrix} 章的 SpMV 实现
+很相似。事实上，只要略作调整，就可以把一次 BFS 层迭代完全表示成 SpMV 和少量其他向量
+操作，其中 SpMV 是主导操作。除 BFS 外，许多其他图计算也可以用邻接矩阵上的稀疏矩阵
+运算来表述\cite{kepner2011graph}。这通常称为图问题的\textbf{线性代数表述}
+（linear algebraic formulation），也是 GraphBLAS API 规范\cite{davis2019graphblas}
+关注的核心。线性代数表述的优势是可以利用成熟且高度优化的并行稀疏线性代数库来完成
+图计算；缺点则是可能错过利用特定图算法性质的优化机会。
+
+\section{用前沿提高工作效率}
+\label{sec:bfs-frontiers}
+
+前两节的方法在每次迭代中，都要检查每个顶点或每条边是否与当前层有关。这种策略的
+优点是内核并行度很高，不要求线程间同步；缺点则是每次迭代都会启动许多不必要的线程，
+执行大量无效工作，因此不具备工作效率。例如在顶点中心实现中，要为图中每个顶点启动
+线程，其中许多线程只是发现顶点无关，根本不做实际工作；边中心实现同样要为每条边启动
+线程，其中许多线程只是发现边无关，没有完成任何有用工作。
+
+为了量化这些方法的工作效率，考虑一个含 $n$ 个顶点、$m$ 条边、直径为 $d$ 的图；这里
+$d$ 指不含第 0 层在内的 BFS 层数。理想情况下，每个顶点和每条边都只访问一次，所以
+BFS 的理想\textbf{工作复杂度}（work complexity）为 $O(n+m)$。顶点中心推送式方法在
+每一层检查每个顶点，但只有当源顶点属于上一层时才会遍历相应边，所以工作复杂度为
+$O(d\,n+m)$。顶点中心拉取式方法不仅在每一层检查每个顶点，而且只要目的顶点尚未访问，
+每条边也可能在到达最后一层之前被多个层反复检查，所以工作复杂度为 $O(d\,n+d\,m)$。
+边中心方法在每一层检查每条边，工作复杂度为 $O(d\,m)$。这些工作复杂度没有一个达到
+理想值，说明上述实现都不具备工作效率。
+
+\noindent\textbf{译者注：}底本在拉取式复杂度 $O(d\,n+d\,m)$ 后多印了一个右括号。
+本译稿删除该多余括号，只修正数学定界，不改变公式含义。
+
+本节要避免启动不必要的线程，并消除这些线程在每次迭代中的冗余检查，从而提高并行 BFS
+的工作效率。下面聚焦第 \ref{sec:bfs-vertex-centric} 节的顶点中心推送式方法。该方法
+每一层都为图中的每个顶点启动一个线程；线程检查自己的顶点是否属于上一层，若是，就把
+所有尚未访问的邻居标为当前层；不属于上一层的顶点所对应的线程则什么也不做。理想情况下，
+这些线程根本不该启动。为了避免启动它们，可以让处理上一层顶点的线程协作构造一个
+\textbf{前沿}（frontier），其中保存这些线程新访问的顶点。处理当前层时，只需为这个
+前沿中的顶点启动线程\cite{luo2010bfs}。这样，每个顶点只检查一次，每条边只遍历一次，
+工作复杂度恢复为 $O(n+m)$。
+
+\noindent\textbf{译者注：}底本在上述回顾中写成“不在当前层的顶点所对应的线程不做
+任何事”，但该实现实际检查的是顶点是否属于\emph{上一层}，图 18.6 第 5 行及相邻句也
+都如此。本译稿按代码与上下文最小修正为“上一层”。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1,lastline=20]
+__global__ void bfs_kernel(CSRGraph csrGraph, unsigned int* level,
+                           unsigned int* prevFrontier, unsigned int* currFrontier,
+                           unsigned int numPrevFrontier, unsigned int* numCurrFrontier,
+                           unsigned int currLevel) {
+  unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
+  if(i < numPrevFrontier) {
+    unsigned int vertex = prevFrontier[i];
+    for(unsigned int edge = csrGraph.srcPtrs[vertex];
+                     edge < csrGraph.srcPtrs[vertex + 1]; ++edge) {
+      unsigned int neighbor = csrGraph.dst[edge];
+      if(visitVertexAtomically(neighbor, level, currLevel)) {
+        cuda::atomic_ref<unsigned int, cuda::thread_scope_device>
+            numCurrFrontier_ref(*numCurrFrontier);
+        unsigned int currFrontierIdx =
+            numCurrFrontier_ref.fetch_add(1, cuda::memory_order_relaxed);
+        currFrontier[currFrontierIdx] = neighbor;
+      }
+    }
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{带前沿的顶点中心推送式（自顶向下）BFS 内核。依据原书图 18.12 逐字符重排}
+  \label{fig:18-12}
+\end{figure}
+
+图 \ref{fig:18-12} 给出使用前沿的顶点中心推送式内核，图 \ref{fig:18-13} 展示它如何
+从第 1 层遍历到第 2 层。与此前方法的一项关键区别是，内核增加了表示前沿的参数：数组
+\code{prevFrontier} 保存上一前沿中的顶点，\code{currFrontier} 保存当前前沿中的顶点。
+\code{numPrevFrontier} 保存上一前沿的顶点数，\code{numCurrFrontier} 保存当前前沿的
+顶点数。用于表明
+已访问新顶点的标志不再需要；当前前沿中的顶点数为 0 时，主机就知道搜索已经结束。
+
+内核先为上一前沿的每个元素分配一个线程（第 5 行），并由线程检查元素 ID 是否越界
+（第 6 行）。图 \ref{fig:18-13} 中，上一前沿只含顶点 1 和 2，所以只需启动两个线程。
+每个线程从上一前沿加载一个元素，也就是自己负责的顶点下标（第 7 行），用 CSR 的
+\code{srcPtrs} 数组定位顶点的出边并逐条遍历（第 8--9 行），再用 CSR 的 \code{dst}
+数组找到边的目的邻居（第 10 行）。随后线程调用设备函数
+\code{visitVertexAtomically}，检查邻居是否尚未访问；若是，就把邻居标为当前层
+（第 11 行）。该函数的实现稍后讨论。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[
+    scale=.86,transform shape,
+    v/.style={circle,draw=black!55,minimum size=7mm,inner sep=0pt},
+    e/.style={-{Stealth[length=2mm]},line width=.55pt,black!55}
+  ]
+    \node[v,fill=gray!55,text=white] (v0) at (0,0) {0};
+    \node[v,fill=blue!35] (v1) at (1.2,1) {1}; \node[v,fill=blue!35] (v2) at (1.55,-.45) {2};
+    \node[v,fill=green!35] (v3) at (2.15,2) {3}; \node[v,fill=green!35] (v4) at (3,1) {4};
+    \node[v,fill=green!35] (v5) at (3.1,-.2) {5}; \node[v,fill=green!35] (v6) at (3.6,-1.35) {6};
+    \node[v,fill=green!35] (v7) at (1.55,-1.75) {7}; \node[v,fill=orange!45] (v8) at (4.55,.95) {8};
+    \foreach \s/\t in {v0/v1,v0/v2,v1/v3,v1/v4,v2/v5,v2/v6,v2/v7,v3/v4,v3/v8,v4/v5,v4/v8,v5/v6,v6/v8,v7/v0,v7/v6} {\draw[e] (\s)--(\t);}
+    \node[font=\scriptsize,anchor=east] at (-.1,-2.65) {\code{prevFrontier}};
+    \draw[fill=blue!12,draw=blue!60] (0,-2.9) rectangle (2.1,-2.4);
+    \node[v,fill=blue!35,minimum size=5.5mm] at (.42,-2.65) {1};
+    \node[v,fill=blue!35,minimum size=5.5mm] at (.92,-2.65) {2};
+    \node[font=\scriptsize,anchor=east] at (3.35,-2.65) {\code{currFrontier}};
+    \draw[fill=green!12,draw=green!60!black] (3.45,-2.9) rectangle (6.65,-2.4);
+    \foreach \x/\n in {3.85/3,4.35/4,4.85/5,5.35/6,5.85/7} {\node[v,fill=green!35,minimum size=5.5mm] at (\x,-2.65) {\n};}
+  \end{tikzpicture}
+  \caption{带前沿的顶点中心推送式 BFS 从第 1 层遍历到第 2 层的示例。依据原书
+  图 18.13 重绘}
+  \label{fig:18-13}
+\end{figure}
+
+若函数返回成功标记邻居，线程就必须把该邻居加入当前前沿。为此，线程以原子方式递增
+当前前沿的大小（第 12--15 行），并把邻居插入对应位置（第 16 行）。多个线程可能同时
+递增前沿大小，所以这个递增必须是原子的，否则会发生竞态条件。
+
+现在来看第 11 行调用的 \code{visitVertexAtomically} 设备函数。线程遍历自己顶点的邻居
+时，会检查邻居是否已访问；若没有，就把它标为当前层。不带前沿的顶点中心推送式内核
+（图 \ref{fig:18-6} 第 9--10 行）没有使用原子操作来完成检查和标记。若多个线程在其中
+任何一个写入新标记之前，都读到同一邻居的旧标记，那么多个线程最终可能重复标记该邻居。
+由于所有线程写入的标记相同，这项操作是幂等的，允许冗余标记不会影响遍历结果。
+
+\noindent\textbf{译者注：}底本把上一段“不带前沿的”推送式内核误指为图 18.12；
+图 18.12 明明正是带前沿版本。结合“不使用原子操作”和“第 9--10 行”两项描述，实际
+所指应是图 18.6。本译稿把正文引用最小修正为图 \ref{fig:18-6}。
+
+相比之下，图 \ref{fig:18-12} 的前沿实现不仅标记未访问邻居，还把它加入前沿。如果
+多个线程都观察到该邻居尚未访问，它们就会把同一邻居多次加入前沿。这样，下一层会多次
+处理该邻居，造成冗余和浪费。
+
+要避免多个线程同时观察到“尚未访问”，就必须以原子方式检查并更新邻居的标记。换句话说，
+“检查邻居尚未访问”和“若是则标为当前层”必须合并到一次原子操作中。能够完成这两个步骤
+的操作是\textbf{比较并交换}（compare-and-swap），C++ 通过函数
+\code{compare_exchange_strong} 提供该操作。设备函数 \code{visitVertexAtomically}
+正是用这个 C++ 函数访问顶点。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1,lastline=9]
+__device__ inline unsigned int visitVertexAtomically(unsigned int vertex,
+                                                     unsigned int* level, unsigned int currLevel) {
+  cuda::atomic_ref<unsigned int, cuda::thread_scope_device>
+      level_ref(level[vertex]);
+  unsigned int unvisited = UNVISITED;
+  unsigned int visitSuccess = level_ref.compare_exchange_strong(unvisited,
+      currLevel, cuda::memory_order_relaxed, cuda::memory_order_relaxed);
+  return visitSuccess;
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{使用原子比较并交换操作来原子地访问顶点的设备函数。依据原书图 18.14
+  逐字符重排}
+  \label{fig:18-14}
+\end{figure}
+
+图 \ref{fig:18-14} 给出该设备函数的实现。首先为待访问顶点的层号
+\code{level[vertex]} 创建原子引用（第 3--4 行）。然后通过这个引用调用
+\code{compare_exchange_strong}，以原子方式更新层号（第 6--7 行）。
+该函数接受 4 个参数。第一个是要与所引用数据比较的值。本例要把 \code{level[vertex]}
+与 \code{UNVISITED} 比较，检查顶点是否尚未访问。但 \code{UNVISITED} 是常量，而函数
+要求取得对象的引用，不能直接传入。因此代码创建整数 \code{unvisited}，用常量
+\code{UNVISITED} 初始化（第 5 行），再把该整数作为第一个参数传入（第 6 行）。第二个
+参数是在比较成功时写入所引用数据的值；本例希望把 \code{level[vertex]} 设为当前层，
+所以传入 \code{currLevel}（第 7 行）。
+
+第三、第四个参数分别规定原子操作成功与失败时，其内存访问的顺序要求。本例中的原子操作
+不必相对于内核执行的其他独立内存访问形成特定顺序，所以两种情形都选择
+\code{cuda::memory_order_relaxed}（第 7 行）。\code{compare_exchange_strong} 的
+返回值表明交换是否成功；函数把该值作为设备函数结果返回（第 8 行），从而指出顶点层号
+是否已成功更新。
+
+如前所述，基于前沿的方法只为相关顶点启动线程，减少了冗余工作，这是它相对上一节方法
+的优势。它的缺点则是高延迟原子操作的开销，尤其是多个原子操作争用同一数据时。更新
+顶点层号的比较并交换预计只有中等程度的争用，因为只有一部分线程会访问同一个未访问
+邻居；用于递增前沿大小的原子加法则预计会有严重争用，因为所有线程都递增同一个计数器，
+以便向同一个前沿加入顶点。下一节将说明如何降低这种争用。
+
+\section{用私有化减少争用}
+\label{sec:bfs-privatization}
+
+不同线程向前沿插入元素的模式，应该会让读者想起第 12 章介绍的不稳定过滤模式。在不稳定
+过滤中，我们用两种优化来减少原子操作的争用：合并原子操作和私有化。这两种优化同样
+适用于基于前沿的 BFS 内核。正如第 12 章所述，可以假定编译器会合并原子操作；本节重点
+讨论如何利用私有化，在向当前迭代的前沿加入顶点时减少原子操作争用。
+
+回忆第 6 章，\textbf{私有化}通过先把局部更新应用到数据的私有副本，再在完成后更新
+公共副本，从而减少原子操作争用。可以把私有化用于并发前沿更新，也就是对
+\code{numCurrFrontier} 的递增：让每个线程块在计算过程中维护自己的私有前沿，完成后
+再更新公共前沿。这样，线程只会与同一线程块中的其他线程争用同一份数据。私有前沿及其
+计数器还可以存放在共享内存中，使计数器上的原子操作和私有前沿上的存储具有更低延迟。
+此外，把共享内存中的私有前沿写入全局内存中的公共前沿时，还可以合并这些内存访问。
+
+\begin{figure}[p]
+  \centering
+  \begin{minipage}{0.99\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\fontsize{5.5pt}{6pt}\selectfont,
+    numberstyle=\fontsize{5pt}{6pt}\selectfont\color{gray},aboveskip=0pt,belowskip=0pt,
+    firstnumber=1,lastline=58]
+__global__ void bfs_kernel(CSRGraph csrGraph, unsigned int* level,
+                           unsigned int* prevFrontier, unsigned int* currFrontier,
+                           unsigned int numPrevFrontier, unsigned int* numCurrFrontier,
+                           unsigned int currLevel) {
+
+  // Initialize private frontier
+  __shared__ unsigned int currFrontier_s[PRIVATE_FRONTIER_CAPACITY];
+  __shared__ unsigned int numCurrFrontier_s;
+  if(threadIdx.x == 0) {
+    numCurrFrontier_s = 0;
+  }
+  __syncthreads();
+
+  // Perform BFS
+  unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
+  if(i < numPrevFrontier) {
+    unsigned int vertex = prevFrontier[i];
+    for(unsigned int edge = csrGraph.srcPtrs[vertex];
+                     edge < csrGraph.srcPtrs[vertex + 1]; ++edge) {
+      unsigned int neighbor = csrGraph.dst[edge];
+      if(visitVertexAtomically(neighbor, level, currLevel)) {
+        cuda::atomic_ref<unsigned int, cuda::thread_scope_block>
+            numCurrFrontier_s_ref(numCurrFrontier_s);
+        unsigned int currFrontierIdx_s =
+            numCurrFrontier_s_ref.fetch_add(1, cuda::memory_order_relaxed);
+        if(currFrontierIdx_s < PRIVATE_FRONTIER_CAPACITY) {
+          currFrontier_s[currFrontierIdx_s] = neighbor;
+        } else {
+          numCurrFrontier_s = PRIVATE_FRONTIER_CAPACITY;
+          cuda::atomic_ref<unsigned int, cuda::thread_scope_device>
+              numCurrFrontier_ref(*numCurrFrontier);
+          unsigned int currFrontierIdx =
+              numCurrFrontier_ref.fetch_add(1, cuda::memory_order_relaxed);
+          currFrontier[currFrontierIdx] = neighbor;
+        }
+      }
+    }
+  }
+  __syncthreads();
+
+  // Allocate in public frontier
+  __shared__ unsigned int currFrontierStartIdx;
+  if(threadIdx.x == 0) {
+    cuda::atomic_ref<unsigned int, cuda::thread_scope_device>
+        numCurrFrontier_ref(*numCurrFrontier);
+    currFrontierStartIdx = numCurrFrontier_ref.fetch_add(numCurrFrontier_s,
+        cuda::memory_order_relaxed);
+  }
+  __syncthreads();
+
+  // Commit to public frontier
+  for(unsigned int currFrontierIdx_s = threadIdx.x;
+                       currFrontierIdx_s < numCurrFrontier_s; currFrontierIdx_s += blockDim.x) {
+    unsigned int currFrontierIdx = currFrontierStartIdx + currFrontierIdx_s;
+    currFrontier[currFrontierIdx] = currFrontier_s[currFrontierIdx_s];
+  }
+
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{对前沿做私有化的顶点中心推送式（自顶向下）BFS 内核。依据原书图 18.15
+  逐字符重排}
+  \label{fig:18-15}
+\end{figure}
+
+图 \ref{fig:18-15} 给出采用私有化前沿的顶点中心推送式内核，图 \ref{fig:18-16} 则
+说明前沿如何私有化。内核首先在共享内存中为每个线程块声明一份私有前沿（第 7--8 行）。
+块内的一个线程把私有前沿计数器初始化为 0（第 9--11 行），块内所有线程随后停在
+\code{__syncthreads()} 屏障，等待初始化完成后再使用计数器（第 12 行）。接下来的代码
+与上一版本类似：每个线程从前沿加载自己的顶点（第 17 行），遍历其出边（第 18--19 行），
+找到边目的端的邻居（第 20 行），再以原子方式检查邻居是否尚未访问；若是，就访问它
+（第 21 行）。
+
+若线程成功访问了邻居，也就是说邻居此前尚未访问，就把它加入私有前沿。线程先以原子
+方式递增私有前沿计数器（第 22--25 行）。若私有前沿尚未填满（第 26 行），就把邻居插入
+私有前沿（第 27 行）。若私有前沿已经溢出，则把私有前沿计数器恢复到容量上限
+（第 29 行），并回退到公共前沿：以原子方式递增公共前沿计数器（第 30--33 行），再把
+邻居存到相应位置（第 34 行）。因此，即使共享内存私有前沿容量不足，顶点也不会丢失。
+
+一个线程块中的全部线程遍历完各自顶点的邻居后，必须把私有前沿元素写入公共前沿。线程
+先互相等待，确保不会再有邻居加入私有前沿（第 39 行）。接着由块内一个线程代表其他线程，
+一次性在公共前沿中为私有前沿的全部元素分配空间（第 42--48 行），其余线程停在屏障等待
+（第 49 行）。最后，线程遍历私有前沿中的顶点（第 52--53 行），把它们写入公共前沿
+（第 54--55 行）。注意，公共前沿下标 \code{currFrontierIdx} 用
+\code{currFrontierIdx_s} 表示，后者又由 \code{threadIdx.x} 导出。因此，线程下标
+连续的线程写入连续的全局内存位置，存储访问得以合并。
+
+\begin{figure}[htbp]
+  \centering
+  \resizebox{0.96\textwidth}{!}{%
+  \begin{tikzpicture}[x=.72cm,y=.72cm,font=\scriptsize]
+    \foreach \b/\c/\n in {0/blue/3,1/green/4,2/orange/2,3/pink/3} {
+      \begin{scope}[xshift=\b*4.1cm]
+        \draw[rounded corners=1pt,draw=\c!70!black,line width=.8pt] (0,1.2) rectangle (3.4,3.2);
+        \foreach \x in {.55,1.25,1.95,2.65} {\draw[-{Stealth[length=1.6mm]},black!70] (\x,2.9)--(\x,1.55);}
+        \node at (1.7,1.0) {\code{numCurrFrontier_s}};
+        \foreach \i in {0,...,5} {\draw (0.2+\i*.5,0) rectangle +(0.5,.45);}
+        \foreach \i in {1,...,\n} {\fill[\c!45] ({0.2+(\i-1)*.5},0) rectangle +(0.5,.45);}
+        \node[anchor=east] at (.05,.22) {\code{currFrontier_s}};
+      \end{scope}
+    }
+    \draw[-{Stealth[length=2.2mm]},blue!70!black,line width=1pt] (1.7,-.15)--(4.2,-1.4);
+    \draw[-{Stealth[length=2.2mm]},green!60!black,line width=1pt] (5.8,-.15)--(10.4,-1.4);
+    \draw[-{Stealth[length=2.2mm]},orange!80!black,line width=1pt] (9.9,-.15)--(7.0,-1.4);
+    \draw[-{Stealth[length=2.2mm]},pink!75!black,line width=1pt] (14.0,-.15)--(8.7,-1.4);
+    \node[anchor=east] at (3.2,-1.65) {公共 \code{currFrontier}};
+    \foreach \i in {0,...,11} {\draw (3.4+\i*.65,-1.9) rectangle +(0.65,.55);}
+    \foreach \i in {0,1,2} {\fill[blue!45] (3.4+\i*.65,-1.9) rectangle +(0.65,.55);}
+    \foreach \i in {3,4} {\fill[orange!45] (3.4+\i*.65,-1.9) rectangle +(0.65,.55);}
+    \foreach \i in {5,6,7} {\fill[pink!45] (3.4+\i*.65,-1.9) rectangle +(0.65,.55);}
+    \foreach \i in {8,9,10,11} {\fill[green!45] (3.4+\i*.65,-1.9) rectangle +(0.65,.55);}
+    \node[anchor=west] at (11.5,-1.65) {\code{numCurrFrontier}};
+  \end{tikzpicture}
+  }
+  \caption{前沿私有化示例：每个线程块先更新共享内存私有前沿，再把连续片段合并写入
+  全局内存公共前沿。依据原书图 18.16 重绘}
+  \label{fig:18-16}
+\end{figure}
+
+\section{用协作组减少启动开销}
+\label{sec:bfs-cooperative-groups}
+
+到目前为止开发的 BFS 内核需要由主机 CPU 多次调用，每个 BFS 层调用一次。处理社交网络
+这类平均顶点度较高的图时，前沿很大，网格启动开销相对于网格完成的工作量可以忽略。
+但处理道路网络这类平均顶点度较低的图时，前沿很小，网格启动开销就可能支配整体性能。
+
+为了缓解多次启动网格的开销，我们希望只启动一个网格就完成全部计算。然而，这要求在
+相邻层之间执行一次\textbf{网格范围屏障同步}（grid-wide barrier synchronization），
+确保各线程已经找完当前层的顶点，再进入下一层。CUDA 的\textbf{协作组}
+（cooperative groups）API 可以完成这种同步，但网格范围屏障同步会对网格的线程块数
+施加约束。
+
+回忆第 4 章，网格启动时的线程块数可以超过硬件能够同时执行的数量。硬件会同时调度并
+执行尽可能多的线程块，等先前线程块完成后再换入新块。这种调度方法的问题在于，所有
+线程块之间不能随意执行网格范围屏障同步，否则可能死锁：已调度的线程块等待未调度块
+到达屏障；未调度块又等待已调度块执行完毕、腾出位置。要执行网格范围屏障同步，必须
+保证参与屏障的全部线程块都已在 SM 上活动执行，从而都能到达屏障。为提供这一保证，
+启动的线程块数不得超过能够同时执行的最大线程块数。
+
+可以使用第 4 章介绍的 CUDA 占用率计算函数，求出能够同时执行的最大线程块数。具体而言，
+每个 SM 能够同时执行的最大线程块数可按如下方式得到：
+
+\begin{lstlisting}[language=C++,numbers=none]
+int numBlocksPerSM;
+cudaOccupancyMaxActiveBlocksPerMultiprocessor(&numBlocksPerSM,
+    bfs_kernel, numThreadsPerBlock, 0);
+\end{lstlisting}
+
+\code{cudaOccupancyMaxActiveBlocksPerMultiprocessor} 的第二、第三、第四个参数分别是目标
+内核 \code{bfs_kernel}、每块线程数，以及每块所需的动态共享内存量（本例为 0）。它
+计算每个 SM 可以同时执行的最大线程块数，并把结果写入第一个参数所指的
+\code{numBlocksPerSM}。
+
+知道每个 SM 能同时执行的最大线程块数以后，还需要知道目标 GPU 的 SM 数量，才能求出
+整个设备可以同时执行的最大线程块总数。正如第 4 章所述，可以通过查询设备属性取得
+SM 数量：
+
+\begin{lstlisting}[language=C++,numbers=none]
+cudaDeviceProp deviceProp;
+cudaGetDeviceProperties(&deviceProp, 0);
+int numSMs = deviceProp.multiProcessorCount;
+\end{lstlisting}
+
+再把每个 SM 的最大线程块数乘以 SM 数量，得到能够同时运行的最大线程块总数：
+
+\begin{lstlisting}[language=C++,numbers=none]
+unsigned int numBlocks = numSMs*numBlocksPerSM;
+\end{lstlisting}
+
+若网格只启动这么多线程块，就能放心执行网格范围屏障同步，因为全部线程块都将同时执行，
+并且都能到达屏障，不会死锁。
+
+为了在内核中使用协作组执行网格范围屏障同步，不能采用第 2 章介绍的普通内核启动语法，
+而必须按下面的特殊方式调用内核：
+
+\begin{lstlisting}[language=C++,numbers=none]
+void *kernelArgs[] = { (void*)&csrGraph_d, (void*)&level_d,
+    (void*)&prevFrontier_d, (void*)&currFrontier_d,
+    (void*)&numPrevFrontier, (void*)&numCurrFrontier_d };
+cudaLaunchCooperativeKernel((void*)bfs_kernel, numBlocks,
+    numThreadsPerBlock, kernelArgs);
+\end{lstlisting}
+
+首先把全部内核实参存入一个 \code{void*} 数组，然后通过下面的 API 调用内核：
+\[
+  \code{cudaLaunchCooperativeKernel}
+\]
+依次传入待调用的内核
+\code{bfs_kernel}、前面算出的线程块数、每块线程数和内核实参数组。
+
+了解如何调用采用协作组的 BFS 内核以后，再来看内核本身。图 \ref{fig:18-17} 给出一个
+迭代多个 BFS 层的内核，它用协作组在各层之间执行网格范围屏障同步。定义内核之前，代码
+包含协作组库（第 1--2 行），这是使用协作组 API 所必需的。内核开头取得网格句柄
+（第 8 行），供随后同步整个网格。
+
+\begin{figure}[p]
+  \centering
+  \begin{minipage}{0.99\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\fontsize{4.8pt}{5.25pt}\selectfont,
+    numberstyle=\fontsize{4.2pt}{5.25pt}\selectfont\color{gray},aboveskip=0pt,belowskip=0pt,
+    firstnumber=1,lastline=78]
+#include <cooperative_groups.h>
+using namespace cooperative_groups;
+
+__global__ void bfs_kernel(CSRGraph csrGraph, unsigned int* level,
+                           unsigned int* prevFrontier, unsigned int* currFrontier,
+                           unsigned int numPrevFrontier, unsigned int* numCurrFrontier) {
+
+  grid_group grid = this_grid();
+
+  for(unsigned int currLevel = 1; numPrevFrontier > 0; ++currLevel) {
+
+    // Initialize private frontier
+    __shared__ unsigned int currFrontier_s[PRIVATE_FRONTIER_CAPACITY];
+    __shared__ unsigned int numCurrFrontier_s;
+    if(threadIdx.x == 0) {
+      numCurrFrontier_s = 0;
+    }
+    __syncthreads();
+
+    // Perform BFS
+    for(unsigned int i = grid.thread_rank();
+                     i < numPrevFrontier; i += grid.num_threads()) {
+      unsigned int vertex = prevFrontier[i];
+      for(unsigned int edge = csrGraph.srcPtrs[vertex];
+                       edge < csrGraph.srcPtrs[vertex + 1]; ++edge) {
+        unsigned int neighbor = csrGraph.dst[edge];
+        if(visitVertexAtomically(neighbor, level, currLevel)) {
+          cuda::atomic_ref<unsigned int, cuda::thread_scope_block>
+              numCurrFrontier_s_ref(numCurrFrontier_s);
+          unsigned int currFrontierIdx_s =
+              numCurrFrontier_s_ref.fetch_add(1, cuda::memory_order_relaxed);
+          if(currFrontierIdx_s < PRIVATE_FRONTIER_CAPACITY) {
+            currFrontier_s[currFrontierIdx_s] = neighbor;
+          } else {
+            numCurrFrontier_s = PRIVATE_FRONTIER_CAPACITY;
+            cuda::atomic_ref<unsigned int, cuda::thread_scope_device>
+                numCurrFrontier_ref(*numCurrFrontier);
+            unsigned int currFrontierIdx =
+                numCurrFrontier_ref.fetch_add(1, cuda::memory_order_relaxed);
+            currFrontier[currFrontierIdx] = neighbor;
+          }
+        }
+      }
+    }
+    __syncthreads();
+
+    // Allocate in public frontier
+    __shared__ unsigned int currFrontierStartIdx;
+    if(threadIdx.x == 0) {
+      cuda::atomic_ref<unsigned int, cuda::thread_scope_device>
+          numCurrFrontier_ref(*numCurrFrontier);
+      currFrontierStartIdx = numCurrFrontier_ref.fetch_add(numCurrFrontier_s,
+          cuda::memory_order_relaxed);
+    }
+    __syncthreads();
+
+    // Commit to public frontier
+    for(unsigned int currFrontierIdx_s = threadIdx.x;
+                         currFrontierIdx_s < numCurrFrontier_s; currFrontierIdx_s += blockDim.x) {
+      unsigned int currFrontierIdx = currFrontierStartIdx + currFrontierIdx_s;
+      currFrontier[currFrontierIdx] = currFrontier_s[currFrontierIdx_s];
+    }
+
+    // Swap frontiers
+    grid.sync();
+    numPrevFrontier = *numCurrFrontier;
+    grid.sync();
+    if(grid.thread_rank() == 0) {
+      *numCurrFrontier = 0;
+    }
+    grid.sync();
+    unsigned int* tmp = prevFrontier;
+    prevFrontier = currFrontier;
+    currFrontier = tmp;
+
+  }
+
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{使用协作组的多层 BFS 内核。依据原书图 18.17 逐字符重排}
+  \label{fig:18-17}
+\end{figure}
+
+内核最外层循环逐个迭代 BFS 层，只要待处理前沿非空就继续（第 10 行）。循环主体的大部分
+（第 12--62 行）与图 \ref{fig:18-15} 的前沿内核相似：从上一前沿读取顶点，遍历其邻居，
+以原子方式访问未访问邻居，同时把它们插入当前前沿。两者的主要区别在于，图
+\ref{fig:18-15} 假设每个线程只处理一个顶点；图 \ref{fig:18-17} 的线程数却受“能够
+同时执行的最大线程数”限制，所以一个线程可能必须处理多个顶点。为此，每个线程根据自己
+在网格中的位置（通过 \code{grid.thread_rank()} 取得）以及网格中的线程总数（通过
+\code{grid.num_threads()} 取得），循环处理分配给自己的顶点（第 21--22 行）。
+
+网格中的线程构造完前沿以后，必须为下一轮迭代交换前沿（第 65--74 行），使当前前沿
+成为新的上一前沿，并把上一前沿占用的内存改作新的当前前沿。第一步调用协作组 API 函数
+\code{grid.sync()} 执行网格范围屏障同步（第 65 行），确保网格中所有线程都已完成向
+当前前沿加入顶点。这第一次同步保护的是\textbf{当前前沿构造完成}。
+
+接着，所有线程读取当前前沿的大小，把它作为新上一前沿的大小（第 66 行）。第二次
+\code{grid.sync()}（第 67 行）确保所有线程都已读完当前前沿计数器，随后才由一个线程
+把它清零（第 68--70 行）。这第二次同步保护的是\textbf{计数器读取完成}。第三次
+\code{grid.sync()}（第 71 行）确保当前前沿计数器已经清零，任何线程才可以在下一轮
+向其中递增和加入元素。这第三次同步保护的是\textbf{计数器清零完成}。最后交换两个
+前沿的内存缓冲区（第 72--74 行），线程再进入下一轮迭代、构造下一层前沿。这里三处都
+必须是整个网格参与的 \code{grid.sync()}，不能替换成只同步单个线程块的
+\code{__syncthreads()}。
+
+虽然该实现使用三次网格范围屏障同步，但如果为每一层使用不同的计数器，并在内核开始前
+把它们全部清零，就可以消除其中两次。这项优化与双缓冲优化相似，但形式更一般，留作练习。
+
+使用协作组执行网格范围屏障同步，除了缓解网格启动开销，还有多项好处。一是全部 BFS
+迭代都在单个内核中进行，CPU 无须为每轮调用内核，可以腾出来完成其他有用工作。二是
+本章示例中没有直接体现、但其他场景可能具备的好处：跨越网格范围屏障同步以后，数据仍可
+保留在共享内存或寄存器中；若终止内核再重新调用，这些数据原本必须先写回全局内存，再
+重新读入。通过融合内核把数据保留在共享内存或寄存器中的收益，与第 11 章把网格范围前缀
+和的多个阶段融合进单一内核类似；区别在于，第 11 章用网格范围单向同步融合内核，而这里
+使用网格范围屏障同步。
+
+\section{其他优化}
+\label{sec:bfs-other-optimizations}
+
+回忆顶点中心实现，每个线程的工作量取决于分配给它的顶点连通程度。在社交网络图等某些
+图中，少数顶点（名人）的度可能比其他顶点高出几个数量级。此时，一个或少数几个线程
+可能耗时过长，拖慢整个网格。前面给出的一种解决办法是改用边中心并行实现。另一种可能
+的办法，是根据顶点度把前沿顶点排序到多个分桶，再用处理器组规模适当的独立内核处理每个
+分桶。一项代表性实现\cite{merrill2012graph}为低度、中度和高度顶点采用三个不同分桶：
+处理低度分桶的内核给每个顶点分配一个线程；处理中度分桶的内核给每个顶点分配一个 warp；
+处理高度分桶的内核则给每个顶点分配一个完整线程块。这项技术对顶点度差异很大的图尤其
+有用。
+
+BFS 虽然是最简单的图应用之一，却呈现了更复杂应用共有的挑战：通过问题分解提取并行度，
+利用私有化，实现细粒度负载均衡，以及保证正确同步。图计算适用于许多有趣的问题，尤其
+包括推荐、社区检测、图内模式发现和异常识别。一项重大挑战是处理规模超出 GPU 内存容量
+的图。另一项值得探索的机会，是在计算开始前把图预处理成其他格式，或者重新排列图中顶点，
+以暴露更多并行度或局部性，或为负载均衡创造条件。
+
+\section{小结}
+\label{sec:bfs-summary}
+
+本章以 BFS 为例，介绍了并行化图遍历计算面临的挑战。我们先简要介绍图的表示方法，再
+讨论顶点中心和边中心并行实现之间的区别与取舍。随后使用前沿消除冗余工作、提高工作效率，
+又通过私有化优化前沿。我们还说明如何用协作组执行网格范围屏障同步，避免终止旧网格、
+启动新网格的开销。最后简要讨论了改善负载均衡的其他高级优化。RAPIDS cuGraph
+\cite{fender2022cugraph} 已经为许多图算法提供高效并行实现。本章介绍的技术和优化，既
+帮助程序员正确使用这类库，也为使用 GPU 加速新的图算法类别奠定基础。
+
+\section{练习}
+\label{sec:bfs-exercises}
+
+\begin{enumerate}[label=\arabic*.,leftmargin=2.7em]
+  \item 考虑下面这个有向无权图：
+
+  \begin{center}
+  \begin{minipage}{0.92\linewidth}
+  \centering
+  \begin{tikzpicture}[
+    x=1.15cm,y=.82cm,
+    v/.style={ellipse,draw=black!70,minimum width=10mm,minimum height=6mm,inner sep=0pt},
+    e/.style={-{Stealth[length=2mm]},line width=.65pt,black!75}
+  ]
+    \node[v] (v0) at (0,7) {0};
+    \node[v] (v5) at (-.35,6) {5};
+    \node[v] (v1) at (-1.05,5) {1};
+    \node[v] (v7) at (-.35,4) {7};
+    \node[v] (v2) at (.55,3.2) {2};
+    \node[v] (v3) at (.75,2.15) {3};
+    \node[v] (v6) at (-.15,1.25) {6};
+    \node[v] (v4) at (-.55,.15) {4};
+    \draw[e] (v0)--(v5); \draw[e] (v0)--(v2);
+    \draw[e] (v5)--(v1); \draw[e] (v5)--(v7);
+    \draw[e] (v1)--(v7); \draw[e] (v1) to[bend left=35] (v0); \draw[e] (v1) to[bend right=18] (v4);
+    \draw[e] (v7)--(v2); \draw[e] (v7)--(v6); \draw[e] (v7) to[bend right=10] (v4);
+    \draw[e] (v2)--(v3);
+    \draw[e] (v3)--(v6); \draw[e] (v3) to[bend right=58] (v0);
+    \draw[e] (v6)--(v4); \draw[e] (v4) to[bend left=35] (v3);
+  \end{tikzpicture}
+
+  \par\smallskip
+  {\small 依据原书练习 1 所附未编号有向图重绘}\par
+  \end{minipage}
+  \end{center}
+
+  \begin{enumerate}[label=(\alph*),leftmargin=2.5em]
+    \item 用邻接矩阵表示该图。
+    \item 用 CSR 格式表示该图。每个顶点的邻居列表必须有序。
+    \item 从顶点 0 开始在该图上执行并行 BFS，也就是说顶点 0 位于第 0 层。对于 BFS
+    遍历的每一次迭代，分别回答：
+
+    \begin{itemize}[leftmargin=2em]
+      \item 若采用顶点中心推送式实现：
+      \begin{enumerate}[label=\Alph*.,leftmargin=2.2em]
+        \item 启动多少个线程？
+        \item 有多少个线程会遍历自己顶点的邻居？
+      \end{enumerate}
+
+      \item 若采用顶点中心拉取式实现：
+      \begin{enumerate}[label=\Alph*.,leftmargin=2.2em]
+        \item 启动多少个线程？
+        \item 有多少个线程会遍历自己顶点的邻居？
+        \item 有多少个线程会标记自己的顶点？
+      \end{enumerate}
+
+      \item 若采用边中心实现：
+      \begin{enumerate}[label=\Alph*.,leftmargin=2.2em]
+        \item 启动多少个线程？
+        \item 有多少个线程可能标记一个顶点？
+      \end{enumerate}
+
+      \item 若采用基于前沿的顶点中心推送式实现：
+      \begin{enumerate}[label=\Alph*.,leftmargin=2.2em]
+        \item 启动多少个线程？
+        \item 有多少个线程会遍历自己顶点的邻居？
+      \end{enumerate}
+    \end{itemize}
+  \end{enumerate}
+
+  \item 实现第 \ref{sec:bfs-vertex-centric} 节所述方向优化 BFS 的主机端代码。
+
+  \item 修改图 \ref{fig:18-17} 的内核，使每层只使用一次网格范围屏障同步，而不是三次。
+\end{enumerate}
+
+\clearpage
+\begin{chapterbibliography}{9}
+  \bibitem{kepner2011graph}
+  J. Kepner, J. Gilbert, \emph{Graph Algorithms in the Language of Linear Algebra},
+  SIAM, 2011.
+
+  \bibitem{davis2019graphblas}
+  T.A. Davis, Algorithm 1000: SuiteSparse:GraphBLAS: graph algorithms in the language
+  of sparse linear algebra, \emph{ACM Transactions on Mathematical Software} 45 (4)
+  (2019) 1--25.
+
+  \bibitem{luo2010bfs}
+  L. Luo, M. Wong, W.-m. Hwu, An effective GPU implementation of breadth-first search,
+  in: \emph{Proceedings of the 47th Design Automation Conference}, 2010, pp. 52--55.
+
+  \bibitem{merrill2012graph}
+  D. Merrill, M. Garland, A. Grimshaw, Scalable GPU graph traversal,
+  \emph{ACM SIGPLAN Notices} 47 (8) (2012) 117--128.
+
+  \bibitem{fender2022cugraph}
+  A. Fender, B. Rees, J. Eaton, RAPIDS cuGraph, in: \emph{Massive Graph Analytics},
+  Chapman and Hall/CRC, 2022, pp. 483--493.
+\end{chapterbibliography}
