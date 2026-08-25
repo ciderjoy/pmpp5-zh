@@ -5,6 +5,8 @@
 \usepackage{booktabs}
 \usepackage{enumitem}
 \usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,calc,positioning,shapes.geometric}
 \usepackage{xcolor}
 \usepackage{array}
 \usepackage{tabularx}
@@ -131,9 +133,9 @@
 \part{高级模式与应用}
 \include{chapters/16-dynamic-programming-wavefront}
 \include{chapters/17-sparse-matrix-computation}
+\include{chapters/18-graph-traversal}
 
-\part{高级模式与应用}
-% 第 9--19 章暂缺；显式设置计数器，使先行完成的本章保持原书编号。
+% 第 19 章暂缺；显式设置计数器，使先行完成的本章保持原书编号。
 \setcounter{chapter}{19}
 \include{chapters/20-large-language-models}
 
@@ -256,6 +258,24 @@
   \item[column-major order] 列主序
   \item[transposition] 转置
   \item[SpMSpV] 稀疏矩阵稀疏向量乘法
+  \item[graph traversal] 图遍历
+  \item[vertex] 顶点
+  \item[edge] 边
+  \item[adjacency matrix] 邻接矩阵
+  \item[incoming/outgoing edge] 入边/出边
+  \item[vertex degree] 顶点度
+  \item[BFS] 广度优先搜索（Breadth-First Search）
+  \item[vertex-centric] 顶点中心
+  \item[edge-centric] 边中心
+  \item[push/top-down] 推送式/自顶向下
+  \item[pull/bottom-up] 拉取式/自底向上
+  \item[frontier] 前沿；前沿集合
+  \item[wavefront] 波前（与 BFS 前沿集合区分）
+  \item[direction optimization] 方向优化
+  \item[work complexity] 工作复杂度（不是时间复杂度）
+  \item[compare-and-swap] 比较并交换
+  \item[cooperative groups] 协作组
+  \item[grid-wide barrier synchronization] 网格范围屏障同步
   \item[large language model (LLM)] 大语言模型
   \item[transformer architecture] Transformer 架构
   \item[attention] 注意力
