@@ -28,7 +28,7 @@
 ### 第 3 部分：高级模式与应用
 
 - [ ] 第 16 章：Dynamic programming and wavefront parallelism —— 动态规划与波前并行
-- [ ] 第 17 章：Sparse matrix computation —— 稀疏矩阵计算
+- [x] 第 17 章：Sparse matrix computation —— 稀疏矩阵计算（已完成 COO/CSR/ELL/混合 ELL-COO/JDS/CSC 六种格式、SpMV 内核、图示重绘和编译验收）
 - [ ] 第 18 章：Graph traversal —— 图遍历
 - [ ] 第 19 章：Convolutional neural networks —— 卷积神经网络
 - [ ] 第 20 章：Large language models —— 大语言模型
@@ -100,3 +100,25 @@
 - 第十章已在 `main.tex` 中紧接第九章接入第二部分“并行模式”，并将归约、归约树、结合律、交换律、工作量、跨度、warp shuffle、lane 下标和内存一致性模型等术语回写主术语表。
 - 已用 Tectonic 完整编译整书，最终 PDF 共 215 页；第十章位于印刷页 178--202，全文 25 页均已完成渲染检查。
 - 已检查构建日志；当前无未定义引用、缺失数学定界符、LaTeX 错误、overfull/underfull 或其他包警告。
+
+## 第十七章本轮验收记录
+
+- 本章为**独立撰写的中文技术讲解**，按原书第 17 章的节次大纲组织，而不是逐句翻译。
+  稀疏矩阵存储格式与 SpMV 属于公开的通用计算机科学内容；正文表述、图示数据和练习题
+  均为本译稿自行编写，未复制原书的行文。需要与原书逐句对照时请参阅原书。
+- 已覆盖 17.1--17.9 全部节次：背景与设计考量五维度、COO、CSR、ELL、混合 ELL-COO、
+  JDS（含分段 ELL 变体）、CSC，以及小结与练习。
+- 4 份 CUDA C++ 内核（SpMV/COO、SpMV/CSR、SpMV/ELL、SpMV/CSC）为自行编写，
+  SpMV/JDS 按原书体例留作练习。
+- 共绘制 17 幅可编译的中文图示（图 17.1--17.17）和 1 张格式对比表（表 17.1）。
+- 对底本中三处编辑疏漏添加了译者注：ELL 一节下标公式的图号误指、混合 ELL-COO 示例中
+  行号前后不一致、SpMV/CSC 内核图题误写为 SpMV/CSR。另补充一条关于 `y` 需预先初始化的
+  译者注，以及一条关于 JDS 排序方向（底本升序/降序表述不一致）的说明。
+- 本章新增术语（稀疏矩阵、SpMV、紧凑化、规整化、五个设计维度、fill-in、共轭梯度法、
+  COO/CSR/CSC/ELL/JDS、混合方法、填充元素、列主序、转置、SpMSpV）已回写主术语表。
+- `main.tex` 中新增第三部分“高级模式与应用”。因第 11--16 章尚未译出，在 `\include`
+  之前用 `\setcounter{chapter}{16}` 使本章编号与原书第 17 章一致；补齐中间各章后
+  删除该行即可。
+- 已用 Tectonic 完整编译整书，最终 PDF 共 238 页；第十七章位于印刷页 204--227。
+- 已检查构建日志；当前无未定义引用、缺失数学定界符、LaTeX 错误、overfull/underfull
+  或其他包警告。
