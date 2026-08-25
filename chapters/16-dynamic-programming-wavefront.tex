@@ -1,0 +1,1042 @@
+\chapter{动态规划与波前并行}
+\label{chap:dynamic-programming-wavefront}
+
+\setcounter{footnote}{0}
+
+\begin{flushright}
+  \small Juan G\'omez-Luna 特别贡献
+\end{flushright}
+
+波前并行（wavefront parallelism）是一种算法技术，用于从沿空间维度和/或时间维度
+存在数据依赖的应用中发掘数据并行性。本章在动态规划应用的背景下研究波前并行。动态
+规划代表一类可以把问题分解成较小子问题来求解的问题；组合各子问题的解，就能得到原
+问题的解。在 GPU 上并行化动态规划算法，会在硬件利用率和线程间同步方面带来有趣的
+挑战。本章将讨论这些挑战，并介绍高效应对它们的软件技术。
+
+\section{动态规划}
+\label{sec:dynamic-programming}
+
+有些问题的解可以从较小子问题的解递归组合而成，例如图中所有顶点对之间的最短路径和
+基因组序列比对。也就是说，递归地求出各子问题的最优解，就能最优地求解原问题。
+\textbf{动态规划（dynamic programming）}是一种技术：它递归地把这类问题分成更小
+子问题，推导并保存子问题的解，再把保存的解组合成原问题的解。求解过程中往往会多次
+使用这些子问题解，从而减少重复计算。
+
+适合动态规划的问题具有\textbf{最优子结构（optimal substructure）}和\textbf{重叠
+子问题（overlapping subproblems）}：各子问题的解能够组成原问题的解，而且不同求解
+路径会遇到相同子问题。动态规划与分治的区别在于，分治方法中的子问题彼此不重叠。例如，
+第 14 章的归并排序把问题分成互不相交、可以独立求解的子问题。
+
+斐波那契数列是一个著名的动态规划例子，通常由递归式
+
+\begin{equation}
+  F_i=F_{i-1}+F_{i-2}
+  \label{eq:16-1}
+\end{equation}
+
+表示。若用简单递归计算 $F_i$，同一子问题会被反复求解。例如，同时求解 $F_i$ 与
+$F_{i-1}$ 时，二者都会付出求解 $F_{i-2}$ 的代价。为避免这种重复计算，动态规划算法
+通常把子问题解存入表格；根据具体实现方式，这称为记忆化或表格化，第
+\ref{sec:dp-implementation-approaches} 节将详细讨论。之后反复复用已存结果，就能消除
+冗余计算。
+
+动态规划算法的执行会形成\textbf{波前（wavefront）}：波前是一组彼此没有依赖、因此
+可以并行计算的中间解。在每个波前内部并行执行，是并行化动态规划算法的自然方法。
+
+除斐波那契数列外，动态规划还常用于最短路径，如 Dijkstra、Bellman-Ford 与
+Floyd-Warshall 算法；矩阵链乘法；时间序列，如动态时间规整；隐马尔可夫模型，如
+Viterbi 算法等。生物信息学是另一个高度依赖动态规划的重要领域，序列比对，如
+Smith-Waterman 与 Needleman-Wunsch 算法、蛋白质折叠、RNA 结构预测以及蛋白质-DNA
+结合等问题都借助它加速\cite{alser2022genome}。
+
+\section{实现方式}
+\label{sec:dp-implementation-approaches}
+
+动态规划算法主要有自顶向下和自底向上两种实现方式。图 \ref{fig:16-1} 用斐波那契
+数列展示二者。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+// Fibonacci top-down implementation
+#include <unordered_map>
+int fibonacci_topdown(int n, std::unordered_map<int, int>& hash_table) {
+  if(hash_table.find(n) != hash_table.end()) return hash_table[n];
+  int result;
+  if(n != 0 && n != 1) {
+    result = fibonacci_topdown(n-1, hash_table)
+           + fibonacci_topdown(n-2, hash_table);
+  } else {
+    result = n;
+  }
+  hash_table[n] = result;
+  return result;
+}
+
+// Fibonacci bottom-up implementation
+#include <vector>
+int fibonacci_bottomup(int n) {
+  if(n != 0 && n != 1) {
+    std::vector<int> table(n + 1, 0);
+    table[0] = 0;
+    table[1] = 1;
+    for(int i = 2; i <= n; i++) {
+      table[i] = table[i-1] + table[i-2];
+    }
+    return table[n];
+  } else {
+    return n;
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{斐波那契数列的自顶向下与自底向上 C++ 实现}
+  \label{fig:16-1}
+\end{figure}
+
+自顶向下方式基于递归执行：求解某个子问题的每次函数调用，都会继续调用函数求解更小的
+重叠子问题；因此在求解较大子问题时，同一子问题可能遇到多次。图 \ref{fig:16-1} 上半
+部分第 7 行给出递归调用。自顶向下方式用\textbf{记忆化（memoization）}保存中间结果，
+以后再次遇到相同子问题时便可避免重复计算。每个中间结果存入关联数组，例如第 11 行的
+\code{hash_table}。递归函数每次进入时先检查所需结果是否已经存在（第 4 行）；若存在，
+就直接复用哈希表中的结果，否则继续递归（第 7 行），或者在 $n$ 为 1 或 0、到达递归
+终点时返回相应值（第 10 行）。
+
+例如，计算 $F_3$ 会递归调用 $F_2$ 和 $F_1$；计算 $F_2$ 又会调用 $F_1$ 与 $F_0$。
+下一层递归在第 10 行得到 $F_1=1$ 与 $F_0=0$，并保存进哈希表。计算 $F_3$ 的第二次
+递归调用再次请求 $F_1$ 时，被调函数会在哈希表中找到它，并在第 4 行直接返回。
+
+自顶向下方式概念简单，也与数学定义一致，但在 GPU 上效率不高，主要有两个原因。第一，
+支持 CUDA 的 GPU 不擅长在内核代码中高效执行深层函数调用。编译器通常内联设备函数以
+提高效率，但递归调用无法无限内联，所以必须保留实际函数调用，导致显著减速。第二，对
+\code{hash_table} 等关联数组的访问往往使同一 warp 中线程产生未合并内存访问，也会
+显著降低速度。
+
+自底向上方式从最小子问题开始，求出并表格化它们的解，再逐步求解更大的子问题，直到
+目标问题完成。它采用迭代形式，如图 \ref{fig:16-1} 下半部分第 8--10 行的 for 循环。
+每次迭代计算一个子问题，从最小子问题逐渐向上；每个子问题的解都存入表格。由于循环从
+小问题走向大问题，每次迭代都能保证在表中找到自身所依赖子问题的解。
+
+每次迭代中求解的子问题集合，也就是被填充的表格单元格，称为波前。对斐波那契数列，
+波前 $i$ 只有一个子问题 $F_i$，存于 \code{table[i]}，所以这个特例只能顺序执行。
+幸运的是，许多动态规划算法处理更复杂的问题，波前中包含多个子问题，表格也常常有多个
+维度。同一波前的子问题互不依赖，可以并行计算。波前并行很适合 GPU，但需要准确理解其
+动态行为，例如波前可能增长或收缩，以及不同波前子问题之间的依赖，并据此事先仔细规划
+执行。本章余下部分只讨论自底向上方式。
+
+\section{波前模式}
+\label{sec:wavefront-patterns}
+
+在动态规划的每次迭代中，波前由可以并行求解的子问题组成：它们彼此独立，而且各自依赖
+的更小子问题已经求解。连续迭代或波次之间则通过并行计算单元的同步，例如屏障，强制
+数据依赖并串行推进。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c@{\qquad}c}
+    \begin{tabular}{c}
+      \fbox{1 1 1 1 1}$\rightarrow$\fbox{2 2 2 2 2}$\rightarrow$\fbox{3 3 3 3 3}\\
+      (a) 固定大小的行波前
+    \end{tabular}&
+    \begin{tabular}{c}
+      \fbox{1 2 3 4 5}\\[-0.1em]
+      \fbox{1 2 3 4 5}\\[-0.1em]
+      \fbox{1 2 3 4 5}\\
+      (b) 固定大小的列波前
+    \end{tabular}\\[0.8em]
+    \begin{tabular}{c}
+      \fbox{1}\ \fbox{2 2}\ \fbox{3 3 3}\ \fbox{4 4}\ \fbox{5}\\
+      (c) 先增长后收缩的反对角波前
+    \end{tabular}&
+    \begin{tabular}{c}
+      \fbox{1 1}$\rightarrow$\fbox{2 2 2}$\rightarrow$\fbox{3 3}$\rightarrow$\fbox{4}\\
+      (d) 可变大小的不规则波前
+    \end{tabular}
+  \end{tabular}
+  \caption{波前模式示例；单元格数字表示波前编号，箭头表示依赖方向}
+  \label{fig:16-2}
+\end{figure}
+
+图 \ref{fig:16-2} 给出四种波前模式。波前大小和并行量可以在迭代间保持不变，如 (a)
+和 (b)，也可以变化，如 (c) 和 (d)。第 \ref{sec:floyd-warshall} 节的 Floyd-Warshall
+算法具有固定大小波前；它类似图中 (a)、(b)，但每次迭代不是计算二维空间的一行，而是
+计算三维空间的一个平面。第 \ref{sec:smith-waterman} 节的 Smith-Waterman 算法广泛
+用于基因组序列比对，其模式对应图 (c)，波前先增长再收缩。第
+\ref{sec:smith-waterman}--\ref{sec:hyperplane-transformation} 节将介绍它的 CUDA
+实现与多项优化。
+
+算法之间另一项重要区别，是不是必须保留完整的子问题解表。有些算法在执行中只须保留
+若干波前。例如，计算斐波那契数 $F_i$ 时，只需保留 $F_{i-1}$ 与 $F_{i-2}$，更早数值
+都可丢弃，尽管图 \ref{fig:16-1} 没有这样做。类似地，Floyd-Warshall 只需保留三维
+问题空间中的一个二维平面，旧平面可以丢弃，因为最终结果通常用不到它们。相反，
+Smith-Waterman 必须把所有迭代、所有波前的结果保存到最后，以便回溯最终比对。
+
+\section{Floyd-Warshall 算法}
+\label{sec:floyd-warshall}
+
+Floyd-Warshall 算法求有向加权图中所有顶点对之间的最短路径。\footnote{图是表示实体
+之间关系的数据结构。第 18 章将详细介绍图。}为了理解子问题划分，考虑函数
+$d(i,j,k)$：它表示从顶点 $i$ 到 $j$，并且只允许顶点 $0$ 到 $k$ 充当中间顶点时的
+最短距离。假设对某个顶点 $k$，已经知道所有 $i,j$ 的 $d(i,j,k-1)$，那么
+
+\begin{equation}
+  d(i,j,k)=\min\bigl(d(i,j,k-1),\ d(i,k,k-1)+d(k,j,k-1)\bigr).
+  \label{eq:16-2-fw}
+\end{equation}
+
+也就是说，答案是以下两条路线中较短者：只使用顶点 $0$ 到 $k-1$、不经过 $k$，直接
+从 $i$ 到 $j$；或者先从 $i$ 到 $k$，再从 $k$ 到 $j$。这样，$d(i,j,k)$ 被分解成
+$d(i,j,k-1)$、$d(i,k,k-1)$ 和 $d(k,j,k-1)$ 三个更小子问题。
+
+自底向上实现从 $k$ 最小的子问题开始，逐步增大 $k$，直到把图中全部顶点纳入候选中间
+顶点。$d(i,j,-1)$ 已知，它表示不使用任何中间顶点时 $i$ 与 $j$ 的距离，等于二者间
+边的权重；若没有边，则为无穷大。利用递推式，可以依次求所有 $d(i,j,0)$、所有
+$d(i,j,1)$，直到所有 $d(i,j,N-1)$，其中 $N$ 是顶点数。最后一个结果允许图中任意顶点
+作为中间顶点，正是最终所求的最短距离。
+
+一个重要观察是：求出某个 $k$ 下所有 $d(i,j,k)$ 后，就不再需要 $d(i,j,k-1)$，可以
+丢弃它们。因此，尽管 $d(i,j,k)$ 定义的子问题空间大小为 $O(N^3)$，同时需要保存的
+子问题解却只有 $O(N^2)$。对大型图而言，二者差异极其显著。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.94\textwidth}
+  \begin{lstlisting}[language=Python,basicstyle=\ttfamily\scriptsize]
+# Initialize nearest neighbors to actual distance, all others = infinity
+initialize(dist)
+# Order of visiting k values not important, must visit each value
+for k in range(V):
+    # Pick all vertices as sources in parallel
+    Parallel for_each i in range(V):
+        # Pick all vertices as destinations for the above source
+        Parallel for_each j in range(V):
+            # If vertex k is on the shortest path from i to j, update
+            dist[i][j] = min(dist[i][j], dist[i][k] + dist[k][j])
+    # All dist[i][j] for a single k must be computed before next k
+    Synchronize
+  \end{lstlisting}
+  \end{minipage}
+  \caption{Floyd-Warshall 算法自底向上实现的伪代码}
+  \label{fig:16-3}
+\end{figure}
+
+图 \ref{fig:16-3} 把算法写成下标 $k,i,j$ 的三层循环。最外层 $k$ 循环定义不同大小
+子问题的迭代；只要退出前访问所有顶点，访问 $k$ 的次序并不重要。$i,j$ 循环求解一个
+波前中的子问题，并更新距离表全部单元格。迭代 $k$ 开始时，距离表保存所有
+$d(i,j,k-1)$；结束时则保存所有 $d(i,j,k)$。同一迭代的所有表格单元都可以并行计算，
+这使 Floyd-Warshall 很适合 GPU。
+
+一种直接的自底向上 GPU 并行化方式，是为每对顶点 $(i,j)$ 分配一个线程。迭代 $k$ 中，
+若 $i$ 到 $k$ 加 $k$ 到 $j$ 的距离短于当前观察到的 $i$ 到 $j$ 最短距离，就发现了
+新的最短路径，相应线程更新 \code{dist[i][j]}。每次迭代末尾通过内核结束并重新启动
+网格来同步线程。这个全局同步保证纳入顶点 $k$ 后产生的新距离全部算完并写入表中，下一
+次迭代才开始，从而保证正确执行。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.98\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+// Floyd-Warshall bottom-up CUDA kernel
+__global__ void FW_bottomup(int k, int* dist, int n_vertices) {
+  // Distance table column and row
+  int col = blockIdx.x*blockDim.x + threadIdx.x;
+  if(col >= n_vertices) return;
+  int row = blockIdx.y;
+
+  // Index in dist matrix
+  int distIndex = n_vertices * row + col;
+
+  __shared__ int dist_k_col;
+  // Distance to intermediate vertex k with column k
+  if(threadIdx.x == 0) {
+    dist_k_col = dist[n_vertices * row + k];
+  }
+  __syncthreads();
+  if(dist_k_col == INFINITY) return;
+
+  // Distance to intermediate vertex k with row k
+  int dist_k_row = dist[k * n_vertices + col];
+  if(dist_k_row == INFINITY) return;
+
+  // Update if vertex k is on the shortest path
+  int new_distance = dist_k_col + dist_k_row;
+  if(new_distance < dist[distIndex])
+    dist[distIndex] = new_distance;
+}
+
+// Host code: one kernel call per iteration k
+dim3 dimBlock(threads);
+dim3 dimGrid((n_vertices + threads - 1) / threads, n_vertices);
+for(int k = 0; k < n_vertices; k++) {
+  FW_bottomup<<<dimGrid, dimBlock>>>(k, dist, n_vertices);
+  cudaDeviceSynchronize();
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{Floyd-Warshall 算法的自底向上 CUDA 实现}
+  \label{fig:16-4}
+\end{figure}
+
+图 \ref{fig:16-4} 给出 CUDA 内核与迭代调用它的主机代码，图 \ref{fig:16-5} 则给出
+有向加权图和初始化后的距离表。表格用相邻顶点间的边权初始化，其余单元为
+\code{INFINITY}。主机为每个顶点启动一次内核（主机代码第 4--5 行）；迭代 $k$ 中，
+所有单元都可能因把顶点 $k$ 纳入候选中间顶点而更新。
+
+每个线程块覆盖距离表的一段行。线程网格是二维的，而每块线程是一维的。主机变量
+\code{threads} 指定每块线程数；网格 $x$ 维的表达式保证有足够线程块覆盖距离表全部列，
+$y$ 维块数直接等于顶点总数，因为每块只覆盖距离表的一行，需要 \code{n_vertices} 个
+块覆盖所有行。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c@{\qquad}c}
+    \begin{tabular}{c}
+      \fbox{$a\xrightarrow{4}b\xrightarrow{9}c$}\\
+      \fbox{$a\xrightarrow{7}g\xrightarrow{7}f\xrightarrow{6}e\xrightarrow{6}d$}\\
+      \fbox{$h\xrightarrow{3}c$}
+    \end{tabular}&
+    \begin{tabular}{c|cccc}
+      &a&b&c&$\cdots$\\\hline
+      a&0&4&$\infty$&$\cdots$\\
+      b&$\infty$&0&9&$\cdots$\\
+      c&$\infty$&$\infty$&0&$\cdots$\\
+      $\vdots$&$\vdots$&$\vdots$&$\vdots$&$\ddots$
+    \end{tabular}
+  \end{tabular}
+  \caption{有向加权图（左）与初始化后的距离表（右）}
+  \label{fig:16-5}
+\end{figure}
+
+迭代 $k$ 中，每个线程读取自己的 \code{dist[i][j]}、第 $k$ 行的
+\code{dist[k][j]} 和第 $k$ 列的 \code{dist[i][k]}，再更新自己负责的单元。原则上每个
+距离表单元都可能更新。不过，若全部距离非负且顶点到自身距离恒为 0，即
+\code{dist[k][k]=0}，分配到第 $k$ 行或第 $k$ 列的线程不会修改单元。它们计算的分别
+是 $\min(d(i,k),d(i,k)+d(k,k))$ 与 $\min(d(k,j),d(k,k)+d(k,j))$，化简后都等于原值。
+因此这里不存在读写危险，可以只用一张 \code{dist} 表；其他确有竞争风险的问题则需要
+采用第 6 章的双缓冲。
+
+内核为每个线程分配一个 \code{dist} 单元。块内所有线程用共同的 \code{blockIdx.y}
+作为行下标；列下标采用熟悉的线性下标 \code{blockIdx.x*blockDim.x+threadIdx.x}，
+保证任意一行的每个单元都分配给一个线程。第 9 行按行主序计算一维表下标。
+
+块内所有线程需要读取同一单元，即自己所在行、第 $k$ 列的距离。因此线程 0 从全局内存
+读取它，写入共享内存 \code{dist_k_col}，再同步全块。若其值为无穷大，顶点 $k$ 不在
+这条最短路径上，线程可以退出。否则，每个线程读取第 $k$ 行、自身列处的
+\code{dist_k_row}；这些全局访问可以合并。若它也为无穷大，线程退出。剩余线程计算经
+顶点 $k$ 的新距离，与当前距离比较，若更短就写回。
+
+Floyd-Warshall 凭借高度规则性，可以直接在 GPU 上并行化：（1）每次迭代都考虑所有
+顶点对，波前大小恒定；（2）依赖简单，所有单元只依赖上次迭代的第 $k$ 行和第 $k$ 列。
+其他动态规划问题的波前可能复杂得多，大小会随迭代变化；下一节的 Smith-Waterman 就是
+这种例子。
+
+\section{基因组序列比对与 Smith-Waterman 算法}
+\label{sec:smith-waterman}
+
+基因组是生物体完整的遗传指令集合。DNA 是由 A、C、G、T 四种碱基对字符组成的长串，
+例如人类基因组包含 32 亿个碱基对。基因组分析能帮助理解遗传变异、预测微生物的存在和
+丰度、监测疾病暴发、开发个性化医疗等。分析前需要从生物样本测序取得 DNA；但测序机只
+产生随机片段，即读段，需要把它们映射到参考基因组。根据测序技术，读段可分为 50--300
+碱基对的短读段和 1 万--10 万碱基对的长读段。
+
+读段映射的关键步骤是序列比对，传统上使用平方时间动态规划算法，例如
+\begin{center}
+  Smith--Waterman 与 Needleman--Wunsch。
+\end{center}
+Smith--Waterman 的主要数据结构是
+动态规划表 $H$，称为同源性得分矩阵，简称\textbf{得分矩阵}（scoring matrix）。
+比对目标是判断两个序列在生物学
+意义上是否同源或相似，例如是否共享祖先。
+
+假设待比对序列 $A,B$ 分别包含 $L_A,L_B$ 个碱基对，则得分矩阵大小为
+$(L_A+1)\times(L_B+1)$。序列内碱基对从 1 编号到序列长度。矩阵第 0 行和第 0 列全部
+保存边界值 0：第 0 行的 0 表示不存在的 $B$ 的第 0 个碱基对尚未与 $A$ 中任何碱基对
+形成理想比对；第 0 列同理。其余单元 $H_{i,j}$ 表示 $A$ 从第一个到第 $i$ 个碱基对的
+片段与 $B$ 从第一个到第 $j$ 个碱基对的片段之间的同源性得分。得分越高，两个片段越
+相似。随着 $i,j$ 增大，计算 $H_{i,j}$ 可以复用较小 $i$ 和/或 $j$ 的既有子问题，得分
+表正是用来保存这些解。
+
+单独比较 $A_i$ 与 $B_j$ 时得到相似性得分 $S_{i,j}$。若二者匹配，则为正，例如 $+3$；
+若不匹配，则为负，例如 $-3$。发生删除或插入时分别施加间隙惩罚，例如 2，记作
+\code{deletion_penalty} 与 \code{insertion_penalty}。于是
+
+\begin{equation}
+H_{i,j}=\max\left\{
+\begin{array}{l}
+H_{i-1,j-1}+S_{i,j},\\
+H_{i-1,j}-\textit{deletion\_penalty},\\
+H_{i,j-1}-\textit{insertion\_penalty},\\
+0.
+\end{array}\right.
+\label{eq:16-2}
+\end{equation}
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{ccc}
+    $H_{i-1,j-1}$&$H_{i-1,j}$&\\
+    $\searrow$&$\downarrow$&\\[-0.2em]
+    $H_{i,j-1}$&$\rightarrow$&\fbox{$H_{i,j}$}
+  \end{tabular}
+  \caption{Smith-Waterman 得分矩阵中一个单元的依赖关系}
+  \label{fig:16-6}
+\end{figure}
+
+图 \ref{fig:16-6} 展示了得分矩阵单元 $H_{i,j}$ 的依赖。第一种情形是此前把
+$B_{i-1}$ 映射到 $A_{j-1}$，其得分已存于 $H_{i-1,j-1}$；若 $B_i$ 与 $A_j$ 相同，
+加上正的 $S_{i,j}$，否则加上负值。第二种情形以前驱 $H_{i-1,j}$ 为基础，对一个间隙
+施加惩罚；第三种情形以 $H_{i,j-1}$ 为基础，对另一方向的间隙施加惩罚。若三种情形都
+产生负数，就取 0，使所有得分矩阵单元非负。
+
+每个矩阵单元只依赖前两个反对角线中的三个相邻单元。同一反对角线的单元彼此独立，能够
+并行计算，因此每条反对角线就是一个波前。例如，第一个波前只能计算 $H_{1,1}$，它依赖
+三个初始化为 0 的边界单元。第二个波前可以计算 $H_{2,1}$ 与 $H_{1,2}$；第三个波前可
+计算 $H_{3,1}$、$H_{2,2}$ 与 $H_{1,3}$。从第一条反对角线到最后一条，波前大小先增长
+后收缩。
+
+在全部波前算完之前，Smith-Waterman 必须保留完整得分矩阵，因为最终回溯要从同源性
+得分最高的单元开始，沿上方、左上或左方的前驱单元路径前进，直到得分为 0 的单元，也
+就是第一行或第一列。完整路径重建两个序列的最优比对。回溯本身是顺序过程，本章重点只
+讨论更有并行化机会的波前计算。
+
+\section{波前并行化：线程块级分块}
+\label{sec:wavefront-block-tiling}
+
+Smith-Waterman 的基本 GPU 并行化为每条反对角波前启动一个内核，每个 GPU 线程计算
+一个反对角线单元。这样能并行计算一个波前的全部元素，并保证完整波前完成后下一波前才
+开始。图 \ref{fig:16-7}(a) 用虚线反对角线表示连续的内核启动；这一基本实现留作练习。
+它无法利用相邻反对角线间的数据局部性，浪费复用机会，还要为每条反对角线支付一次新
+内核启动成本。
+
+更高效的策略采用块级分块，如图 \ref{fig:16-7}(b)。把动态规划矩阵划分成数据片，每片
+分配给一个线程块。数据片内部由线程计算各反对角线，并在进入下一条反对角线之前执行
+局部同步 \code{__syncthreads()}。于是，只需在“数据片反对角线”之间执行内核结束形式
+的全局同步。分块还允许把数据片存入各 SM 的高速共享内存；算完一片后，再由线程以合并
+方式写入全局内存。
+
+\begin{figure}[htbp]
+  \centering
+  \scriptsize
+  \begin{tabular}{c@{\qquad}c@{\qquad}c}
+    \begin{tabular}{c}
+      \fbox{整个矩阵}\\
+      每条单元反对角线一次内核\\
+      (a) 基本波前并行
+    \end{tabular}&
+    \begin{tabular}{c}
+      \fbox{数据片 00}\ \fbox{数据片 01}\\
+      \fbox{数据片 10}\ \fbox{数据片 11}\\
+      片间全局同步，片内局部同步\\
+      (b) 线程块级分块
+    \end{tabular}&
+    \begin{tabular}{ccc}
+      线程 0&线程 0&线程 0\\
+      线程 1&线程 1&线程 1\\
+      线程 2&线程 2&线程 2\\
+      (c) 数据片内线程分配&&
+    \end{tabular}
+  \end{tabular}
+  \caption{基本波前并行、线程块级分块，以及数据片内线程分配；矩阵第 0 行和第 0 列为 0 边界}
+  \label{fig:16-7}
+\end{figure}
+
+图 \ref{fig:16-8} 给出线程块级分块实现的主机代码。为简化起见，假设两个输入序列等长，
+长度为 \code{L_seq}，得分矩阵边长为 \code{L=L_seq+1}。每个线程块是一维线程数组，
+线程数由 \code{threads} 指定。除首行首列外，矩阵被划分成
+\code{threads*threads} 大小的数据片，每片由一个线程块计算。第 4 行向上取整得到水平
+方向数据片数 \code{numTiles_x}；由于序列等长，竖直方向数据片数与最大反对角线块数也
+相同。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.94\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+// Length of scoring matrix side
+int L = L_seq + 1;
+// Number of tiles in x dimension
+int numTiles_x = (L_seq + threads - 1) / threads;
+// Max blocks per anti-diagonal
+int numBlocks = numTiles_x;
+// Loop over anti-diagonals of tiles
+for(unsigned int d = 0; d < 2 * numTiles_x - 1; d++) {
+  // Kernel call
+  sw_kernel_square<<<numBlocks, threads,
+                     threads * threads * sizeof(int)>>>
+                    (sw, rea, ref, L, d);
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{线程块级分块实现的主机代码}
+  \label{fig:16-8}
+\end{figure}
+
+各数据片进一步组织成数据片反对角线。图 \ref{fig:16-7}(b) 中，第 0 条只有左上角片；
+第 1 条包含紧邻它的两个浅色片，总共 5 条，编号 0--4。内核让每个线程块处理一片，
+主机逐条遍历数据片反对角线并连续调用内核。为简单起见，每次都启动最大块数
+\code{numTiles_x}，不过并非所有块都活跃。读者可自行探索如何为每条反对角线精确设置
+\code{numBlocks}。
+
+内核接收得分矩阵 \code{sw}、两个输入序列 \code{rea/ref}、矩阵边长 \code{L} 和数据片
+反对角线编号 \code{d}。总共调用 \code{2*numTiles_x-1} 次，\code{d} 从 0 取到
+\code{2*numTiles_x-2}。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.99\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__global__ void sw_kernel_square(int* sw, T* rea, T* ref, unsigned int L,
+                                 unsigned int d) {
+  extern __shared__ int swTile[];
+  const int tile_width = blockDim.x;
+  const int numTiles_x = (L-1 + tile_width-1) / tile_width;
+  // Tile indices
+  const int tile_row = blockIdx.x;
+  const int tile_col = d - blockIdx.x;
+  if(tile_col >= 0 && tile_col < numTiles_x) {
+    // Iterate over anti-diagonals of the tile
+    for(int d_tile=0; d_tile<2*tile_width-1; d_tile++) {
+      // Row indices in tile and global memory
+      int r_tile = threadIdx.x;
+      int r = tile_width * tile_row + r_tile + 1;
+      // Column indices in tile and global memory
+      int q_tile = d_tile - threadIdx.x;
+      int q = tile_width * tile_col + q_tile + 1;
+      // Bound checking
+      if(q_tile>=0 && q_tile<tile_width && r<L && q<L) {
+        // Load from the previous two anti-diagonals
+        int n  = load_n(sw, r, q, L, swTile, r_tile, q_tile, tile_width);
+        int w  = load_w(sw, r, q, L, swTile, r_tile, q_tile, tile_width);
+        int nw = load_nw(sw, r, q, L, swTile, r_tile, q_tile, tile_width);
+        // Similarity score
+        int subs_val = (rea[r-1] == ref[q-1]) ? MATCH : MISMATCH;
+        // Obtain maximum and store in shared memory
+        swTile[r_tile * tile_width + q_tile] =
+            max4(0, nw + subs_val, w + DELETION, n + INSERTION);
+      }
+      __syncthreads(); // Thread block synchronization
+    }
+    // Store the tile in global memory
+    store_tile(sw, swTile, L, tile_width, tile_row, tile_col);
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{线程块级分块实现的内核代码}
+  \label{fig:16-9}
+\end{figure}
+
+图 \ref{fig:16-9} 中，每个包含 \code{tile_width} 个线程的线程块计算一个边长为
+\code{tile_width} 的正方形数据片。内核先算出各维数据片总数，再由
+\code{blockIdx.x} 确定数据片行，以 $d-\code{blockIdx.x}$ 确定数据片列。以图
+\ref{fig:16-7}(b) 的 $d=1$ 为例，块 0 负责片 $(0,1)$，块 1 负责片 $(1,0)$。若列
+下标小于 0 或不小于 \code{numTiles_x}，该块被分到不存在的数据片，直接不活动。
+
+主循环用 $2\,\code{tile_width}-1$ 次迭代计算片内反对角线。每次迭代中，每个线程计算
+共享内存片的一个单元；\code{r_tile}、\code{q_tile} 是片内行列，\code{r}、\code{q}
+是全局行列。全局
+下标加 1，是因为第 0 行与第 0 列全为 0，不必计算。片内线程分配与线程块到数据片的
+分配形式相同；不在当前反对角线或落在矩阵不完整边缘外的线程通过边界检查退出本轮。
+
+每个活动线程再加载自己所依赖的北、西、及西北三个单元。图 \ref{fig:16-10} 的三个
+设备函数默认从共享内存读取；若当前单元位于数据片顶部或左边界，依赖值由前一次内核调用
+产生，因而从全局内存读取。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.99\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__device__ inline int load_n(int* sw, int r, int q, unsigned int L,
+    int* swTile, int r_tile, int q_tile, int tile_width) {
+  return (r_tile == 0) ? sw[(r-1) * L + q]
+                       : swTile[(r_tile-1) * tile_width + q_tile];
+}
+
+__device__ inline int load_w(int* sw, int r, int q, unsigned int L,
+    int* swTile, int r_tile, int q_tile, int tile_width) {
+  return (q_tile == 0) ? sw[r * L + (q-1)]
+                       : swTile[r_tile * tile_width + (q_tile-1)];
+}
+
+__device__ inline int load_nw(int* sw, int r, int q, unsigned int L,
+    int* swTile, int r_tile, int q_tile, int tile_width) {
+  return (r_tile == 0 || q_tile == 0) ? sw[(r-1) * L + (q-1)]
+      : swTile[(r_tile-1) * tile_width + (q_tile-1)];
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{线程块级分块实现：加载输入值的设备函数}
+  \label{fig:16-10}
+\end{figure}
+
+北方值 $n$ 位于当前单元上方，西方值 $w$ 位于左侧，西北值 $nw$ 位于左上。取得三者与
+相似性得分 \code{subs_val} 后，线程计算自己的单元。图 \ref{fig:16-11} 的
+\code{max4()} 返回四个整数的最大值。每条片内反对角线末尾，块内线程局部同步，保证
+整条反对角线已写入共享内存，才进入下一条。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.75\textwidth}
+  \begin{lstlisting}[language=C++]
+__device__ inline int max4(int a, int b, int c, int d) {
+  int m = a;
+  if(m < b) m = b;
+  if(m < c) m = c;
+  if(m < d) m = d;
+  return m;
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{计算四个整数最大值的设备函数示例}
+  \label{fig:16-11}
+\end{figure}
+
+全部片内反对角线算完后，线程调用图 \ref{fig:16-12} 的 \code{store_tile}，逐行把片
+写入全局内存。所有线程协作并执行合并访问。这是借助共享内存把未合并访问转为合并访问
+的例子，类似第 6 章的转角技术和第 12 章的打包技术。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.93\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__device__ inline void store_tile(int* sw, int* swTile, unsigned int L,
+                                  int tile_width, int tile_row, int tile_col) {
+  for(int row = 0; row < tile_width; row++) {
+    int r = tile_width * tile_row + row + 1;
+    int q = tile_width * tile_col + threadIdx.x + 1;
+    if(r < L && q < L)
+      sw[r * L + q] = swTile[row*tile_width + threadIdx.x];
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{线程块级分块实现：把数据片存入全局内存的设备函数}
+  \label{fig:16-12}
+\end{figure}
+
+\section{超平面变换}
+\label{sec:hyperplane-transformation}
+
+图 \ref{fig:16-7}(b) 的线程块级分块通过减少内核调用开销、利用高速共享内存，提高了
+波前并行的性能。然而，正方形或矩形数据片有两项重要缺点，图 \ref{fig:16-13} 以两个
+相邻片说明它们。
+
+第一，片内反对角线长度不一致，因此每条反对角线上的活动线程数不同。多数迭代的实际
+并行度低于最大值，许多线程闲置，warp 利用不足。计算一个 $n\times n$ 数据片需要
+$2n-1$ 次迭代。第二，位于不同数据片反对角线上的相邻片之间可能失去局部性。左片右上
+角较早算出的深色单元，是右片最初几条反对角线的输入，却可能在使用前已经被缓存逐出；
+左片较晚算出的浅色单元虽然更可能留在缓存中，但右片要到后期才使用它们，届时也可能被
+逐出。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c@{\qquad}c}
+    \begin{tabular}{c}
+      \fbox{左方正方形数据片}\\
+      活动线程数：$1,2,\ldots,n,\ldots,2,1$\\
+      右上依赖较早产生，可能被逐出
+    \end{tabular}&
+    \begin{tabular}{c}
+      \fbox{右方正方形数据片}\\
+      初始波前需要左片右上边界\\
+      后期波前才需要左片较新边界
+    \end{tabular}
+  \end{tabular}
+  \caption{使用正方形数据片进行线程块级分块的缺点}
+  \label{fig:16-13}
+\end{figure}
+
+为缓解这两项缺点，可以通过称为\textbf{超平面划分（hyperplane partitioning）}的
+仿射变换，把正方形或矩形数据片变成\textbf{超数据片（hypertile）}
+\cite{irigoin1988supernode,di2012tiled,belviranli2015peerwave}。本章把变换后的形状限制
+为平行四边形：水平移动矩形片的各行，让原数据片中同一列的单元在变换后沿反对角线对齐。
+这种移动称为\textbf{剪切变换（shear transformation）}。图 \ref{fig:16-14} 把
+$3\times3$ 正方形片的中间行左移 1 格、底行左移 2 格，得到 $3\times3$ 平行四边形
+超数据片；原片每一列的三个单元由此排成变换后的一条反对角线。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c@{\qquad}c@{\qquad}c}
+    \begin{tabular}{|c|c|c|}\hline
+      0&0&0\\\hline 1&1&1\\\hline 2&2&2\\\hline
+    \end{tabular}&
+    $\xrightarrow{\text{每行依次左移}}$&
+    \begin{tabular}{ccc}
+      &&\fbox{0}\ \fbox{0}\ \fbox{0}\\
+      &\fbox{1}\ \fbox{1}\ \fbox{1}\\
+      \fbox{2}\ \fbox{2}\ \fbox{2}
+    \end{tabular}\\
+    (a) 正方形片&&(b) 平行四边形超数据片\\[0.5em]
+    \multicolumn{3}{c}{(c) 每条片内反对角线恒有 3 个活动线程}
+  \end{tabular}
+  \caption{超平面变换}
+  \label{fig:16-14}
+\end{figure}
+
+Smith-Waterman 的超数据片并行实现相对矩形片有三项优势。第一，每片中的波前长度相同，
+线程块遍历波前时活动线程数恒定，减少 warp 分歧和硬件利用不足。第二，每次迭代完成的
+工作更多，计算一片所需迭代减少；图中正方形片需要 5 次，超数据片只需 3 次。第三，
+一个数据片的最后一条反对角线直接衔接下一片的第一条，提高线程块间数据局部性和缓存
+命中率。
+
+假设正方形分块下，片内坐标 $(r_{tile},q_{tile})$ 映射到得分矩阵坐标 $(r,q)$。剪切后，
+同一片内坐标映射到
+
+\[
+  (r,\ q+m\,r_{tile}),
+\]
+
+其中 $m$ 为\textbf{剪切因子（shear factor）}。图 \ref{fig:16-14} 取 $m=-1$，恰好
+把超数据片每一列倾斜到反对角线方向。
+
+倾斜数据片列也有缺点：“数据片波前”，即同一次 \code{d} 迭代中可同时计算的数据片，
+会不同于正方形分块。例如第二次迭代可能只有一个数据片可算，因为第一波前留下了尚未
+覆盖、但后续片依赖的单元。左右边缘还有不完整超数据片，导致 \code{d} 迭代数增多，
+每次迭代包含的数据片数相应减少。图 \ref{fig:16-14} 中，正方形分块需要 5 次外层迭代，
+超数据片需要 8 次。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.94\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+// Length of scoring matrix side
+int L = L_seq + 1;
+// Number of tiles in x dimension
+int numTiles_x = (L_seq + threads - 1) / threads;
+// Blocks per anti-diagonal
+unsigned int numBlocks = numTiles_x;
+// Loop over anti-diagonals of tiles
+for(unsigned int d = 0; d < 3 * numTiles_x - 1; d++) {
+  // Kernel call
+  sw_kernel_hyper<<<numBlocks, threads,
+                    threads * threads * sizeof(int)>>>
+                   (sw, rea, ref, L, d);
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{基于超数据片的主机端实现}
+  \label{fig:16-15}
+\end{figure}
+
+对正方形分块，需要 \code{numTiles_x} 个波前到达表格右上角，再用
+\code{numTiles_x-1} 个抵达右下角，总数为 \code{2*numTiles_x-1}。从线程块角度看，
+每个块比下一块领先一列数据片：处理第一行的块需 \code{numTiles_x} 次完成，剩余每行
+再加一次。
+
+超数据片同样用 \code{numTiles_x} 次到达右上角，但剪切使数据片倾斜，最右列单元跨越
+的数据片数是正方形情形的两倍，也就是每块比下一块领先两列。处理第一行的块需要
+\code{numTiles_x+1} 次，其中额外一次来自最后的不完整片；剩余
+\code{numTiles_x-1} 行各增加两次，所以总波前数为 \code{3*numTiles_x-1}。图
+\ref{fig:16-14} 中，正方形情形最右列属于 3 片，故有 5 个波前；超数据片情形属于
+6 片，故有 8 次迭代。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.99\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+#define _m (-1) // Shear factor
+#define _shear(x, y) (x + _m * y) // Affine transformation
+
+__global__ void sw_kernel_hyper(int* sw, T* rea, T* ref, unsigned int L,
+                                unsigned int d) {
+  extern __shared__ int swTile[];
+  const int tile_width = blockDim.x;
+  const int numTiles_x = (L-1 + tile_width-1) / tile_width;
+  // Tile indices
+  const int tile_row = blockIdx.x;
+  const int tile_col = d - blockIdx.x * 2;
+  if(tile_col >= 0 && tile_col <= numTiles_x) {
+    initialize_tile(swTile, tile_width);
+    // Iterate over anti-diagonals of the tile
+    for(int d_tile = 0; d_tile < tile_width; d_tile++) {
+      // Row indices in tile and global memory
+      int r_tile = threadIdx.x;
+      int r = tile_width * tile_row + r_tile + 1;
+      // Column indices in tile and global memory
+      int q_tile = d_tile;
+      int q = tile_width*tile_col + _shear(q_tile, r_tile) + 1;
+      // Bound checking
+      if(r < L && q >= 1 && q < L) {
+        // Load from the previous two anti-diagonals
+        int n  = load_n(sw, r, q, L, swTile, r_tile, q_tile, tile_width);
+        int w  = load_w(sw, r, q, L, swTile, r_tile, q_tile, tile_width);
+        int nw = load_nw(sw, r, q, L, swTile, r_tile, q_tile, tile_width);
+        // Similarity score
+        int subs_val = (rea[r-1] == ref[q-1]) ? MATCH : MISMATCH;
+        // Obtain maximum and store in shared memory
+        swTile[r_tile * tile_width + q_tile] =
+            max4(0, nw + subs_val, w + DELETION, n + INSERTION);
+      }
+      __syncthreads(); // Thread block synchronization
+    }
+    // Store the tile in global memory
+    store_tile(sw, swTile, L, tile_width, tile_row, tile_col);
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{基于超数据片的内核代码}
+  \label{fig:16-16}
+\end{figure}
+
+图 \ref{fig:16-16} 沿用正方形数据片内核的结构，关键差异如下。数据片列下标因倾斜形状
+变成 $d-2\,\code{blockIdx.x}$，数据片第一行作为列下标参考。片内循环上界从
+$2\,\code{tile_width}-1$ 变成 \code{tile_width}；所有线程在每次迭代中都活动，因此
+反对角线数就等于片宽。为方便索引，共享内存中仍按正方形保存超数据片；每个线程在正方形
+第 $\code{q_tile}=\code{d_tile}$ 列保存本轮结果，而全局列下标再通过
+\code{_shear()} 应用剪切。
+边界检查只需检查全局 \code{r/q}，因为片内所有线程始终活动。
+
+其余结构与正方形版本相同，但加载函数的正文发生变化。若依赖落在共享内存片中，下标要
+结合超数据片在共享内存中的正方形存储方式调整。例如，北方单元的片内行仍为
+\code{r_tile-1}，但受剪切影响，它实际保存在前一列 \code{q_tile-1}。西方与西北方向
+按同样原则推导。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.99\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__device__ inline int load_n(int* sw, int r, int q, unsigned int L,
+    int* swTile, int r_tile, int q_tile, int tile_width) {
+  return (r_tile == 0 || q_tile == 0) ? sw[(r-1) * L + q]
+      : swTile[(r_tile-1) * tile_width + (q_tile-1)];
+}
+
+__device__ inline int load_w(int* sw, int r, int q, unsigned int L,
+    int* swTile, int r_tile, int q_tile, int tile_width) {
+  return (q_tile == 0) ? sw[r * L + (q-1)]
+      : swTile[r_tile * tile_width + (q_tile-1)];
+}
+
+__device__ inline int load_nw(int* sw, int r, int q, unsigned int L,
+    int* swTile, int r_tile, int q_tile, int tile_width) {
+  return (r_tile == 0 || q_tile == 0 || q_tile == 1)
+      ? sw[(r-1) * L + (q-1)]
+      : swTile[(r_tile-1) * tile_width + (q_tile-2)];
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{基于超数据片的加载输入值设备函数}
+  \label{fig:16-17}
+\end{figure}
+
+线程调用图 \ref{fig:16-18} 的 \code{store_tile} 把数据片写回全局内存。与图
+\ref{fig:16-12} 唯一的核心区别，是第 4 行计算列下标时应用剪切变换。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.94\textwidth}
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__device__ inline void store_tile(int* sw, int* swTile, unsigned int L,
+                                  int tile_width, int tile_row, int tile_col) {
+  for(unsigned int row = 0; row < tile_width; row++) {
+    int r = tile_width * tile_row + row + 1;
+    int q = tile_width*tile_col + _shear(threadIdx.x, row) + 1;
+    if(r < L && q < L)
+      sw[r * L + q] = swTile[row*tile_width + threadIdx.x];
+  }
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{基于超数据片的全局内存存储设备函数}
+  \label{fig:16-18}
+\end{figure}
+
+图 \ref{fig:16-16} 还有正方形版本没有的 \code{initialize_tile} 调用。图
+\ref{fig:16-19} 的设备函数把共享内存片初始化为 0。边界检查会阻止落在实际得分矩阵外
+的线程写入自己的共享内存位置，但片内所有线程仍保持活动，某些线程会计算块内越界单元，
+并可能在后续迭代通过加载函数读到垃圾值。预先把全部共享内存单元清零，可以防止垃圾值
+参与计算而引发异常；这些越界线程最终也不会获准写回得分矩阵。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{minipage}{0.82\textwidth}
+  \begin{lstlisting}[language=C++]
+__device__ inline void initialize_tile(int* swTile, int tile_width) {
+  for(unsigned int row = 0; row < tile_width; row++) {
+    swTile[row * tile_width + threadIdx.x] = 0;
+  }
+  __syncthreads();
+}
+  \end{lstlisting}
+  \end{minipage}
+  \caption{基于超数据片的共享内存初始化设备函数}
+  \label{fig:16-19}
+\end{figure}
+
+共享内存中的正方形表示还带来一项挑战：若超数据片宽度是共享内存 bank 数的倍数或因数，
+就会出现 bank 冲突。可以在每行后加入一个空位置作为填充，错开连续线程访问的地址。
+代码可定义
+
+\begin{lstlisting}[language=C++]
+#define pad(x) (x + (x >> LOG_NUM_BANKS))
+\end{lstlisting}
+
+其中 \code{x} 是共享内存下标，\code{LOG_NUM_BANKS} 是 bank 数的二进制对数。相应地，
+若令 $T=\code{threads}$、$b=\code{LOG_NUM_BANKS}$，图 \ref{fig:16-15} 第 11 行应分配
+\[
+  \bigl(T^2+(T^2\mathbin{\texttt{>>}}b)\bigr)\times\code{sizeof(int)}
+\]
+字节共享内存。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c@{\qquad}c@{\qquad}c}
+    \fbox{倾斜超数据片}&$\rightarrow$&
+    \begin{tabular}{|ccc|c|}\hline
+      0&0&0&填充\\
+      1&1&1&填充\\
+      2&2&2&填充\\\hline
+    \end{tabular}\\
+    \multicolumn{3}{c}{填充让连续线程的步长与 bank 数互素或错开，避免 bank 冲突}
+  \end{tabular}
+  \caption{在共享内存中填充超数据片的示例}
+  \label{fig:16-20}
+\end{figure}
+
+最后用工作量分析估计超数据片相对正方形片的收益。边长为 $n$ 的正方形片需要 $2n-1$
+次迭代；主反对角线之前第 $i$ 次算 $i$ 个单元，之后算 $2n-i$ 个，因此
+
+\begin{equation}
+  W_{\text{square tile}}
+  =\sum_{i=1}^{n}i+\sum_{i=n+1}^{2n-1}(2n-i)=n^2.
+  \label{eq:16-3}
+\end{equation}
+
+一个超数据片只需 $n$ 次迭代，每次工作量都是 $n$：
+
+\begin{equation}
+  W_{\text{hypertile}}=\sum_{i=1}^{n}n=n^2.
+  \label{eq:16-4}
+\end{equation}
+
+两种数据片总工作量相同，但正方形片需要 $2n-1$ 次迭代，超数据片只需 $n$ 次。因此，
+正方形片每次迭代的平均工作量约为 $n/2$，超数据片则为 $n$，后者效率约为前者两倍。
+
+还必须计入主机代码的额外迭代。超数据片最多让主机多遍历 $1.5$ 倍波前；但得分矩阵足够
+大时，各迭代仍可能达到良好占用率，主要负面影响只剩内核调用开销。下一节的同步技术可以
+消除这项开销。
+
+\paragraph{用于模板计算的超平面划分。}
+超数据片变换也适用于其他并行模式，模板计算就是突出例子。Jacobi 模板的外层顺序循环
+表示时间域迭代，内层循环更新空间域单元；空间域和时间域同时存在片内与片间波前，超数据
+片可以高效利用两类波前的并行性。以下玩具一维模板中，\code{A[i]} 依赖上一时间步的
+\code{A[i]} 与 \code{A[i+1]}：
+
+\begin{lstlisting}[language=C++]
+for(t = 1; t <= T; t++)
+  for(i = 1; i <= I; i++)
+    A[i] = 0.5 * (A[i] + A[i+1]);
+\end{lstlisting}
+
+直接划分时，只有同一时间列中的元素能在上一时间步全部可用后并行计算，每个时间步之后
+都要全局同步。对时间-空间域应用超数据片划分，可以同时定义片内和片间波前，暴露更多
+并行性并减少全局同步次数。
+
+\section{更多优化}
+\label{sec:wavefront-more-optimizations}
+
+\paragraph{数据片反对角线之间的同步。}
+前几节通过终止内核并启动新内核来同步数据片反对角线，保证全局同步。缺点是，每个线程块
+虽然只依赖其中三个块，却必须等待计算前两条反对角线的所有线程块，可能造成负载不均，
+浪费 SM 上的计算槽位。
+
+CUDA 的协作组可以同步一个 warp、一个块、若干块或整个网格中的线程，第 18 章会详细
+介绍。协作组允许不重新启动内核就同步网格中所有线程块。进行网格级同步时，内核需要使用
+持久化线程块，网格大小不得超过各 SM 能并发运行的最大线程块总数。它可用于
+Smith-Waterman 的数据片反对角线，但仍会迫使每个块等待前两条反对角线上的全部块。
+
+更高效的机制是用标志数组表示数据片完成。一个线程块只需检查上方与左方数据片的两个
+标志，二者置位后即可开始。若使用持久化线程块并为每行数据片分配一个块，每块甚至只需
+检查一个标志。图 \ref{fig:16-21} 展示这种机制，它类似第 11 章的单向同步。全局屏障会
+造成空闲槽位，而按依赖标志进行块间同步可以让后续块尽早开始，节省执行周期。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c@{\qquad}c}
+    \begin{tabular}{c}
+      标志数组：$[1,1,0,0,\ldots]$\\
+      \fbox{上方片完成}$\searrow$\fbox{当前片}$\swarrow$\fbox{左方片完成}\\
+      当前片结束后置位自己的标志
+    \end{tabular}&
+    \begin{tabular}{c}
+      全局同步：所有块等待最慢块\\
+      \rule{7em}{0.45em}\quad\rule{3em}{0.45em}\\
+      依赖同步：就绪块立即继续\\
+      \rule{10em}{0.45em}
+    \end{tabular}
+  \end{tabular}
+  \caption{块间同步（左）及其提高 SM 利用率的效果（右）}
+  \label{fig:16-21}
+\end{figure}
+
+块间同步同样可以用于超数据片。超数据片宽度决定检查与更新标志的同步操作量，也决定
+一个块开始计算前的等待时间；程序员可以调节宽度寻找性能最佳点。
+
+\paragraph{小型动态规划问题。}
+本章始终以 Smith-Waterman 为例，并假设得分矩阵需要多个线程块计算，这适合数千碱基
+对的长序列。对只有数百碱基对的短序列，一个线程块甚至一个 warp 就足以完成一次比对。
+这种实现可以把数据片存入寄存器，并用第 10 章介绍的洗牌指令交换中间结果，从中显著
+受益。
+
+\paragraph{DPX 指令。}
+从 NVIDIA Hopper 架构开始，CUDA 提供一种面向动态规划应用的新 SIMD 指令 DPX。
+例如，可以用 \code{__vimax3_s32_relu()} 替换图 \ref{fig:16-10} 内核中的
+\code{max4()}；它利用专用硬件求三个输入值与 0 的最大值。
+
+\section{小结}
+\label{sec:dynamic-programming-summary}
+
+动态规划算法递归地把复杂问题分成简单子问题。自底向上实现可以在表格中保存中间结果。
+表格单元之间的依赖定义了波前，即可以并行求解的子问题集合。本章说明了如何在 GPU 上
+高效利用波前并行。线程块级分块与超数据片变换能改进计算资源利用率；块间同步机制与
+DPX 指令等更高级优化还能进一步提升性能。
+
+\phantomsection
+\section*{练习}
+\addcontentsline{toc}{section}{练习}
+
+\begin{enumerate}[label=\arabic*.,leftmargin=2.7em]
+  \item 实现使用正方形线程块的 Floyd-Warshall 内核，而不是第
+  \ref{sec:floyd-warshall} 节的一维线程块实现。把距离表划分成正方形数据片并分配给
+  各线程块；块内线程把第 $k$ 列和第 $k$ 行的相关部分存入共享内存以供复用。比较两种
+  实现的内存访问、数据复用和性能。
+  \item 修改采用线程块级分块的 Smith-Waterman 内核，使其使用矩形数据片。
+  \item 实现采用线程块级分块、并用协作组进行跨块同步的 Smith-Waterman 内核。
+  \item 实现采用线程块级分块、并使用单向同步的 Smith-Waterman 内核。可参考第 11 章
+  的单次回看同步。
+  \item 实现采用超数据片和单向同步的 Smith-Waterman 内核。可参考第 11 章的单次回看
+  同步。
+  \item 用功能相同的 DPX 指令替换本章内核所用的 \code{max4()} 设备函数。
+\end{enumerate}
+
+\begin{chapterbibliography}{9}
+  \bibitem{alser2022genome}
+  M. Alser, J. Lindegger, C. Firtina, N. Almadhoun, H. Mao, G. Singh,
+  J. Gomez-Luna, O. Mutlu, From molecules to genomic variations: accelerating
+  genome analysis via intelligent algorithms and architectures,
+  \emph{Computational and Structural Biotechnology Journal} 20 (2022) 4579--4599.
+
+  \bibitem{irigoin1988supernode}
+  F. Irigoin, R. Triolet, Supernode partitioning, in: \emph{Proceedings of the
+  15th ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages},
+  1988, pp. 319--329.
+
+  \bibitem{di2012tiled}
+  P. Di, D. Ye, Y. Su, Y. Sui, J. Xue, Automatic parallelization of tiled loop
+  nests with enhanced fine-grained parallelism on GPUs, in: \emph{2012 41st
+  International Conference on Parallel Processing}, IEEE, 2012, pp. 350--359.
+
+  \bibitem{belviranli2015peerwave}
+  M.E. Belviranli, P. Deng, L.N. Bhuyan, R. Gupta, Q. Zhu, PeerWave: exploiting
+  wavefront parallelism on GPUs with Peer-SM synchronization, in:
+  \emph{Proceedings of the 29th ACM International Conference on Supercomputing},
+  2015, pp. 25--35.
+\end{chapterbibliography}
