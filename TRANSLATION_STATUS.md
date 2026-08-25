@@ -10,6 +10,7 @@
 - [x] 第 4 章：Compute architecture and scheduling —— 计算架构与调度（初译，已完成底本对照、CUDA 代码核对、图示重绘和编译/视觉验收）
 - [x] 第 5 章：Memory architecture and data locality —— 内存架构与数据局部性（初译，已完成底本对照、CUDA 代码核对、图示重绘和编译/视觉验收）
 - [x] 第 6 章：Performance considerations —— 性能考量（初译，已完成底本对照、CUDA 代码核对、图示重绘和编译/视觉验收）
+- [x] 第 20 章：Large language models —— 大语言模型（初译，已完成底本对照、公式、CUDA 代码、临时图示、练习、参考文献和整书编译/视觉验收）
 
 ## 待处理
 
@@ -31,7 +32,7 @@
 - [ ] 第 17 章：Sparse matrix computation —— 稀疏矩阵计算
 - [ ] 第 18 章：Graph traversal —— 图遍历
 - [ ] 第 19 章：Convolutional neural networks —— 卷积神经网络
-- [ ] 第 20 章：Large language models —— 大语言模型
+- [x] 第 20 章：Large language models —— 大语言模型（已先行完成；第 9--19 章暂缺）
 - [ ] 第 21 章：Electrostatic potential map —— 静电势图
 - [ ] 第 22 章：Algorithm selection, problem decomposition, and problem formulation —— 算法选择、问题分解与问题表述
 - [ ] 第 23 章：Multi-GPU programming —— 多 GPU 编程
@@ -50,6 +51,21 @@
 - [ ] 将图表重绘为可编译的矢量图，或明确标注暂缺原因。
 - [ ] 通过 XeLaTeX 至少连续编译两次，清理未定义引用和交叉引用警告。
 - [ ] 对照原页逐节检查数字、单位、函数名和算法名称。
+
+## 第二十章本轮记录
+
+- 已核对原书物理页 505--540，对应印刷页 477--512；正文包含 20.1--20.8、
+  20.9 练习、15 个编号公式、19 幅图和 17 条参考文献。
+- 已完成 Transformer 架构、多头注意力、CUDA softmax、KV caching、FlashAttention、
+  batching、speculative decoding、MQA、GQA、MLA、PagedAttention 和 MoE 的中文初译。
+- 图 20.1--20.3、20.5--20.8、20.17--20.19 采用中文概念示意临时重绘；图 20.4、
+  20.9--20.16 采用保留 CUDA 标识符的可复制代码清单。
+- 已在 `main.tex` 中加入第三部分，并显式设置章节计数以跳过第 9--19 章而显示
+  第二十章。
+- 已使用 Tectonic 完整编译，最终 `main.pdf` 共 200 页；构建日志无 LaTeX 错误、
+  未定义引用、未定义标签、overfull/underfull 或 rerun 警告。
+- 已视觉抽查第二十章章首页、图 20.2、图 20.5、图 20.8、图 20.9、图 20.16、
+  图 20.17、图 20.18、图 20.19、公式 20.15、练习页和参考文献页，版面正常。
 
 ## 第四、第五章本轮验收记录
 

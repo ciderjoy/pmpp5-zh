@@ -1,0 +1,1648 @@
+\chapter{大语言模型}
+\label{chap:large-language-models}
+
+\setcounter{footnote}{0}
+
+\newcommand{\chTwentyBox}[1]{%
+  \fbox{\rule{0pt}{1.65em}\makebox[7.2em][c]{\small #1}}%
+}
+\newcommand{\chTwentySmallBox}[1]{%
+  \fbox{\rule{0pt}{1.35em}\makebox[4.8em][c]{\scriptsize #1}}%
+}
+\newcommand{\chTwentyCell}[1]{%
+  \fbox{\rule{0pt}{1.25em}\makebox[1.7em][c]{\scriptsize $#1$}}%
+}
+\newcommand{\chTwentyTextCell}[1]{%
+  \fbox{\rule{0pt}{1.25em}\makebox[1.7em][c]{\scriptsize #1}}%
+}
+\newcommand{\chTwentyNewCell}[1]{%
+  \fcolorbox{black}{gray!25}{%
+    \rule{0pt}{1.25em}\makebox[1.7em][c]{\scriptsize $#1$}}%
+}
+\newcommand{\chTwentyArrow}{\ensuremath{\longrightarrow}}
+
+在 Google 研究人员于 2017 年提出 Transformer \cite{ch20-1} 之前，语言任务主要建立
+在 IBM 开创的统计语言建模技术之上（例如 \cite{ch20-2}）。2018 年，Google 推出了
+基于 Transformer 的 BERT 语言模型，并在自然语言任务中取得了前所未有的结果。此后，
+Transformer 架构\footnote{本章中的“架构”指神经网络架构，而不是本书其他章节中所说的
+硬件架构。}成为基于神经网络的自然语言处理（natural language processing，NLP）深度
+学习方法的基础。
+
+此后，大语言模型（large language models，LLM）受到产业界广泛关注，并迅速发展，在
+文本生成、摘要、翻译和对话等多种任务中表现出接近人类的能力。与 BERT 及更早一代的
+语言模型相比，这些模型的规模增长了数个数量级，以便容纳更多训练数据。“大语言模型”
+这一术语正是为了把它们与早期语言模型区分开来。LLM 最初主要用于处理和生成文本信息，
+但后来也出现了多模态模型：这类模型使用视觉、音频以及科学数据等不同类型的数据进行
+训练，并在这些数据上工作。
+
+LLM 的核心思想是：给定一串此前出现的 token，预测下一个 token。这里的 token 可以是
+一个单词、子词或字符。在 OpenAI ChatGPT \cite{ch20-3} 这样的聊天机器人应用中，此前
+的 token 序列统称为上下文（context），它由系统提示词、用户输入以及模型已经生成的
+token 组成。为了生成正确、有效或有用的结果\footnote{对于文本摘要等任务，“准确率”
+未必是合适的评价指标，因为不同答案可能都正确。本章使用“准确”时，采用更一般的
+“正确、有效或有用”的含义。}，LLM 通常包含数十亿个参数，例如数十层、每层数亿个
+参数，并且需要在规模巨大的数据集上训练。在推理阶段，更长的上下文有助于生成更准确
+的响应。模型需要通过一种称为注意力（attention）的机制维护上下文，并识别大段上下文
+中与下一个 token 生成最相关的部分。因此，理解注意力机制以及 Transformer 架构，对于
+理解 LLM 十分重要。Transformer 是目前把注意力机制引入 LLM 的最主流方法之一
+\cite{ch20-1}。
+
+\noindent\textbf{补充说明：}虽然本章聚焦 Transformer 和注意力机制，研究界也在持续
+探索具有不同优势的其他 LLM 架构，例如状态空间模型 Mamba \cite{ch20-4}、卷积模型
+Hyena \cite{ch20-5} 以及混合模型。它们在某些场景下可能具有更低的内存需求。
+
+\section{Transformer 架构}
+\label{sec:ch20-transformer}
+
+如今大多数 LLM 都采用 Transformer 架构及其注意力机制，以捕获 token 之间的依赖关系，
+并判断这些 token 在生成下一个 token 时的重要程度。注意力机制类似于神经网络内部的
+分类过程：它使用 softmax 函数生成概率，而序列中每个 token 获得的概率可以看作该 token
+对于生成下一个 token 的相对重要性。
+
+Transformer 最初是为机器翻译等序列转换任务提出的，因此包含两种类型的层。编码器层
+对输入 token 进行上下文化（或混合），把源语言中的符号序列（例如 token）转换成连续
+表示，即浮点嵌入向量序列。解码器层接收编码器输出的连续表示，并逐个生成目标语言中的
+输出 token。解码器不仅接收编码器的输出，还接收自身最近生成的 token。因此，Transformer
+模型是自回归（auto-regressive）模型。
+
+Transformer 提出之后，人们把它适配到了其他任务。根据具体任务，一个 Transformer
+不一定需要同时包含两类层。例如，执行分类等判别任务的模型并不需要解码器，因为它们
+不会生成目标语言中的文本。另一方面，仅解码器模型（decoder-only model）能够执行文本
+生成等生成式任务。LLM 就属于这一类：它根据用户查询生成文本响应，而不是执行序列到
+序列的转换。生成式任务需要多次执行模型；每次执行都根据已有 token 序列，预测候选
+新输出 token 的可能性。本节重点讨论仅解码器 Transformer 的架构。关于编码器--解码器
+Transformer，可参考文献 \cite{ch20-1}。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c}
+    \chTwentyBox{Tokenizer（分词器）}
+    \quad $\downarrow$ \quad
+    \chTwentyBox{Embedding（嵌入）}
+    \quad $\downarrow$ \quad
+    \chTwentyBox{位置编码}\\[0.5em]
+    $\downarrow$\\[-0.2em]
+    \fbox{\begin{minipage}{0.75\textwidth}
+      \centering
+      \textbf{Transformer 层（重复多次）}\\[0.3em]
+      \chTwentySmallBox{多头注意力}
+      \quad $\longrightarrow$ \quad
+      \chTwentySmallBox{Add \& Norm}
+      \quad $\longrightarrow$ \quad
+      \chTwentySmallBox{前馈网络}
+      \quad $\longrightarrow$ \quad
+      \chTwentySmallBox{Add \& Norm}\\[0.35em]
+      残差连接与层归一化贯穿各子层
+    \end{minipage}}\\[0.5em]
+    $\downarrow$\\[-0.2em]
+    \chTwentyBox{Un-embedding（反嵌入）}
+    \quad $\longrightarrow$ \quad
+    \chTwentyBox{下一个 token 的概率分布}
+  \end{tabular}
+  \caption{仅解码器 Transformer 的基线架构（依据原书图 20.1 临时重绘，未包含
+  KV cache）。}
+  \label{fig:20-1}
+\end{figure}
+
+图 \ref{fig:20-1} 展示了一个基于仅解码器 Transformer 的 LLM 设计。下面简要说明
+其中的主要组成部分。
+
+\begin{enumerate}[label=\arabic*.,leftmargin=2.7em]
+  \item \textbf{Tokenizer（分词器）}把输入文档或查询中的文本转换为 token 序列，即
+  用来表示一个字符或一小段字符的整数 ID。文本到 token 的映射建立在这样的思想上：
+  可以从目标语言的训练文档中学习出一个有限词表。分词器学习并识别出的所有不重复
+  token 构成 LLM 的词表。每个分词器都有自己对 token 的定义，以及把文本输入转换成
+  token 的方法。
+
+  在训练 LLM 时，模型会为训练文档中遇到的 token 分配唯一 ID。每当分词器决定从下
+  一个文本片段形成一个 token 时，它都会检查相同片段是否已经出现过。如果没有，就发现
+  了一个新的文本片段，并为它分配新的 ID；这个 ID 将作为该片段在模型中的表示。文本
+  片段与 token ID 的映射会被记录下来，供以后查找。如果片段此前已经出现，分词器就
+  通过映射找到原先分配的 token ID。文本片段到 token ID 的映射是训练过程的结果之一。
+
+  在推理阶段，每次分词器从文本片段形成 token 时，都会查找该片段对应的 token ID，
+  并把它作为分词器的下一个输出。严格地说，token 是构成 LLM 词表的文本片段，而
+  token ID 是 token 在模型内部的整数表示。除非需要特别区分，本章在描述 LLM 运算
+  时会交替使用 token 和 token ID 这两个术语。
+
+  \item \textbf{Embedding（嵌入）层}把分词器生成的 token（即 token ID）转换成嵌入
+  向量，也就是 token 的浮点向量表示。这里交替使用 embedding 和 embedding vector
+  这两个说法。转换通常通过查找嵌入表完成。训练过程中也会从文档中学习每个 token 的
+  嵌入值。之所以要进行这种转换，是因为 LLM 是使用数值方法训练的机器学习模型。训练
+  通常采用梯度下降方法，要求模型函数可微，并且输入和参数采用连续形式；浮点表示是
+  对连续值的一种近似。
+
+  \item \textbf{位置编码（positional encoding）层}把序列顺序信息加入输入 token 的
+  嵌入向量。位置编码告诉注意力机制 token 在序列中的物理位置和相互距离；这些因素会
+  在判断此前输入和输出 token 对下一个 token 生成的相关性时发挥作用。
+
+  当前对话中的完整 token 序列（包括用户输入、系统添加的输入和模型输出）会按照生成
+  顺序累积成一个矩阵。矩阵的每一行是一个 token 的嵌入向量，该矩阵作为第一个
+  Transformer 层的输入。
+
+  \item \textbf{Transformer 层}对嵌入进行变换，以提取 token 之间的依赖关系。每个
+  Transformer 层包含一个多头注意力子层、一个加法与归一化子层、一个前馈子层，以及
+  另一个加法与归一化子层。
+
+  \item \textbf{多头注意力子层}由并行排列的多个注意力头组成。每个注意力头通过矩阵
+  乘法对嵌入执行线性投影。线性投影所用矩阵是在训练过程中学习得到的，它们实际上
+  对嵌入向量执行坐标变换，使后续的相似度比较更有效。投影结果再经过另一次矩阵乘法，
+  测量一个 token 与此前已经生成的所有 token 之间的相似度。多个注意力头的输出会被
+  拼接起来，通常再经过线性变换，形成多头注意力子层的组合输出。
+
+  \item \textbf{加法与归一化（Add \& Norm）子层}位于多头注意力子层之后。每个前馈
+  子层或注意力子层之后的加法操作都建立残差连接，以保留原始输入的信息。归一化操作
+  通过把结果向量归一化到下一层所需的数值范围，稳定计算过程并改善收敛。归一化通常
+  使用输入嵌入向量元素的均值 $\mu$、标准差 $\sigma$ 以及学习得到的参数 $\gamma$、
+  $\beta$。
+
+  \item \textbf{前馈子层}通常由两个线性变换和中间的 ReLU 激活组成。直观地说，注意力
+  层识别 token 之间的相似性或依赖关系，并根据相似度加权组合此前 token 的嵌入向量，
+  生成新的嵌入版本；前馈子层则为这些新的嵌入版本增加语义含义。关于 ReLU 和激活
+  函数的定义，参见附录 B。
+
+  \item 另一个 \textbf{加法与归一化子层}位于前馈子层之后，用来保留前馈子层输入中的
+  信息、改善收敛，并最终生成该 Transformer 层的输出。
+\end{enumerate}
+
+模型中 Transformer 层的数量称为模型深度，不同 LLM 的深度差别很大。执行大规模矩阵
+乘法的注意力头，是 Transformer 架构中计算开销最大的部分，也是本章后续内容的重点。
+最后，\textbf{反嵌入（un-embedding）层}把最后一个 Transformer 层输出的嵌入转换成
+token 上的概率分布，用于生成下一个输出 token。
+
+模型维度对于生成高质量回答非常重要。第一维是模型深度，即 Transformer 层的数量。
+更深的模型提供更多层级的分类器，因而能够捕获更一般的依赖模式。第二维是每个嵌入
+向量中的元素数量，称为头维度（head dimension）。更宽的嵌入向量能够捕获更多语义
+信息，区分不同概念，并发现更有意义的依赖关系。第三维是每个注意力子层中的头数量；
+不同注意力头能够捕获 token 之间不同类型的依赖。模型参数量约等于这些模型维度相关
+规模的乘积，实际模型可能包含数十亿甚至数万亿个参数（模型权重）。
+
+虽然 LLM 需要较长上下文才能生成准确响应，但用户输入通常过于简短且隐含信息较多，
+不能提供充分的上下文。一个常见补救方法是使用检索增强生成（retrieval-augmented
+generation，RAG）：检索相关文档，把更具体、更及时的上下文信息与用户输入拼接起来，
+形成更大、更丰富的上下文。
+
+在 LLM 训练期间，最重要的计算通常是大规模矩阵--矩阵乘法。注意力头和前馈子层都会
+执行这种运算，并可以使用第 15 章介绍的高级优化策略。正因为矩阵乘法占据主要计算
+开销，注意力头成为 LLM 中最昂贵的计算组件。下一节将详细讨论注意力头的设计及其所
+执行的矩阵乘法。
+
+\section{多头注意力}
+\label{sec:ch20-multi-head-attention}
+
+每个注意力子层包含多个头。多个头共同执行多个分类任务，并同时捕获不同类型的依赖，
+例如位置依赖（token 之间的距离）、语义依赖（同义词或主题）、上下文依赖（把冠词与
+名词联系起来）和句法依赖（把动词与宾语联系起来）。这种注意力头的专门化是在训练
+过程中形成的。不同头的权重矩阵采用不同初始化；反向传播的梯度下降会避免不同头
+之间的功能重叠，并通过 dropout（随机置零输出或概率）和层归一化（归一化激活值）等
+技术抑制过拟合。
+
+注意力头彼此独立，因此可以很容易地分配到多个线程块上并发计算。不同头的设计相同，
+所以下面只展示一个注意力头。图 \ref{fig:20-2} 给出了一个注意力头的计算过程。
+输入矩阵 $X$ 的每一行对应 LLM 当前已经生成的 token 的嵌入向量，包括系统提示词、
+用户输入、系统对用户输入的补充信息以及已经生成的输出 token。对于第一个 Transformer
+层的注意力子层，$X$ 的每一行包含位置编码组件生成的嵌入；对于后续 Transformer 层，
+输入 $X$ 就是前一层的输出。
+
+当前已经生成的 token 数量，也就是矩阵 $X$ 的行数，称为序列长度或上下文长度，后文
+统一记作 $N$。在聊天机器人应用中，随着用户与系统的对话持续进行，$N$ 会逐渐增长。
+支持较大 $N$ 的模型可以利用更多上下文来消除词语和短语的歧义、判断上下文相关性，
+并保持连续回答之间的一致性，因此通常能够生成更可靠的 token。注意力子层通常遵循
+因果策略：当前 token 的生成只能依赖此前生成的 token，而忽略未来 token。
+
+每个嵌入向量中的元素数量，即头维度，记作 $d$。因此，$X$ 是一个 $N\times d$ 矩阵。
+头维度和每个子层中的头数量通常被称为 LLM 的隐藏维度，它们是模型的内部设计参数，
+通常不会直接暴露给 LLM 用户。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c@{\quad}c@{\quad}c@{\quad}c}
+    $X_{N\times d}$ & $\xrightarrow{\;W_Q\;}$ & $Q_{N\times d}$ &
+    $\xrightarrow{\quad}$\\[0.35em]
+    \rotatebox{90}{$\begin{matrix}\xrightarrow{\;W_K\;}\\[-0.2em]
+    \xrightarrow{\;W_V\;}\end{matrix}$} & &
+    $\begin{matrix}K_{N\times d}\\ V_{N\times d}\end{matrix}$ &\\[0.5em]
+    \multicolumn{4}{c}{$S=QK^{\mathsf T}\ (N\times N)
+      \quad\xrightarrow{\;+\ M\;}\quad
+      P=\operatorname{softmax}(S+M)\ (N\times N)
+      \quad\xrightarrow{\;\times V\;}\quad
+      O_{N\times d}$}
+  \end{tabular}
+  \caption{一个注意力头计算中涉及的矩阵（依据原书图 20.2 临时重绘）。
+  为简化图示，省略了作用于 $S=QK^{\mathsf T}$ 的缩放因子 $1/\sqrt d$。}
+  \label{fig:20-2}
+\end{figure}
+
+注意力子层的第一步是计算三个矩阵：query（查询，$Q$）、key（键，$K$）和 value
+（值，$V$）。如图 \ref{fig:20-2} 左侧所示，这些矩阵由 $X$ 的行向量经过线性投影
+或坐标变换得到，即把输入矩阵分别乘以三个权重矩阵 $W_Q$、$W_K$ 和 $W_V$。在本章
+的简化讨论中，这三个坐标变换矩阵都是 $d\times d$ 矩阵，并由训练过程得到。$Q$、
+$K$ 和 $V$ 的每一行中的元素，都是 $X$ 同一行中 $d$ 个元素的线性组合；三种变换的
+差异由 $W_Q$、$W_K$ 和 $W_V$ 中的权重值决定。
+
+\noindent\textbf{译者注：}为简化说明，本章假设三个权重矩阵是方阵。一般情况下，
+$W_Q$、$W_K$ 和 $W_V$ 的尺寸分别可以是 $d_x\times d_q$、$d_x\times d_k$ 和
+$d_x\times d_v$；由于需要计算 $QK^{\mathsf T}$，必须有 $d_q=d_k$。
+
+注意力子层的第二步由下面的公式给出，也对应图 \ref{fig:20-2} 的右侧：
+\begin{equation}
+  O =
+  \operatorname{softmax}\!\left(
+    \frac{QK^{\mathsf T}}{\sqrt{d}} + M
+  \right)V .
+\label{eq:ch20-attention}
+\end{equation}
+
+由于 $Q$ 是 $N\times d$ 矩阵，$K^{\mathsf T}$ 是 $d\times N$ 矩阵，矩阵乘法
+$QK^{\mathsf T}$ 会生成一个 $N\times N$ 矩阵，记作图 \ref{fig:20-2} 中的 $S$。
+$QK^{\mathsf T}$ 的元素 $(i,j)$ 是 token $i$ 的线性投影嵌入向量（$Q$ 的第 $i$ 行）
+与 token $j$ 的线性投影嵌入向量（$K^{\mathsf T}$ 的第 $j$ 列，也就是 $K$ 的第 $j$
+行）之间的内积。如果两个输入向量都已归一化，内积可以看作它们的余弦相似度。两个
+向量越相似，它们之间的夹角越小，余弦相似度也越大。因此，$N\times N$ 的乘积矩阵
+可以看作嵌入向量之间的相似度地图。
+
+缩放因子 $1/\sqrt d$ 作用于 $S=QK^{\mathsf T}$ 的所有元素，用于防止头维度较大时
+矩阵乘法的点积过度增长。过大的 $S$ 元素会使 softmax 饱和，并在基于梯度下降的训练
+中产生很小、甚至消失的梯度 \cite{ch20-1}。图 \ref{fig:20-2} 及相关讨论为简洁起见
+省略了缩放因子；稍后可以看到，把它并入 CUDA softmax 实现非常直接。
+
+掩码矩阵 $M$ 会把 $QK^{\mathsf T}/\sqrt d$ 中所有列索引大于行索引的元素加上
+$-\infty$。这样便实现了因果策略：生成某个 token 时，不能受到该 token 之后才生成
+的 token 的影响。
+
+softmax 函数把 $QK^{\mathsf T}+M$ 的每一行转换为概率分布。设该矩阵第 $r$ 行、第
+$c$ 列的元素为 logit $l_{r,c}$，softmax 生成的概率为 $p_{r,c}$。为了避免指数函数
+溢出，令 $m_r$ 为该行的最大元素，并采用数值稳定的形式：
+\begin{equation}
+  p_{r,c}
+  =
+  \frac{e^{l_{r,c}}}{\sum_{j=1}^{N} e^{l_{r,j}}}
+  =
+  \frac{e^{l_{r,c}-m_r}}
+       {\sum_{j=1}^{N}e^{l_{r,j}-m_r}},
+  \qquad
+  m_r=\max_{1\leq j\leq N} l_{r,j}.
+\label{eq:ch20-softmax}
+\end{equation}
+
+直接计算 $e^{l_{r,c}}$ 可能溢出，因此在取指数之前先从 $l_{r,c}$ 中减去
+$m_r=\max_{1\leq j\leq N}(l_{r,j})$。这个操作保持了数值稳定性，同时不改变结果：
+从 $l_{r,c}$ 中减去 $m_r$ 等价于把分子和分母都乘以 $e^{-m_r}$。
+
+由于因果掩码，行索引 $r$ 小于列索引 $c$ 的 logit 会变成 $-\infty$，于是
+$e^{l_{r,c}-m_r}=0$。因此，矩阵
+$P=\operatorname{softmax}(QK^{\mathsf T}+M)$ 的每一行，都是 token $r$ 的嵌入与
+此前生成 token 的嵌入之间相似度所决定的概率分布。softmax 输出矩阵是一个下三角
+矩阵：当 $r<c$ 时，元素 $p_{r,c}$ 为零。
+
+注意力子层的最后一步是计算 $N\times N$ 的概率矩阵 $P$ 与 $V$ 的矩阵乘法。对于
+每个 token，这个矩阵乘法都会生成一个新的嵌入向量；新向量的每个元素，都是 $V$
+矩阵中同一列元素的相似度/概率加权和。换句话说，输出矩阵 $O$ 中每个 token 的新
+嵌入，是此前生成 token 的嵌入向量的相似度加权和。之后，$O$ 会经过加法与归一化、
+前馈等子层，成为下一个注意力子层的输入矩阵 $X$。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c@{\qquad}c}
+    \fbox{\begin{minipage}{0.39\textwidth}
+      \centering
+      \textbf{摘要/预填充阶段}\\[0.3em]
+      系统提示词 + 用户输入 + RAG 文档\\
+      $\downarrow$ tokenizer / embedding\\
+      $X$：一整个 token 序列\\
+      $\downarrow$\\
+      一次 Transformer 前向传播\\
+      $\downarrow$\\
+      第一个输出 token
+    \end{minipage}}
+    &
+    \fbox{\begin{minipage}{0.39\textwidth}
+      \centering
+      \textbf{生成/解码阶段}\\[0.3em]
+      把新 token 追加到上下文\\
+      $\downarrow$\\
+      每次处理一个新 token\\
+      $\downarrow$\\
+      生成下一个 token\\
+      $\circlearrowleft$ 直到 EOS
+    \end{minipage}}
+  \end{tabular}
+  \caption{LLM 推理的摘要（prefill）阶段和生成（decode）阶段
+  （依据原书图 20.3 临时重绘）。}
+  \label{fig:20-3}
+\end{figure}
+
+基于图 \ref{fig:20-1} 的仅解码器架构进行 LLM 推理时，首先进入摘要阶段：系统提示词、
+用户输入以及系统补充的 token（例如 RAG 检索结果）拼接起来，形成第一个 Transformer
+层的输入矩阵 $X$。摘要阶段中，每个注意力头涉及的矩阵和计算如图 \ref{fig:20-2}
+所示。累积的 $X$ 依次经过各个 Transformer 层；每层生成下一层的输入。最后一层完成
+后，反嵌入层生成一个文本片段形式的输出 token。下一次推理迭代进入自回归阶段，也称
+解码阶段或生成阶段。新生成的文本片段被送回分词器，其嵌入向量作为 $X$ 的新行追加
+到第一个 Transformer 层，然后再次激活各层以生成下一个文本片段。
+
+图 \ref{fig:20-3} 用一个玩具例子说明两个阶段。摘要阶段首先把系统提示和用户提示
+组成的初始序列送入分词器和嵌入层，并累积到矩阵 $X$ 中。为简化起见，例子省略系统
+提示词和用户输入中通常存在的前导语。用户输入为 “The title of this book is
+Programming”，希望 LLM 补全本书标题。
+
+假设这个例子使用完整单词作为 token。摘要阶段中，分词器、嵌入层和位置编码层把用户
+输入产生的七个 token 的嵌入向量累积到第一个 Transformer 层的 $X$ 矩阵中。LLM
+随后调用第一个 Transformer 层；该层完成后激活第二层，以此类推。每层被激活时都会
+计算自己的 $K$、$V$、$Q$、$QK^{\mathsf T}$ 和 $O$，然后激活下一层。所有 Transformer
+层和最后的反嵌入层完成后，LLM 生成第一个输出 token “Massively”。
+
+生成第一个输出 token 后，LLM 进入生成阶段。每个输出 token 都根据初始提示以及此前
+所有迭代生成的输出 token 产生。在例子中，摘要阶段末尾生成的 “Massively” 会成为
+生成阶段第一次迭代的输入，并由这次迭代产生下一个输出 token。对于每个新输出 token，
+LLM 都会生成一个对应的新嵌入向量，也就是矩阵 $X$ 的新行，并让它经过各个 Transformer
+层。第一次生成迭代得到 “Parallel”，它会成为下一次迭代的输入。生成阶段会持续进行，
+直到产生 end-of-sequence（EOS）token。
+
+\section{在 CUDA 中实现注意力}
+\label{sec:ch20-cuda-attention}
+
+图 \ref{fig:20-1} 所示 Transformer 架构中的注意力计算包含两次矩阵乘法、一次矩阵
+逐元素缩放、一次矩阵加法和 softmax 计算。矩阵乘法可以使用自定义 CUDA 矩阵乘法
+内核，也可以调用 cuBLAS 等库中高度优化的 GEMM 函数。缩放因子 $1/\sqrt d$ 可以
+在自定义内核执行 $QK^{\mathsf T}$ 时应用，也可以作为 cuBLAS GEMM API 的缩放参数
+$\alpha$。注意力计算中唯一的新部分是 softmax 的实现，因此本节重点讨论 CUDA
+softmax，并把其余部分留作练习。
+
+图 \ref{fig:20-4} 展示了一个把与 $M$ 的矩阵加法和 softmax 计算融合在同一内核中的
+CUDA 实现。融合内核避免在 softmax 之前额外遍历输入矩阵 $S$，从而提高算术强度和
+GPU 利用率。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\tiny]
+// Figure 20.4: causal softmax kernel
+#define BLOCK_SIZE 256
+#define NEG_INFINITY (-INFINITY)
+
+__global__ void softmax_kernel(float* S, float* D, float* P, int N)
+{
+    typedef cub::BlockReduce<float, BLOCK_SIZE> BlockReduce;
+    __shared__ typename BlockReduce::TempStorage temp_store;
+    __shared__ float max_or_sum;
+
+    float* S_row = &S[blockIdx.x * N];
+    float max_val_thread = NEG_INFINITY;
+
+    for (int idx = threadIdx.x;
+         idx <= blockIdx.x;
+         idx += blockDim.x) {
+        if (S_row[idx] > max_val_thread)
+            max_val_thread = S_row[idx];
+    }
+
+    __syncthreads();
+    float max_val_row =
+        BlockReduce(temp_store).Reduce(max_val_thread, cub::Max());
+
+    if (threadIdx.x == 0)
+        max_or_sum = max_val_row;
+    __syncthreads();
+    max_val_row = max_or_sum;
+
+    float sum_thread = 0.f;
+    for (int idx = threadIdx.x;
+         idx <= blockIdx.x;
+         idx += blockDim.x) {
+        sum_thread += exp(S_row[idx] - max_val_row);
+    }
+
+    __syncthreads();
+    float sum_row =
+        BlockReduce(temp_store).Reduce(sum_thread, cub::Sum());
+
+    if (threadIdx.x == 0)
+        max_or_sum = sum_row;
+    __syncthreads();
+    sum_row = max_or_sum;
+
+    for (int idx = threadIdx.x;
+         idx < N;
+         idx += blockDim.x) {
+        P[blockIdx.x * N + idx] =
+            idx <= blockIdx.x
+                ? exp(S_row[idx] - max_val_row) / sum_row
+                : 0.f;
+    }
+
+    if (threadIdx.x == 0)
+        D[blockIdx.x] = sum_row;
+}
+  \end{lstlisting}
+  \caption{融合因果掩码和 softmax 的 CUDA 内核（依据原书图 20.4 整理）。
+  代码标识符保持原文；本图为可复制版本。}
+  \label{fig:20-4}
+\end{figure}
+
+该内核的执行配置是一个一维线程块网格。内核假定线程块数量
+\code{gridDim.x} 等于矩阵 $S$ 的行数，也就是序列长度 $N$。底本把未使用的
+\code{gridDim.y} 和 \code{gridDim.z} 描述为 0；在合法的 CUDA 启动配置中，未使用
+维度通常取 1，本译稿把这句话理解为“只使用 x 维”，而不把 0 当作可直接传入的网格
+维度。这个假设把上下文长度限制在 x 维允许的最大线程块数以内。若需要更长上下文，
+可以在内核中增加外层循环，让网格中的线程块迭代处理 $S$ 的所有行。
+
+每个线程块是一维块，包含 \code{BLOCK_SIZE} 个线程。由于一个线程块协同处理 $S$
+的一行，应选择合适的 \code{BLOCK_SIZE}：既要减少线程块处理该行所需的迭代次数，
+也要尽量提高 GPU 上 SM 的占用率。
+
+当缩放因子已经在 $QK^{\mathsf T}$ 矩阵乘法中应用，并且因果策略已经融合到 softmax
+中时，一行 $S$ 的每个元素都可以看作公式 \eqref{eq:ch20-softmax} 中的
+$l_{r,c}$。代码前半部分先找出分配给线程块的那一行的最大元素，即公式中的 $m_r$。
+每个线程检查自己负责的一段元素，并把局部最大值保存在私有变量
+\code{max_val_thread} 中。循环条件 \code{idx <= blockIdx.x} 很关键：它忽略行索引
+\code{blockIdx.x} 小于列索引 \code{idx} 的元素，从而不显式构造掩码矩阵 $M$ 就实现
+因果策略。
+
+线程退出循环后，每个线程只持有自己检查部分的最大值。块内同步确保所有线程都完成
+检查，然后调用 CUB 的 \code{BlockReduce} 求整行最大值。归约结果由
+\code{threadIdx.x == 0} 的线程获得；该线程把结果写入共享内存变量
+\code{max_or_sum}，再通过块内同步把结果广播给所有线程。代码的这部分本质上是带
+线程粗化的归约。
+
+接下来，代码以相同的方式求公式 \eqref{eq:ch20-softmax} 的分母。线程首先计算私有
+部分和；循环条件继续实现因果策略。同步后，CUB 的 \code{BlockReduce} 求出整行的
+指数和，线程 0 再通过共享内存广播最终结果。最后一个循环遍历行中的全部元素，把
+因果掩码区域写成 0，把其余元素写入输出矩阵 $P$。分母同时写入输出向量 $D$，以便
+训练阶段复用。
+
+总之，该 softmax 内核在一个内核调用中同时实现因果策略和 softmax，只使用块级
+\code{__syncthreads()}，不需要额外的全局屏障。读者可以在此基础上补充生成 $S$
+和 $O$ 的矩阵乘法，完成整个注意力子层。
+
+\section{KV 缓存}
+\label{sec:ch20-kv-cache}
+
+如果按照图 \ref{fig:20-3} 的直接方式实现，图 \ref{fig:20-1} 的 Transformer 架构
+存在明显低效之处。在生成阶段的每次迭代中，每个 Transformer 层都要执行五次矩阵
+乘法。由于序列长度 $N$ 可能增长到数万个 token 甚至更多，这些矩阵乘法的开销会非常
+大。但从一次解码迭代到下一次迭代，输入矩阵 $X$ 只增加一行，因此有必要问：每次
+迭代真的都需要执行完整的矩阵乘法吗？答案是否定的。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \resizebox{0.98\textwidth}{!}{%
+  \begin{tabular}{c@{\qquad}c@{\qquad}c}
+    \begin{tabular}{c}
+      $X_N$\\[-0.2em]
+      \chTwentyCell{x_0}\\
+      \chTwentyCell{x_1}\\
+      \vdots\\
+      \chTwentyNewCell{x_N}
+    \end{tabular}
+    &
+    $\xrightarrow{\;W_Q,W_K,W_V\;}$
+    &
+    \begin{tabular}{c}
+      $Q_N,\ K_N,\ V_N$\\[-0.2em]
+      前 $N$ 行保持不变\\
+      新增最后一行
+    \end{tabular}\\[1em]
+    \multicolumn{3}{c}{
+      \begin{tabular}{c}
+        $QK^{\mathsf T}$ 从 $N\times N$ 变为 $(N+1)\times(N+1)$\\[-0.1em]
+        \chTwentyTextCell{旧} \chTwentyTextCell{旧} \chTwentyTextCell{新}\\
+        \chTwentyTextCell{旧} \chTwentyTextCell{旧} \chTwentyTextCell{新}\\
+        \chTwentyTextCell{新} \chTwentyTextCell{新} \chTwentyTextCell{新}
+      \end{tabular}
+    }
+  \end{tabular}
+  }%
+  \caption{从一次 LLM 迭代到下一次迭代时减少矩阵乘法工作的机会
+  （依据原书图 20.5 临时重绘；灰色表示新增或需要处理的部分）。}
+  \label{fig:20-5}
+\end{figure}
+
+图 \ref{fig:20-5} 突出了从迭代 $i$（$N=i$）到迭代 $i+1$（$N=i+1$）时各矩阵
+新增的部分。输入矩阵 $X$ 在底部增加一个新行，即新 token 的嵌入向量，因此尺寸从
+$N\times d$ 变成 $(N+1)\times d$。$Q$、$K$ 和 $V$ 的情况类似：它们都变成
+$(N+1)\times d$ 矩阵，而新增的底部行分别由 $X$ 的新底行与 $W_Q$、$W_K$、$W_V$
+执行向量--矩阵乘法得到。
+
+生成 $QK^{\mathsf T}$ 稍微复杂一些。新矩阵的尺寸是 $(N+1)\times(N+1)$，但除第
+$(N+1)$ 行和第 $(N+1)$ 列外，其余内容基本与上一次迭代相同。例如，乘积矩阵的
+元素 $(0,0)$ 由 $Q$ 的第 0 行与 $K$ 的第 0 行（即 $K^{\mathsf T}$ 的第 0 列）
+的内积生成，而这两行在两次迭代中都没有变化。因此该元素也不变。一般而言，只要
+$r$ 和 $c$ 都小于 $N$，$QK^{\mathsf T}$ 的元素 $(r,c)$ 就由两次迭代中均未变化
+的 $Q$、$K$ 行生成，因而保持不变。
+
+新 $N$ 行的 $QK^{\mathsf T}$ 可以通过新 $Q$ 行与完整 $K^{\mathsf T}$ 的向量--矩阵
+乘法计算。新 $N$ 列中的元素由于因果策略的零掩码都为零，因为此前生成的 token 不
+应该受到后来生成 token 的影响；唯一例外是新行新列交叉处的元素，它属于新行计算
+的一部分。
+
+softmax 的输出也可以从上一次迭代增量更新。softmax 作用于 $QK^{\mathsf T}$ 的
+每一行；除了新行之外，每一行新增的第 $N$ 个元素都是 0，因此不会稀释原有元素的
+概率，也不会改变这些行的 softmax 结果。读者可以验证：在迭代 $N+1$ 中，$O$ 的
+前 $N$ 行仍然与上一次迭代相同，只需用新一行 softmax 输出与新 $V$ 做向量--矩阵
+乘法即可得到新行。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c@{\quad}c@{\quad}c}
+    \begin{tabular}{c}
+      新输入行\\
+      $X'$\\[0.3em]
+      $\downarrow$\\
+      $Q'$、$K'$、$V'$
+    \end{tabular}
+    &
+    $\longrightarrow$
+    &
+    \begin{tabular}{c}
+      KV cache 中的旧 $K,V$\\
+      $\left[\begin{array}{c}K\\V\end{array}\right]
+      \quad+\quad
+      \left[\begin{array}{c}K'\\V'\end{array}\right]$\\[0.4em]
+      $\begin{gathered}
+        \downarrow\\[-0.1em]
+        S'=Q'[K;K']^{\mathsf T}\\
+        P'=\operatorname{softmax}(S'+M)\\
+        O'=P'[V;V']
+      \end{gathered}$
+    \end{tabular}
+  \end{tabular}
+  \caption{使用 KV cache 的生成阶段涉及的向量和矩阵
+  （依据原书图 20.6 临时重绘）。}
+  \label{fig:20-6}
+\end{figure}
+
+图 \ref{fig:20-6} 展示了生成 $Q$、$K$、$V$ 和 $O$ 新部分时涉及的向量和矩阵。每次
+迭代，多头注意力子层只需要接收 $X$ 的一个新行，因此只需向下一层传递 $O$ 的一个
+新行。不过，生成阶段的注意力计算仍然需要完整的 $K$ 和 $V$。一种常见优化是把
+$K$ 和 $V$ 记忆化，也就是保存起来供以后复用，这便形成了 KV cache。
+\footnote{这里的 KV 与键值存储（key-value store）文献中的术语不应混淆，但二者
+具有类比关系：LLM 推理输出的是 $V$ 的加权和，权重与 query 和 key 的接近程度
+相关。}
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c}
+    \fbox{\begin{minipage}{0.82\textwidth}
+      \centering
+      \textbf{Prefill（摘要）}\\
+      初始 token 序列 $\longrightarrow$ 各 Transformer 层\\
+      $K,V$ 矩阵 $\longrightarrow$ 每层自己的 KV cache
+    \end{minipage}}\\[0.7em]
+    $\Downarrow$\\[-0.2em]
+    \fbox{\begin{minipage}{0.82\textwidth}
+      \centering
+      \textbf{Decode/Generation（生成）}\\
+      新 token 的嵌入 $\longrightarrow$ 新 $Q',K',V'$\\
+      $K',V'$ 追加到 cache $\longrightarrow$ 计算 $O'$ $\longrightarrow$ 下一个 token
+    \end{minipage}}
+  \end{tabular}
+  \caption{使用 KV cache 的 LLM 摘要与生成阶段
+  （依据原书图 20.7 临时重绘）。}
+  \label{fig:20-7}
+\end{figure}
+
+图 \ref{fig:20-7} 在图 \ref{fig:20-3} 的基础上，展示了带 KV cache 的两阶段推理。
+为了避免每次迭代重复计算，每个 Transformer 层生成的 $K$、$V$ 都会写入该层的
+KV cache，供以后生成 token 时复用。
+
+在摘要阶段，所有 Transformer 层生成初始的 $K$、$V$ 矩阵并填充自己的 KV cache。
+因此，带 KV cache 的摘要阶段也称为预填充（prefill）阶段：各层在这一阶段把初始
+$K$、$V$ 写入 cache。随后进入生成阶段，每个输出 token 都基于最后一个输出 token
+以及此前所有迭代中的 $K$、$V$ 矩阵生成。最近生成的文本片段先产生一个新的嵌入
+向量，并送入第一个 Transformer 层。每层先执行三个向量--矩阵乘法，分别生成 $Q$、
+$K$、$V$ 的一行，即图 \ref{fig:20-6} 中的 $Q'$、$K'$、$V'$。LLM 把新行追加到
+KV cache 中原有的 $K$、$V$，形成当前迭代的完整 $K$、$V$，再计算 $O'$，并把它
+送入该层的后续子层，生成下一层的新输入向量。
+
+预填充阶段仍然需要对大量 token 执行一次 Transformer 传递，并调用多次大规模矩阵--
+矩阵乘法（GEMM）。它通常受计算能力限制，算术强度较高，能够较充分地利用 GPU。
+下一节介绍的 FlashAttention 可以通过减少矩阵乘法与 softmax 之间中间结果的全局
+内存流量，进一步加速预填充阶段。
+
+相比之下，生成阶段每生成一个输出 token 就要执行一次 Transformer 传递。使用 KV
+cache 后，每次传递主要执行向量--矩阵乘法（GEMV），通常受内存带宽限制，算术强度
+较低，因而容易使 GPU 的计算资源利用不足。第 20.6 节将介绍 batching 和 speculative
+decoding 等提高生成阶段算术强度的优化方法。
+
+\section{FlashAttention}
+\label{sec:ch20-flash-attention}
+
+如果像图 \ref{fig:20-4} 那样使用独立的 softmax 内核，那么每个内核边界都会产生
+全局屏障，并且整个矩阵需要多次从全局内存加载或写回。全局屏障和全局内存访问会
+成为重要的性能瓶颈；FlashAttention 公式化方法 \cite{ch20-6} 可以缓解这一问题。
+
+FlashAttention 对注意力头进行数学上的重新表达，使每个注意力头中的运算可以重新
+排序并融合到一个内核中，同时以分块方式组织。在融合内核中，如图 \ref{fig:20-8}
+所示，每个线程块取出 $Q$ 的一个水平面板（连续的若干行）、完整的 $K^{\mathsf T}$
+和完整的 $V$，计算它们对 $O$ 的一个水平面板的贡献。图中用阴影表示属于某个线程
+块的输入和输出。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \resizebox{0.98\textwidth}{!}{%
+  \begin{tabular}{c@{\qquad}c@{\qquad}c}
+    \begin{tabular}{c}
+      $Q\ (N\times d)$\\
+      \fbox{\begin{tabular}{cccc}
+        \chTwentyNewCell{q}&\chTwentyNewCell{q}&\chTwentyNewCell{q}&\chTwentyNewCell{q}\\
+        \chTwentyNewCell{q}&\chTwentyNewCell{q}&\chTwentyNewCell{q}&\chTwentyNewCell{q}\\
+        \chTwentyCell{q}&\chTwentyCell{q}&\chTwentyCell{q}&\chTwentyCell{q}
+      \end{tabular}}\\[-0.2em]
+      $Q_i:\ B_r\times d$
+    \end{tabular}
+    &
+    \begin{tabular}{c}
+      $K^{\mathsf T}\ (d\times N)$\\
+      \fbox{\begin{tabular}{cccc}
+        \chTwentyNewCell{k}&\chTwentyCell{k}&\chTwentyCell{k}&\chTwentyCell{k}\\
+        \chTwentyNewCell{k}&\chTwentyCell{k}&\chTwentyCell{k}&\chTwentyCell{k}\\
+        \chTwentyNewCell{k}&\chTwentyCell{k}&\chTwentyCell{k}&\chTwentyCell{k}
+      \end{tabular}}\\[-0.2em]
+      $K^{\mathsf T}_j:\ d\times B_c$
+    \end{tabular}
+    &
+    \begin{tabular}{c}
+      $V\ (N\times d)$\\
+      \fbox{\begin{tabular}{cccc}
+        \chTwentyNewCell{v}&\chTwentyNewCell{v}&\chTwentyNewCell{v}&\chTwentyNewCell{v}\\
+        \chTwentyCell{v}&\chTwentyCell{v}&\chTwentyCell{v}&\chTwentyCell{v}\\
+        \chTwentyCell{v}&\chTwentyCell{v}&\chTwentyCell{v}&\chTwentyCell{v}
+      \end{tabular}}\\[-0.2em]
+      $V_j:\ B_c\times d$
+    \end{tabular}\\[1em]
+    \multicolumn{3}{c}{
+      $\displaystyle
+      Q_iK^{\mathsf T}_j\longrightarrow S_i
+      \xrightarrow{\ \operatorname{softmax}\ }P_i
+      \longrightarrow P_iV_j\longrightarrow O_i$}\\[0.8em]
+    \multicolumn{3}{c}{
+      \fbox{\begin{tabular}{c}
+        $Q_i,\ O_i$：寄存器分块\qquad
+        $K^{\mathsf T}_j,\ S_i/P_i,\ V_j$：共享内存分块\\
+        每次只处理 $B_c$ 列/行，并在线合并 softmax 状态
+      \end{tabular}}}
+  \end{tabular}
+  }%
+  \caption{FlashAttention 的分块方式。共享内存中的同一个 $S_i$ tile 先保存
+  $S$，再原地复用为 $P$（依据原书图 20.8 临时重绘）。}
+  \label{fig:20-8}
+\end{figure}
+
+此外，FlashAttention 允许线程块以分块方式遍历 $K^{\mathsf T}$ 和 $V$，同时计算
+它们对 $O$ tile 的贡献。这些 tile 足够小，可以放入片上内存。每次迭代，线程块加载
+$K^{\mathsf T}$ 的一个垂直面板（连续列）和 $V$ 的一个水平面板（连续行），计算它们
+对 $O$ tile 的贡献。所有线程块可以并发执行，不需要全局屏障。这样，中间矩阵只以
+tile 的形式保留在片上内存中，不必把它们写入全局内存，从而消除了中间矩阵对应的
+全局内存流量。
+
+FlashAttention 是对 Transformer 注意力机制的精确重构，与原始公式在数学上完全等价，
+而不是近似算法。它既适用于训练（前向和反向传播），也适用于推理（前向传播）。本节
+只讨论前向传播。反向传播在概念上更简单，因为不需要 softmax 重缩放，但它需要五次
+矩阵乘法，而前向传播只需要两次；关于反向传播的细节，可参考原始 FlashAttention
+论文 \cite{ch20-6}。
+
+FlashAttention 的关键是分块。然而，注意力头中的分块不像矩阵乘法中的分块那样直接，
+因为公式 \eqref{eq:ch20-softmax} 要求对输入的每一行执行多次扫描。softmax 计算依赖
+于 $QK^{\mathsf T}+M$ 第 $r$ 行的最大值 $m_r$，以及生成概率时作为分母使用的
+\[
+  D_r=\sum_{j=1}^{N}e^{l_{r,j}-m_r}.
+\]
+按照这个形式，至少需要先扫描一行以同时收集最大值和分母，再进行另一次扫描来计算
+输出矩阵 $P$ 的元素。为了保证整个 $QK^{\mathsf T}+M$ 矩阵已经准备好，softmax
+内核之前还需要全局同步。
+
+在 CUDA 中，可以通过结束一个内核并启动另一个内核实现全局屏障；也可以启动持久化
+网格，使用 cooperative groups 的网格级同步 API，从而避免内核调用开销。不过，适合
+矩阵乘法的线程网格配置通常不同于适合 softmax 的配置，这也是基线 CUDA 实现采用
+不同内核、分别配置矩阵乘法和 softmax 的重要原因。无论选择哪种全局同步策略，多次
+扫描 $S$ 的整行都会引入大量全局内存流量，显著限制吞吐量。
+
+幸运的是，可以为分母定义部分级数，消除 softmax 对整行执行多次扫描的需要。令
+$A$ 为第 $r$ 行中列位置的一个子集，定义：
+\begin{equation}
+  D_{r,A}=\sum_{j\in A}e^{l_{r,j}-m_{r,A}},
+\label{eq:ch20-partial-denominator}
+\end{equation}
+其中 $m_{r,A}$ 是子集 $A$ 中元素的最大值。当 $A$ 覆盖该行的所有列位置时，
+$D_{r,A}$ 就等于 $D_r$。
+
+如果能够推导出一个组合规则，把 $A$ 的部分级数与另一个列子集 $B$ 的部分级数
+合并成 $A\cup B$ 的部分级数，就可以独立地（甚至并行地）计算各个子集，然后在
+结果准备好时逐步合并它们 \cite{ch20-7}。当合并后的子集覆盖第 $r$ 行的所有列时，
+就能得到正确的 $D_r$。把 $D_{r,A}$ 与 $D_{r,B}$ 合并的规则为：
+\begin{equation}
+\begin{aligned}
+  D_{r,A\cup B}
+  &=\sum_{j\in A\cup B}e^{l_{r,j}-m_{r,A\cup B}}\\
+  &=D_{r,A}e^{m_{r,A}-m_{r,A\cup B}}
+    +D_{r,B}e^{m_{r,B}-m_{r,A\cup B}},
+\end{aligned}
+\label{eq:ch20-denominator-composition}
+\end{equation}
+其中 $m_{r,A\cup B}$ 是 $m_{r,A}$ 和 $m_{r,B}$ 中较大的一个。上式的拆分要求
+$A$ 和 $B$ 不包含重复元素。在下面的 CUDA 实现中，$A$ 和 $B$ 是 $S$ 每一行的
+不同 tile，因此这个条件天然满足。只要同时保存每个子集对应的最大值，就可以使用
+这个规则合并两个部分和。
+
+FlashAttention 进一步把同样的组合规则应用到输出矩阵 $O$。先考虑 $O$ 的一个元素
+$o_{r,c}$，它是 $P$ 的第 $r$ 行与 $V$ 的第 $c$ 列之间的内积。只考虑行 $r$ 的
+子集 $A$ 时，定义部分输出：
+\begin{equation}
+  o_{r,c,A}
+  =\sum_{j\in A}p_{r,j,A}v_{j,c}
+  =\frac{1}{D_{r,A}}
+    \sum_{j\in A}e^{l_{r,j}-m_{r,A}}v_{j,c}.
+\label{eq:ch20-partial-output}
+\end{equation}
+$p_{r,j,A}$ 是只考虑子集 $A$ 时的中间概率值，$m_{r,A}$ 也只取子集 $A$ 中
+元素的最大值，而不是整行的最大值。随着更多元素并入 $A$，当 $A$ 最终覆盖整行时，
+$p_{r,j,A}$ 就会变成完整 softmax 中的 $p_{r,j}$。
+
+根据分母的组合规则，部分输出的组合规则为：
+\begin{equation}
+\begin{aligned}
+  o_{r,c,A\cup B}
+  &=
+  \frac{D_{r,A}e^{m_{r,A}-m_{r,A\cup B}}}
+       {D_{r,A\cup B}}\,o_{r,c,A}\\
+  &\quad+
+  \frac{D_{r,B}e^{m_{r,B}-m_{r,A\cup B}}}
+       {D_{r,A\cup B}}\,o_{r,c,B}.
+\end{aligned}
+\label{eq:ch20-output-composition}
+\end{equation}
+
+也就是说，在把两个子集的部分输出合并为完整输出前，必须根据各自的最大值和分母
+对它们进行重缩放。这个规则对于行的任意子集都成立，但当子集是由 $Q$ 和
+$K^{\mathsf T}$ 的 tile 生成的连续片段时尤其有用。图 \ref{fig:20-8} 正是利用
+这一规则实现 FlashAttention 的分块方法 \cite{ch20-8}。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\tiny]
+#define WARP_SIZE 32
+#define BLOCK_SIZE 512
+#define N_WARPS (BLOCK_SIZE / WARP_SIZE)
+#define B_r 32
+#define B_r_warp (B_r / N_WARPS)
+#define B_c 32
+#define d 128
+
+__global__ void flashattention_forward_kernel(
+    const float* Q,
+    const float* K,
+    const float* V,
+    const int N,
+    const float scaling,
+    float* out_D,
+    float* out_O)
+{
+    const int T_r = N / B_r;
+    const int T_c = N / B_c;
+    const int d_size = d > WARP_SIZE ? d / WARP_SIZE : 1;
+
+    __shared__
+    float KT_j[B_c * d + ((B_c * d) >> LOG_NUM_BANKS)];
+    __shared__ float S_i[B_r][B_c];
+    __shared__ float V_j[B_c][d];
+
+    for (int i = blockIdx.x; i < T_r; i += gridDim.x) {
+        float O_i[B_r_warp][d_size];
+        float D_i[B_r_warp];
+        float m_i[B_r_warp];
+
+        initialize(O_i, D_i, m_i);
+
+        float Q_i[B_r_warp][d_size];
+        load_Q(Q, Q_i, i);
+
+        for (int j = 0; j < T_c; j++) {
+            load_KT_and_V(K, V, KT_j, V_j, j);
+            __syncthreads();
+
+            for (int ii = 0; ii < B_r_warp; ii++) {
+                float curr_max_warp =
+                    compute_S_and_max(
+                        Q_i, KT_j, S_i, i, j, ii, scaling);
+
+                float last_m =
+                    update_m_and_D(
+                        m_i, D_i, curr_max_warp, ii);
+
+                float curr_sum_warp =
+                    compute_P_and_update_D(
+                        S_i, m_i, D_i, i, j, ii);
+
+                compute_O(
+                    S_i, V_j, O_i, ii, last_m, m_i);
+            }
+        }
+
+        __syncthreads();
+        store_O(out_O, out_D, O_i, D_i, i, N);
+    }
+}
+  \end{lstlisting}
+  \caption{FlashAttention 前向传播的 CUDA 内核主体（依据原书图 20.9 整理）。
+  该示例处理一个注意力头；多头版本可以增加网格维度。}
+  \label{fig:20-9}
+\end{figure}
+
+图 \ref{fig:20-9} 的内核计算一个注意力头的前向传播。完整网格参与该计算；在更
+完整的实现中，可以通过增加线程块网格的其他维度，在同一个内核中计算多个头。相同
+的分块方式也适用于 LLM 推理的预填充阶段。图中示例使用 32 位浮点数，而当前高性能
+实现通常使用 16 位甚至 8 位浮点数，并利用 GPU Tensor Core 的吞吐能力。
+
+该内核假定输入矩阵 $Q$、$K$、$V$ 都是 $N\times d$，主机代码负责分配全局内存、
+初始化输入，并为输出矩阵 $O$（代码中的 \code{out_O}）分配空间。内核还生成一个
+长度为 $N$ 的输出向量 $D$（代码中的 \code{out_D}），其中每个元素是 $P$ 对应行
+的最终 softmax 分母。这个向量主要供训练阶段使用；推理阶段不一定需要它，但保留
+它可以使同一个内核同时用于训练。
+
+在高层次上，FlashAttention 内核使用一维线程块网格，每个块负责生成 $O$ 的一个水平
+面板。输出 tile 的水平尺寸是注意力头宽度 $d$，垂直尺寸由 $B_r$ 指定。$B_r$ 的
+选择受片上内存容量和充分利用 GPU 所需线程块数的共同限制，目标是最大化片上数据
+复用。每个 warp 负责的行数为 $B_{r,\mathrm{warp}}$，即 $B_r$ 除以线程块中的
+warp 数量。
+
+内核最外层循环保证所有 $O$ 面板都被生成。每次迭代中，一个线程块处理一个 $Q$
+面板并生成对应的 $O$ 面板；所有线程块共同生成 \code{gridDim.x} 个面板，直到
+生成全部 $T_r=N/B_r$ 个面板。
+
+对于一个 $Q$ 面板，线程块分三步工作：首先把 $B_r\times d$ 的 $Q$ 水平面板与
+完整的 $K^{\mathsf T}$ 相乘，得到 $B_r\times N$ 的 $S$ 水平面板；其次对 $S$ 应用
+softmax，得到相应的 $P$ 面板；最后把 $P$ 与完整的 $V$ 相乘，得到 $B_r\times d$
+的 $O$ tile。朴素实现可能用三个内核完成这三步，需要把 $S$ 和 $P$ 写入并重新从
+全局内存读取，导致低算术强度和额外的内核调用开销。公式 \eqref{eq:ch20-output-composition}
+允许这三步在一个内核中以迭代方式融合，并在片上内存中逐块完成，从而不必在全局
+内存中实体化 $S$ 和 $P$。
+
+这里同时使用共享内存分块和寄存器分块：$Q$、$O$ tile 放在寄存器中，$K^{\mathsf T}$、
+$S/P$ 和 $V$ tile 放在共享内存中。代码中的 \code{S_i} 先保存 $S$，随后原地复用
+为 softmax 输出 $P$。每个线程还在寄存器中保存行最大值 $m_i$、softmax 分母
+$D_i$ 和输出 $O_i$；这些状态由 \code{initialize()} 初始化。$Q_i$ 则由
+\code{load_Q()} 从全局内存加载。
+
+一个线程只持有这些 tile 的一部分元素，并通过 warp shuffle 原语与同一个 warp 中
+的线程交换数据。$Q$ 的面板进一步划分为大小为 $B_{r,\mathrm{warp}}\times d$ 的
+子面板，每个子面板分配给一个 warp。下面逐个解释各个 device function。
+
+\noindent\textbf{译者注：}这里的 $Q$ 分配方式对应 FlashAttention-2
+\cite{ch20-8}。早期版本把 $K$ 和 $V$ 分配给不同 warp（称为 split-K），需要把
+中间结果写入共享内存、同步并归约，效率较低；本节示例让 warp 之间不交换中间数据，
+只在同一 warp 内交换元素。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__device__ inline void load_Q(
+    const float* Q,
+    float Q_i[B_r_warp][d_size],
+    int i)
+{
+    for (int ii = 0; ii < B_r_warp; ii++) {
+        for (int dd = laneIdx(), ddd = 0;
+             dd < d;
+             dd += WARP_SIZE, ddd++) {
+            Q_i[ii][ddd] =
+                Q[(B_r * i +
+                   B_r_warp * warpIdx() +
+                   ii) * d + dd];
+        }
+    }
+}
+  \end{lstlisting}
+  \caption{FlashAttention：把 $Q$ 加载到寄存器中的 device function
+  （依据原书图 20.10 整理）。}
+  \label{fig:20-10}
+\end{figure}
+
+在每个子面板中，行 $ii$ 以交错方式分配给 warp 中的线程。也就是说，一行被划分为
+长度为 \code{WARP_SIZE} 的区段，每个区段的元素按顺序分配给 warp 中的线程。这样，
+warp 可以以合并方式加载每个区段。每个线程最终在寄存器中保存
+$B_{r,\mathrm{warp}}\times(d/\mathrm{WARP\_SIZE})$ 个 $Q$ 元素。示例为简洁起见
+假设 $d$ 是 \code{WARP_SIZE} 的倍数；若要支持任意 $d$，需要额外处理边界。
+
+暂时忽略 softmax，可以更容易地理解融合内核中的两个矩阵乘法。线程块先把自己的
+$Q$ tile 加载到寄存器，并调用 \code{initialize()} 把 $O$ tile 的元素初始化为零，
+然后以分块方式迭代执行两个矩阵乘法。这个迭代过程有两个层次：块级和 warp 级。
+块级的每次迭代内部又是一个 warp 级迭代。
+
+在块级迭代中，线程块从 $K^{\mathsf T}$ 的左端和 $V$ 的顶部开始；对
+$K^{\mathsf T}$ 从左向右、对 $V$ 从上向下遍历。每次处理 $K^{\mathsf T}$ 的
+$B_c$ 列和 $V$ 的 $B_c$ 行。由于 $K^{\mathsf T}$ 有 $N$ 列、$V$ 有 $N$ 行，
+线程块需要 $T_c=N/B_c$ 次迭代。每次迭代都要合并 $O$ tile 的所有元素，因此
+$B_c$ 应尽量大，以减少合并次数；但它又受可用共享内存限制。示例要求 $B_c$ 是
+\code{WARP_SIZE} 的倍数，从而不需要边界检查或填充；更通用的实现可以放宽这一假设。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__device__ inline void load_KT_and_V(
+    const float* K,
+    const float* V,
+    float* KT_j,
+    float V_j[B_c][d],
+    int j)
+{
+    for (int jj = 0; jj < B_c; jj++) {
+        for (int dd = threadIdx.x;
+             dd < d;
+             dd += blockDim.x) {
+            KT_j[addr(dd * B_c + jj)] =
+                K[(B_c * j + jj) * d + dd];
+
+            V_j[jj][dd] =
+                V[(B_c * j + jj) * d + dd];
+        }
+    }
+}
+  \end{lstlisting}
+  \caption{FlashAttention：把 $K^{\mathsf T}$ 和 $V$ 加载到共享内存中的 device
+  function（依据原书图 20.11 整理）。}
+  \label{fig:20-11}
+\end{figure}
+
+在块级迭代开始时，线程块把 $K^{\mathsf T}$ 的 $B_c$ 列和 $V$ 的 $B_c$ 行加载到
+共享内存。为了提高效率，$K^{\mathsf T}$ 从 $K$ 中以转置方式加载。为避免共享内存
+bank 冲突，图 \ref{fig:20-9} 的声明为 $K^{\mathsf T}_j$ 的每一列增加了 padding。
+因此访问 $K^{\mathsf T}_j$ 时，要把线性下标 $x$ 转换为第 16 章介绍的
+\[
+  \operatorname{addr}(x)=x+\left(x\mathbin{\mathord{\gg}}\mathrm{LOG\_NUM\_BANKS}\right).
+\]
+图 \ref{fig:20-9} 中的块级屏障保证所有 tile 都已经加载完成，才会开始第一次矩阵
+乘法。
+
+每个 $O$ tile 的生成由嵌套循环实现。每个 warp 取其 $Q$ 子面板的一行，与当前
+$K^{\mathsf T}$ 面板执行向量--矩阵乘法，把结果写入 $S_i$ 的对应行；随后使用
+softmax 把 $S_i$ 原地转换成 $P$ 的一段；最后把该行与当前 $V$ 面板执行向量--
+矩阵乘法，把贡献合并到自己的 $O$ 子面板。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\tiny]
+__device__ inline float compute_S_and_max(
+    const float Q_i[B_r_warp][d_size],
+    const float* KT_j,
+    float S_i[B_r][B_c],
+    int i,
+    int j,
+    int ii,
+    float scaling)
+{
+    typedef cub::WarpReduce<float> WarpReduce;
+    __shared__ typename WarpReduce::TempStorage temp_store;
+
+    float curr_max = NEG_INFINITY;
+
+    for (int jj = laneIdx(); jj < B_c; jj += WARP_SIZE) {
+        float S_ij = 0.f;
+
+        for (int dd = 0; dd < d; dd++) {
+            float q =
+                __shfl_sync(0xFFFFFFFF,
+                            Q_i[ii][dd / WARP_SIZE],
+                            dd % WARP_SIZE);
+            S_ij += q * KT_j[addr(dd * B_c + jj)];
+        }
+
+        int row = B_r * i + B_r_warp * warpIdx() + ii;
+        int col = B_c * j + jj;
+
+        S_ij = row < col ? NEG_INFINITY : scaling * S_ij;
+        S_i[B_r_warp * warpIdx() + ii][jj] = S_ij;
+
+        if (S_ij > curr_max)
+            curr_max = S_ij;
+    }
+
+    float curr_max_warp =
+        cub::WarpReduce<float>(temp_store).Reduce(
+            curr_max, cub::Max());
+
+    curr_max_warp =
+        __shfl_sync(0xFFFFFFFF, curr_max_warp, 0);
+
+    return curr_max_warp;
+}
+  \end{lstlisting}
+  \caption{FlashAttention：计算 $S$ tile 及其最大值的 device function
+  （依据原书图 20.12 整理）。}
+  \label{fig:20-12}
+\end{figure}
+
+函数 \code{compute_S_and_max()} 把当前 $K^{\mathsf T}$ 面板进一步划分为每段
+\code{WARP_SIZE} 列。循环中的每个线程计算当前 $Q$ 行与当前 $K^{\mathsf T}$ 子面板
+一列的内积。由于 $Q$ 的行元素以交错方式分布在 warp 线程的寄存器中，线程需要
+通过 \code{__shfl_sync()} 把当前所需的 $Q$ 元素广播给同一 warp 的其他线程。
+这样，一个 warp 每次处理一个 $d\times\mathrm{WARP\_SIZE}$ 的 $K^{\mathsf T}$
+子面板，并产生 $S_i$ 对应行中的一段。
+
+代码随后比较全局矩阵 $S$ 中的行、列索引：如果列索引大于行索引，就把对应共享
+内存位置写成 $-\infty$；否则把点积乘以缩放因子 $1/\sqrt d$ 后写入 $S_i$。最后，
+每个线程求自己计算元素的局部最大值，再使用 CUB 的 \code{WarpReduce} 求 warp
+内的最大值，并用 shuffle 把归约结果广播给 warp 中的所有线程。
+
+\noindent\textbf{补充说明：}这里的示例只展示了共享内存和寄存器分块；实际实现还
+可以采用层次化分块、Tensor Core 等更复杂的优化方法。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__device__ inline void compute_O(
+    const float S_i[B_r][B_c],
+    const float V_j[B_c][d],
+    float O_i[B_r_warp][d_size],
+    int ii,
+    float last_m,
+    float* m_i)
+{
+    for (int dd = laneIdx(), ddd = 0;
+         dd < d;
+         dd += WARP_SIZE, ddd++) {
+        O_i[ii][ddd] *= exp(last_m - m_i[ii]);
+
+        float O_ij = 0.f;
+        for (int jj = 0; jj < B_c; jj++) {
+            O_ij +=
+                S_i[B_r_warp * warpIdx() + ii][jj]
+                * V_j[jj][dd];
+        }
+
+        O_i[ii][ddd] += O_ij;
+    }
+}
+  \end{lstlisting}
+  \caption{FlashAttention：计算 $O$ tile 贡献的 device function
+  （依据原书图 20.13 整理）。}
+  \label{fig:20-13}
+\end{figure}
+
+\code{compute_O()} 中，每个 warp 把自己的 $S_i$ 行与 $V$ 的当前子面板相乘，
+生成对 $O$ tile 的部分贡献。一个 $O$ 元素实际上是完整 $S$ 行与完整 $V$ 列的
+内积；当前 tile 只贡献其中连续的 $B_c$ 项，因此每次块级迭代都要把结果累加到
+寄存器中的 $O_i$。
+
+加入 softmax 后，每次生成 $S_i$ 行，warp 中的线程先共同求出该行的最大值 $m_i$
+和分母 $D_i$。随后线程块根据这两个状态得到 $P$ 行，把 $S_i$ 原地转换成 $P$，
+再把 $P$ 与 $V$ 当前子面板相乘，并按照公式 \eqref{eq:ch20-output-composition}
+合并到 $O$ tile。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__device__ inline float update_m_and_D(
+    float* m_i,
+    float* D_i,
+    float curr_max_warp,
+    int ii)
+{
+    float last_m = m_i[ii];
+    float D = D_i[ii];
+
+    if (m_i[ii] < curr_max_warp) {
+        m_i[ii] = curr_max_warp;
+        D *= exp(last_m - curr_max_warp);
+    }
+
+    D_i[ii] = D;
+    return last_m;
+}
+  \end{lstlisting}
+  \caption{FlashAttention：更新 $m$ 和 $D$ 的 device function
+  （依据原书图 20.14 整理）。}
+  \label{fig:20-14}
+\end{figure}
+
+图 \ref{fig:20-14} 中，线程先把当前行最大值 $m_i$ 保存到 \code{last\_m}，如果
+当前 tile 的最大值 \code{curr\_max\_warp} 更大，就更新累计最大值。这里的三个值
+分别对应公式 \eqref{eq:ch20-denominator-composition} 和
+\eqref{eq:ch20-output-composition} 中的 $m_{r,A}$、$m_{r,B}$ 和
+$m_{r,A\cup B}$：$A$ 是此前已经处理的列子集，$B$ 是当前新 tile。更新最大值
+后，代码对已有分母进行相应的指数重缩放。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\tiny]
+__device__ inline float compute_P_and_update_D(
+    float S_i[B_r][B_c],
+    float* m_i,
+    float* D_i,
+    int i,
+    int j,
+    int ii)
+{
+    typedef cub::WarpReduce<float> WarpReduce;
+    __shared__ typename WarpReduce::TempStorage temp_store;
+
+    float curr_sum = 0.f;
+
+    for (int jj = laneIdx(); jj < B_c; jj += WARP_SIZE) {
+        int row = B_r * i + B_r_warp * warpIdx() + ii;
+        int col = B_c * j + jj;
+
+        float P_ij =
+            row < col
+                ? 0.f
+                : exp(S_i[B_r_warp * warpIdx() + ii][jj]
+                      - m_i[ii]);
+
+        S_i[B_r_warp * warpIdx() + ii][jj] = P_ij;
+        curr_sum += P_ij;
+    }
+
+    float curr_sum_warp =
+        cub::WarpReduce<float>(temp_store).Reduce(
+            curr_sum, cub::Sum());
+
+    curr_sum_warp =
+        __shfl_sync(0xFFFFFFFF, curr_sum_warp, 0);
+
+    D_i[ii] += curr_sum_warp;
+    return curr_sum_warp;
+}
+  \end{lstlisting}
+  \caption{FlashAttention：计算 $P$ 并更新 $D$ 的 device function
+  （依据原书图 20.15 整理）。}
+  \label{fig:20-15}
+\end{figure}
+
+\code{compute_P_and_update_D()} 完成 softmax 的指数步骤，并再次应用因果策略。它
+把结果写回共享内存中的 \code{S_i}，从而原地把 $S$ tile 转换成 $P$ tile，同时
+累积当前 tile 对分母的贡献。CUB 的 \code{WarpReduce} 求出当前 warp 的部分和，
+shuffle 把结果广播给所有线程，然后更新 \code{D_i[ii]}。
+
+每个 $o_{r,c}$ 都应该接收 $P$ 行中所有元素的贡献，但当前 $P$ tile 与 $V$ tile
+的矩阵乘法只包含该内积的一段。因此，在把当前矩阵乘法结果累加到输出 tile 之前，
+必须依据公式 \eqref{eq:ch20-output-composition} 缩放已有的 $O$ 内容和当前的
+矩阵乘法结果。图 \ref{fig:20-13} 中的第一行先把已有 $O_i$ 乘以
+$\exp(\texttt{last\_m}-m_i)$，对应组合公式的第一项；随后内层循环把当前
+$P$/$V$ tile 的贡献加入。当前新贡献已经使用截至当前 tile 的最大值计算，因此
+不需要再次重缩放。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize]
+__device__ inline void store_O(
+    float* out_O,
+    float* out_D,
+    const float O_i[B_r_warp][d_size],
+    const float D_i[B_r_warp],
+    int i,
+    int N)
+{
+    for (int ii = 0; ii < B_r_warp; ii++) {
+        int row =
+            B_r * i + B_r_warp * warpIdx() + ii;
+
+        for (int dd = 0; dd < d_size; dd++) {
+            int col = dd * WARP_SIZE + laneIdx();
+
+            if (row < N && col < d)
+                out_O[row * d + col] =
+                    O_i[ii][dd] / D_i[ii];
+        }
+
+        if (laneIdx() == 0)
+            out_D[row] = D_i[ii];
+    }
+}
+  \end{lstlisting}
+  \caption{FlashAttention：把 $O$ 和分母写回全局内存的 device function
+  （依据原书图 20.16 整理）。}
+  \label{fig:20-16}
+\end{figure}
+
+线程块完成迭代后，输出 tile 已经包含概念上的完整 $S$、$P$ 矩阵贡献，尽管这些
+矩阵从未完整生成，只以 tile 的形式存在于共享内存中。写回时，\code{store_O()}
+把寄存器中的 $O_i$ 和 softmax 分母 $D_i$ 写入全局内存。写入 $O$ 前必须除以最终
+分母，这正是公式 \eqref{eq:ch20-output-composition} 中的归一化步骤。
+
+\noindent\textbf{译者注：}上述代码是用于解释算法的数据布局示例，不应直接视为
+生产级 FlashAttention 实现。它假设 $N$ 能被 $B_r$ 和 $B_c$ 整除，$B_c$ 与 $d$
+满足 warp 对齐，并依赖第 16 章中定义的 \code{addr()}、\code{laneIdx()} 和
+\code{warpIdx()}。实际工程还需要处理任意尺寸、不同精度、边界条件、共享内存
+临时存储生命周期，以及 CUB 归约对象的安全复用问题。
+
+本节描述的 FlashAttention 内核适用于不带 KV cache 的基线 Transformer，也适用于
+带 KV cache 推理的预填充阶段。在带缓存的生成（decode）阶段，单个头中的 $Q$、$S$、
+$P$ 和 $O$ 矩阵会变成向量 $Q'$、$S'$、$P'$ 和 $O'$；矩阵--矩阵乘法也会变为
+向量--矩阵乘法。为了保持与图 \ref{fig:20-8} 类似的工作分配方式，可以把多个
+请求，即多个 $Q_i$，batch 成一个矩阵。
+
+上面介绍的迭代过程只是众多可能实现中的一种。如果使用 Tensor Core 执行每个 warp
+中的两次矩阵乘法，就可能需要采用不同的数据分配和迭代组织方式；读者可以继续探索
+这些实现变体。
+
+较新的 FlashAttention-3 \cite{ch20-9} 还利用 Hopper GPU 架构的新能力进一步提升
+性能，包括：Tensor Memory Accelerator（TMA），它可以异步地把 tile 从全局内存搬到
+共享内存供 Tensor Core 使用而不占用计算线程；Tensor Core 的 WarpGroup-wide
+Matrix Multiply Accumulate（WGMMA）指令；以及 Tensor Core 的 FP8 精度。通过 warp
+专门化，这一版本能够更好地重叠数据移动和计算，并用异步的分块 GEMM 隐藏 softmax
+执行。
+
+\section{KV cache 的算术强度与内存需求}
+\label{sec:ch20-kv-cache-ai}
+
+图 \ref{fig:20-2} 说明了 LLM 推理预填充阶段中 $K$ 和 $V$ 矩阵的生成。$K$、$V$
+的元素会被计算出来并缓存到内存中；在生成阶段（图 \ref{fig:20-6}），每生成一个
+新 token，就会生成 $K$ 和 $V$ 的一行，并把它追加到 KV cache。这些新行通过向量--
+矩阵运算生成，算术强度较低，容易使 GPU 的计算资源利用不足。因此，batching 和
+speculative decoding 等优化方法都试图提高生成阶段的算术强度。
+
+Batching 是所有深度神经网络中都很常见的优化方法，传统上用于提高计算强度。例如，
+一个有 1024 个输入、4096 个输出的线性层，如果使用 16 位精度且 batch size 为 1，
+算术强度只有每字节 1 个浮点运算（FLOPS/B）；当 batch size 增加到 512 时，算术
+强度可以提高到 315 FLOPS/B。算术强度的提高来自不同输入向量之间对权重的复用，
+而高算术强度对于充分利用 GPU 十分重要。
+
+不过，LLM 在 batch size 和上下文长度（也就是 KV cache 大小）之间存在权衡。多个
+用户的输入查询通常使用同一个模型，因此可以共享模型权重，提高 GPU 在不同计算
+阶段中的利用率。图 \ref{fig:20-17} 左侧示意了在生成 $Q$、$K$、$V$ 的全连接层
+中进行 batching 的方式；batching 可以使 QKV 投影的算术强度近似提高 batch size
+倍数。然而，KV cache 依赖每个用户自己的提示词和上下文，注意力层仍然必须维护并
+访问各自独立的 cache。因此，LLM 中的 batching 会受到模型权重和 KV cache 内存
+需求的共同限制。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c@{\qquad}c}
+    \fbox{\begin{minipage}{0.40\textwidth}
+      \centering
+      \textbf{共享模型权重}\\[0.3em]
+      请求 1 的 $X_1$ \\
+      请求 2 的 $X_2$ \\
+      请求 3 的 $X_3$\\[0.3em]
+      $\left.\begin{array}{c}X_1\\X_2\\X_3\end{array}\right\}
+      \xrightarrow{\quad W_Q,W_K,W_V\quad}
+      \left\{\begin{array}{c}Q_1,K_1,V_1\\
+      Q_2,K_2,V_2\\Q_3,K_3,V_3\end{array}\right.$
+    \end{minipage}}
+    &
+    \fbox{\begin{minipage}{0.40\textwidth}
+      \centering
+      \textbf{独立 KV cache}\\[0.3em]
+      请求 1 $\longrightarrow$ $\mathrm{KVCache}_1$\\
+      请求 2 $\longrightarrow$ $\mathrm{KVCache}_2$\\
+      请求 3 $\longrightarrow$ $\mathrm{KVCache}_3$\\[0.3em]
+      注意力计算必须访问各自上下文
+    \end{minipage}}
+  \end{tabular}
+  \caption{LLM 推理中的 batching：QKV 投影可以共享权重，而注意力仍需为不同
+  会话维护独立 KV cache（依据原书图 20.17 临时重绘）。}
+  \label{fig:20-17}
+\end{figure}
+
+下面分析带 KV cache 和 batching 的 LLM 推理内存需求。主要贡献者有两个：模型权重
+（例如 $W_Q$、$W_K$ 和 $W_V$）以及 KV cache。模型权重的大小由模型参数数量决定，
+通常达到数十亿量级。例如，一个包含 70 亿参数、以 16 位格式（FP16 或 BF16）加载的
+模型大约需要 14 GB。关于模型权重内存需求的更多细节，可参考 \cite{ch20-10,ch20-11}。
+
+KV cache 的大小取决于 Transformer 层数 $l$ 和隐藏维度。隐藏维度是 query 头数量
+$h_q$ 与嵌入维度 $d$ 的乘积。对于多头注意力（multi-head attention，MHA），每个
+token 的 KV cache 大小（字节数）为：
+\begin{equation}
+  \mathrm{KVCacheSize}_{\mathrm{MHA}}
+  =2\ell h_q d p .
+\label{eq:ch20-kv-mha-per-token}
+\end{equation}
+这里乘以 2 是因为同时保存 $K$ 和 $V$，而 $p$ 是每个元素所占的字节数。
+
+实际场景还要计算 batch 中所有序列的所有 token 的 cache 大小。对于 batch 中有 $b$
+个、长度均为 $N$ 的序列，总 KV cache 大小为：
+\begin{equation}
+  \mathrm{TotalKVCacheSize}_{\mathrm{MHA}}
+  =bN\cdot 2\ell h_q d p .
+\label{eq:ch20-kv-mha-total}
+\end{equation}
+
+例如，在 16 位精度下，考虑长度为 4096 的单个序列。对于 Google 的 PaLM 2，
+$\ell=64$、隐藏维度 $h_qd=8192$，总 KV cache 大小为
+$1\times4096\times2\times64\times8192\times2=8$ GB。对于 OpenAI 的 GPT-3，
+相应大小为
+$1\times4096\times2\times96\times12288\times2=18$ GB。对于 Meta 的 Llama 2 7B，
+大小为
+$1\times4096\times2\times32\times4096\times2=2$ GB。如此大的 KV cache 很容易使
+批量推理的内存需求超过单个 GPU 的容量，因此 LLM 推理通常需要多 GPU 甚至多节点
+系统。
+
+上述分析假设 batch 中所有序列长度相同，但现实中不同用户的输入序列和生成输出
+序列通常长度不同。这样，batching 可能造成线程块之间的工作量不均衡，导致 GPU
+资源利用率下降。为避免这种情况，先进的 LLM 服务系统会使用 in-flight batching
+机制 \cite{ch20-12}：系统一次调度并执行多个请求，并在某个请求完成后，立即把新请求
+安排到当前工作量最低的 batch 中。
+
+虽然 batching 能有效提高线性投影操作的算术强度，但对推理阶段的 MHA 并不十分有效。
+可以通过近似数据移动量和浮点运算量来估算它的算术强度 \cite{ch20-13}。考虑一个
+层、长度为 $N$ 的序列，并令 $p=1$。根据公式 \eqref{eq:ch20-kv-mha-per-token}，
+KV cache 大小为 $2h_qdN$；读入 $Q'$ 和写出 $O'$ 的数据移动量为 $2h_qd$；计算
+$(Q'K^{\mathsf T})V$ 的浮点运算量为 $2Nh_qd$，这里忽略 softmax。于是，MHA 的
+算术强度近似为：
+\begin{equation}
+  \mathrm{AI}_{\mathrm{MHA}}
+  \approx
+  \frac{2Nh_qd}{2h_qd+2h_qdN}
+  =\frac{N}{1+N}
+  \approx 1 .
+\label{eq:ch20-ai-mha}
+\end{equation}
+因此，MHA 在生成阶段的算术强度可能低至每字节约 1 个浮点运算。
+
+\noindent\textbf{译者注：}这里的 batching 增益是理论估计；实际算术强度还取决于
+实现所采用的 tile 尺寸和数据布局。
+
+提高 LLM 推理算术强度的另一种方法是 speculative decoding（推测解码）
+\cite{ch20-14}。这是一种模型服务优化：一个很小的 draft model（草稿模型）先预测
+大型 target model（目标模型）的若干输出 token；目标模型随后验证这些预测。虽然
+目标模型单次延迟更高，但它可以并行验证草稿模型一次生成的一批 token。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c}
+    \fbox{\begin{minipage}{0.82\textwidth}
+      \centering
+      \textbf{Draft model}\\
+      已接受的上下文 $\longrightarrow$
+      \texttt{Programming}\quad\texttt{Massively}\quad\texttt{Efficient}
+    \end{minipage}}\\[0.6em]
+    $\Downarrow\ \text{并行验证}$\\[-0.1em]
+    \fbox{\begin{minipage}{0.82\textwidth}
+      \centering
+      \textbf{Target model}\\
+      \texttt{Programming}\;（接受）
+      \qquad \texttt{Massively}\;（接受）
+      \qquad \texttt{Efficient}\;（拒绝）\\[0.3em]
+      接受前两个 token，拒绝第三个，然后开始下一轮草稿预测
+    \end{minipage}}
+  \end{tabular}
+  \caption{推测解码：草稿模型预测多个 token，目标模型并行验证
+  （依据原书图 20.18 临时重绘）。}
+  \label{fig:20-18}
+\end{figure}
+
+图 \ref{fig:20-18} 给出了一个推测解码例子。推测深度为 3，即草稿模型连续预测三个
+输出 token，目标模型再并行验证它们。在第一轮中，目标模型接受 “Programming”
+和 “Massively”，但拒绝 “Efficient”。目标模型验证结束后，被接受的 token 会并入
+下一轮草稿模型的输入，草稿模型再预测三个新 token。
+
+推测解码与 batching 相似，因此也能提高线性投影操作的算术强度。不过，它是一种特殊
+形式的 batching：批中的所有 token 共享一组初始 token。因此，在注意力计算中，这些
+共同初始 token 对应的 KV cache 数据只需加载一次，就可以复用于所有输出 token。这种
+KV cache 数据复用正是算术强度提高的原因；没有推测解码时，同一份 cache 数据需要
+为每个输出 token 分别加载。
+
+\section{降低注意力机制的内存需求}
+\label{sec:ch20-reducing-attention-memory}
+
+如前所述，注意力机制使用多个头，每个头使用不同的权重矩阵来生成 $Q$、$K$ 和 $V$
+的投影。这是多头注意力（MHA）内存需求较大的主要原因之一。为了在保持可接受模型
+准确率的同时降低内存需求，人们提出了多查询注意力（multi-query attention，MQA）
+和分组查询注意力（grouped-query attention，GQA）两种方法。图 \ref{fig:20-19}
+以简化方式展示 MHA、MQA、GQA 和多头潜在注意力（multi-head latent attention，
+MLA）的内存组织。
+
+\begin{figure}[htbp]
+  \centering
+  \small
+  \begin{tabular}{c@{\qquad}c}
+    \fbox{\begin{minipage}{0.37\textwidth}
+      \centering
+      \textbf{MHA}\\[0.25em]
+      $Q_1\ Q_2\ Q_3\ Q_4$\\
+      $K_1\ K_2\ K_3\ K_4$\\
+      $V_1\ V_2\ V_3\ V_4$\\
+      每个头都有独立的 $K,V$
+    \end{minipage}}
+    &
+    \fbox{\begin{minipage}{0.37\textwidth}
+      \centering
+      \textbf{MQA}\\[0.25em]
+      $Q_1\ Q_2\ Q_3\ Q_4$\\
+      $\quad K_{\!*}$\\
+      $\quad V_{\!*}$\\
+      所有头共享一组 $K,V$
+    \end{minipage}}\\[1em]
+    \fbox{\begin{minipage}{0.37\textwidth}
+      \centering
+      \textbf{GQA}\\[0.25em]
+      $Q_1\ Q_2\ |\ Q_3\ Q_4$\\
+      $K_1\quad\ |\ K_2$\\
+      $V_1\quad\ |\ V_2$\\
+      每组 query 头共享 $K,V$
+    \end{minipage}}
+    &
+    \fbox{\begin{minipage}{0.37\textwidth}
+      \centering
+      \textbf{MLA}\\[0.25em]
+      $Q_1\ Q_2\ Q_3\ Q_4$\\
+      $\downarrow$ 低秩联合压缩\\
+      $\quad z_{\mathrm{latent}}$\\
+      需要时再上投影恢复 $K,V$
+    \end{minipage}}
+  \end{tabular}
+  \caption{MHA、MQA、GQA 和 MLA 中 $Q$、$K$、$V$ 的共享关系
+  （依据原书图 20.19 临时重绘）。}
+  \label{fig:20-19}
+\end{figure}
+
+MQA 在多个注意力头之间共享 key 和 value，从而减小隐藏维度。MQA 的总 KV cache
+大小为：
+\begin{equation}
+  \mathrm{TotalKVCacheSize}_{\mathrm{MQA}}
+  =bN\cdot 2\ell d p .
+\label{eq:ch20-kv-mqa}
+\end{equation}
+与公式 \eqref{eq:ch20-kv-mha-total} 相比，缓存大小按头数量的倒数缩减。由于 KV
+cache 减小，MQA 的算术强度近似提高到 MHA 的 $h_q$ 倍：
+\begin{equation}
+  \mathrm{AI}_{\mathrm{MQA}}
+  \approx
+  \frac{2Nh_qd}{2h_qd+2dN}
+  =\frac{Nh_q}{h_q+N}
+  \approx h_q .
+\label{eq:ch20-ai-mqa}
+\end{equation}
+
+GQA \cite{ch20-15} 在 MHA 和 MQA 之间进行折中：把 query heads 划分成少量的
+$g_q$ 个组，同组 query 头共享 key 和 value。GQA 的总内存需求为：
+\begin{equation}
+  \mathrm{TotalKVCacheSize}_{\mathrm{GQA}}
+  =bN\cdot 2\ell\cdot\frac{h_q}{g_q}d p .
+\label{eq:ch20-kv-gqa}
+\end{equation}
+GQA 的算术强度近似提高到组数 $g_q$：
+\begin{equation}
+  \mathrm{AI}_{\mathrm{GQA}}
+  \approx
+  \frac{2Nh_qd}
+       {2h_qd+2\frac{h_q}{g_q}dN}
+  =\frac{Nh_q}{h_q+\frac{h_q}{g_q}N}
+  \approx g_q .
+\label{eq:ch20-ai-gqa}
+\end{equation}
+
+MHA、GQA 和 MQA 都可以使用第 20.5 节介绍的 FlashAttention 分块方法。三种方案
+在计算量、内存需求和模型准确率之间有不同的权衡。
+
+尽管 MQA 和 GQA 能够降低 KV cache 的内存需求，但有限的 GPU 内存仍然会限制 batch
+size 和上下文长度。更糟糕的是，KV cache 通常会按照最大可能输入预留空间，导致
+内存碎片和浪费。PagedAttention \cite{ch20-12} 是一种尝试解决这一问题的方法，
+其思想来自操作系统的分页机制：把 KV cache 划分成大小相同的块，并在需要计算时，
+从更大的系统内存把所需块加载到 GPU 内存中。
+
+管理 KV cache 的另一种方法是多头潜在注意力（MLA）\cite{ch20-16}。MLA 对 $K$ 和
+$V$ 执行低秩联合压缩，大幅降低内存使用。其核心思想是：把每个 token 在所有头中
+对应的 $K$、$V$ 向量压缩成一个潜在向量，如图 \ref{fig:20-19} 所示。压缩在所有
+头和所有层中进行，因此 KV cache 的内存需求可以显著降低：
+\begin{equation}
+  \mathrm{TotalKVCacheSize}_{\mathrm{MLA}}
+  =bN\ell d p .
+\label{eq:ch20-kv-mla}
+\end{equation}
+
+由于多个 query 头共享一个潜在头，MLA 的算术强度会提高。底本给出的公式为：
+\begin{equation}
+  \mathrm{AI}_{\mathrm{MLA}}
+  \approx
+  \frac{2Nh_qd}{2h_qd+dN}
+  =\frac{2Nh_q}{h_q+N}
+  \approx 2h_q .
+\label{eq:ch20-ai-mla}
+\end{equation}
+
+\noindent\textbf{译者注：}按照首行分母严格约分，中间项应为
+$2Nh_q/(2h_q+N)$；底本排版给出的中间式是 $2Nh_q/(h_q+N)$。两种形式在
+$N$ 很大时都趋近于 $2h_q$，本译稿保留底本等式并标注这一代数化简疑点，未将其
+悄然改写。
+
+压缩方案所使用的投影矩阵在训练过程中学习得到。推理时，模型会在使用 $K$ 和 $V$
+进行注意力计算之前，把潜在表示乘以两个上投影矩阵，以恢复（解压）$K$ 和 $V$。
+因此，迭代之间只需要在各注意力头的 KV cache 中保存压缩后的潜在表示；只有当某个
+头在生成阶段处于活动状态时，才解压出该头所需的 $K$ 和 $V$。
+
+扩展 LLM 的另一种正交技术是专家混合（mixture of experts，MoE），例如 Mixtral
+\cite{ch20-17}。MoE 是一种稀疏激活架构：门控机制会根据每个输入决定使用少量
+专门化子网络中的哪一部分。这样，模型可以拥有极大的参数量，同时降低每个 token
+实际需要执行的计算量。
+
+\section{小结}
+\label{sec:ch20-summary}
+
+本章介绍了支撑大语言模型（LLM）的基础运算。由于主流 LLM 大多建立在 Transformer
+架构之上，本章重点讨论 Transformer 特有的计算组件，即注意力头。我们首先从朴素的
+多内核实现开始，重点分析注意力头中最具新意的 softmax 内核；随后讨论 KV cache，
+这是减少 LLM 生成阶段每次迭代中冗余计算的重要优化。接着介绍 FlashAttention 的
+公式化方法及其注意力头内核：它能够提高算术强度，并降低 LLM 预填充阶段的延迟。
+最后讨论 KV cache 的内存需求，以及在使用 batching 提高推理阶段 GPU 利用率时，
+降低这类内存需求的技术。
+
+读者应当已经对 GPU 上 LLM 实现的基础知识有了清晰理解。完成本章后，还有非常大的
+设计空间值得继续探索。
+
+\section{练习}
+\label{sec:ch20-exercises}
+
+\begin{enumerate}[label=\arabic*.,leftmargin=2.5em]
+  \item 为图 \ref{fig:20-9} 中的 FlashAttention 内核补充主机端调用代码。设置输入
+  和输出数组的大小时，参考图 \ref{fig:20-8} 中所示矩阵的维度。
+  \item 阅读 CUB 文档，了解 \code{WarpReduce} 命名空间中数据类型的细节，以及调用
+  \code{Reduce} 函数时各参数的语义。特别注意归约操作所支持的各种算术函数。
+  \item 编写图 \ref{fig:20-9} 第 21 行所调用的 \code{initialize()} device
+  function，并解释为什么必须把 \code{O_i} 和 \code{D_i} 的元素初始化为
+  \code{0.f}。还应说明为什么 \code{m_i} 需要初始化为负无穷。
+  \item 证明图 \ref{fig:20-11} 的 device function 中嵌套循环对 $K$ 和 $V$ 的
+  所有加载都是合并访问（coalesced）。
+\end{enumerate}
+
+\begin{chapterbibliography}{17}
+  \bibitem{ch20-1}
+  A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez,
+  L. Kaiser, I. Polosukhin, \emph{Attention is all you need}, Proceedings of the
+  31st International Conference on Neural Information Processing Systems, 2017,
+  pp.~6000--6010.
+
+  \bibitem{ch20-2}
+  D. Ferrucci, E. Brown, J. Chu-Carroll, J. Fan, D. Gondek, A. A. Kalyanpur,
+  A. Lally, J. W. Murdock, E. Nyberg, J. Prager, et al., \emph{Building Watson:
+  an overview of the DeepQA project}, AI Magazine 31 (3), 2010, pp.~59--79.
+
+  \bibitem{ch20-3}
+  OpenAI, \emph{ChatGPT}, \url{https://chat.openai.com/}, 2025
+  (accessed 25 January 2025).
+
+  \bibitem{ch20-4}
+  A. Gu, T. Dao, \emph{Mamba: linear-time sequence modeling with selective state spaces},
+  arXiv preprint arXiv:2312.00752, 2023.
+
+  \bibitem{ch20-5}
+  M. Poli, S. Massaroli, E. Nguyen, D. Y. Fu, T. Dao, S. Baccus, Y. Bengio,
+  S. Ermon, C. Ré, \emph{Hyena hierarchy: towards larger convolutional language models},
+  Proceedings of the International Conference on Machine Learning, PMLR, 2023,
+  pp.~28043--28078.
+
+  \bibitem{ch20-6}
+  T. Dao, D. Fu, S. Ermon, A. Rudra, C. Ré, \emph{FlashAttention: fast and memory-efficient
+  exact attention with IO-awareness}, Advances in Neural Information Processing Systems
+  35, 2022, pp.~16344--16359.
+
+  \bibitem{ch20-7}
+  M. Milakov, N. Gimelshein, \emph{Online normalizer calculation for softmax},
+  arXiv preprint arXiv:1805.02867, 2018.
+
+  \bibitem{ch20-8}
+  T. Dao, \emph{FlashAttention-2: faster attention with better parallelism and work
+  partitioning}, arXiv preprint arXiv:2307.08691, 2023.
+
+  \bibitem{ch20-9}
+  J. Shah, G. Bikshandi, Y. Zhang, V. Thakkar, P. Ramani, T. Dao,
+  \emph{FlashAttention-3: fast and accurate attention with asynchrony and low-precision},
+  arXiv preprint arXiv:2407.08608, 2024.
+
+  \bibitem{ch20-10}
+  Z. Zhang, D. Zhao, X. Miao, G. Oliaro, Q. Li, Y. Jiang, Z. Jia,
+  \emph{Quantized side tuning: fast and memory-efficient tuning of quantized large language
+  models}, arXiv preprint arXiv:2401.07159, 2024.
+
+  \bibitem{ch20-11}
+  J. Zhao, Z. Zhang, B. Chen, Z. Wang, A. Anandkumar, Y. Tian,
+  \emph{Galore: memory-efficient LLM training by gradient low-rank projection},
+  arXiv preprint arXiv:2403.03507, 2024.
+
+  \bibitem{ch20-12}
+  W. Kwon, Z. Li, S. Zhuang, Y. Sheng, L. Zheng, C. H. Yu, J. Gonzalez,
+  H. Zhang, I. Stoica, \emph{Efficient memory management for large language model serving
+  with PagedAttention}, Proceedings of the 29th Symposium on Operating Systems Principles,
+  2023, pp.~611--626.
+
+  \bibitem{ch20-13}
+  T. Zadouri, H. Strauss, T. Dao, \emph{Hardware-efficient attention for fast decoding},
+  arXiv preprint arXiv:2505.21487, 2025.
+
+  \bibitem{ch20-14}
+  Y. Leviathan, M. Kalman, Y. Matias, \emph{Fast inference from transformers via
+  speculative decoding}, Proceedings of the International Conference on Machine Learning,
+  PMLR, 2023, pp.~19274--19286.
+
+  \bibitem{ch20-15}
+  J. Ainslie, J. Lee-Thorp, M. de Jong, Y. Zemlyanskiy, F. Lebrón, S. Sanghai,
+  \emph{GQA: training generalized multi-query transformer models from multi-head checkpoints},
+  arXiv preprint arXiv:2305.13245, 2023.
+
+  \bibitem{ch20-16}
+  A. Liu, B. Feng, B. Wang, B. Wang, B. Liu, C. Zhao, C. Deng, C. Ruan, D. Dai,
+  D. Guo, et al., \emph{DeepSeek-V2: a strong, economical, and efficient mixture-of-experts
+  language model}, arXiv preprint arXiv:2405.04434, 2024.
+
+  \bibitem{ch20-17}
+  A. Q. Jiang, A. Sablayrolles, A. Roux, A. Mensch, B. Savary, C. Bamford,
+  D. S. Chaplot, D. de la Casas, E. B. Hanna, B. Bressand, et al.,
+  \emph{Mixtral of experts}, arXiv preprint arXiv:2401.04088, 2024.
+\end{chapterbibliography}

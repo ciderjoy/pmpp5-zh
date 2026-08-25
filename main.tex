@@ -120,11 +120,16 @@
 \include{chapters/07-convolution}
 \include{chapters/08-stencil-computation}
 
+\part{高级模式与应用}
+% 第 9--19 章暂缺；显式设置计数器，使先行完成的本章保持原书编号。
+\setcounter{chapter}{19}
+\include{chapters/20-large-language-models}
+
 \backmatter
 
-\chapter*{术语表（待扩充）}
-\addcontentsline{toc}{chapter}{术语表（待扩充）}
-\markboth{术语表（待扩充）}{术语表（待扩充）}
+\chapter*{术语表}
+\addcontentsline{toc}{chapter}{术语表}
+\markboth{术语表}{术语表}
 
 \begin{description}[leftmargin=5em,style=nextline]
   \item[GPU] 图形处理器（Graphics Processing Unit）
@@ -175,6 +180,30 @@
   \item[output tile] 输出瓦片
   \item[constant memory] 常量内存
   \item[constant cache] 常量缓存
+  \item[large language model (LLM)] 大语言模型
+  \item[transformer architecture] Transformer 架构
+  \item[attention] 注意力
+  \item[multi-head attention (MHA)] 多头注意力
+  \item[query] 查询（$Q$）
+  \item[key] 键（$K$）
+  \item[value] 值（$V$）
+  \item[context length] 上下文长度
+  \item[causal mask] 因果掩码
+  \item[softmax] softmax；归一化指数函数
+  \item[KV cache] KV 缓存
+  \item[FlashAttention] FlashAttention；注意力的分块融合实现
+  \item[prefill] 预填充；摘要阶段
+  \item[decode/generation] 解码/生成阶段
+  \item[batching] 批处理
+  \item[speculative decoding] 推测解码
+  \item[multi-query attention (MQA)] 多查询注意力
+  \item[grouped-query attention (GQA)] 分组查询注意力
+  \item[multi-head latent attention (MLA)] 多头潜在注意力
+  \item[PagedAttention] 分页注意力
+  \item[mixture of experts (MoE)] 专家混合
+  \item[token] token；词元
+  \item[embedding] 嵌入
+  \item[positional encoding] 位置编码
 \end{description}
 
 \end{document}
