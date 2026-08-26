@@ -1,0 +1,301 @@
+\chapter{卷积神经网络}
+
+\begin{solutionexercise}{1}
+\problemheading 实现原书第 19.1 节介绍的下采样层前向传播；附录 B 对这种层作了说明。
+采用本章的 $[N,C,H,W]$ 布局，每个输出通道对应同一输入通道，把每个不重叠的
+$K\times K$ 区域取平均，加上该通道偏置，再通过 sigmoid 激活。应给出输出尺寸、边界
+约定和 CUDA 线程到 $(n,c,h_o,w_o)$ 的映射。
+
+\approachheading 扩展为正文采用的批处理 NCHW 布局。每个线程唯一负责
+$(n,m,h_o,w_o)$，所以既不需要原子操作，也不需要块内同步。
+
+\answerheading 若 $H_o=\lfloor H/K\rfloor$、$W_o=\lfloor W/K\rfloor$，实现为：
+\begin{lstlisting}[language=C++]
+__global__ void subsample_forward_nchw(
+    const float* input, const float* bias, float* output,
+    int N, int M, int H, int W, int K) {
+  size_t Ho = H / K, Wo = W / K;
+  size_t total = size_t(N) * M * Ho * Wo;
+  size_t id = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (id >= total) return;
+
+  int ow = id % Wo; id /= Wo;
+  int oh = id % Ho; id /= Ho;
+  int m  = id % M;  int n = id / M;
+
+  float sum = 0.0f;
+  for (int p = 0; p < K; ++p)
+    for (int q = 0; q < K; ++q) {
+      size_t x = ((size_t(n) * M + m) * H + (oh*K+p)) * W
+                 + (ow*K+q);
+      sum += input[x];
+    }
+  float a = sum / float(K*K) + bias[m];
+  size_t y = ((size_t(n) * M + m) * Ho + oh) * Wo + ow;
+  output[y] = 1.0f / (1.0f + expf(-a));
+}
+
+void launch_subsample(const float* x, const float* b, float* y,
+                      int N, int M, int H, int W, int K,
+                      cudaStream_t stream) {
+  if (N < 0 || M < 0 || H < 0 || W < 0 || K <= 0)
+    throw std::invalid_argument("subsampling shape");
+  size_t total = size_t(N) * M * (H/K) * (W/K);
+  if (total == 0) return;
+  constexpr unsigned BLOCK = 256;
+  unsigned grid = unsigned((total + BLOCK - 1) / BLOCK);
+  subsample_forward_nchw<<<grid, BLOCK, 0, stream>>>(
+      x, b, y, N, M, H, W, K);
+  CHECK(cudaGetLastError());
+}
+\end{lstlisting}
+每个输入元素在 $H,W$ 能被 $K$ 整除时恰好属于一个区域；否则该定义丢弃右侧和底部不足
+$K$ 的尾部。另一种合格接口可以要求整除或显式定义 padding，但不能越界读取。$N=1$
+即退化成附录中的非批处理实现。
+
+\complexity{$O(NM H_oW_oK^2)$，整除时为 $O(NMHW)$}{$O(NMH_oW_o)$ 输出，每线程 $O(1)$ 额外状态}{$NMH_oW_o$ 个互不依赖的输出任务；相邻输出线程没有写竞态}
+\conclusionheading 索引先覆盖样本和通道，再覆盖输出像素；平均、偏置、激活的先后顺序与
+题设一致。
+\discussionheading
+\discussionpoint{算子融合首先消除中间张量的物化。}
+若平均池化、加偏置和 sigmoid 分成三个内核，池化结果必须写入 HBM，后两个内核又分别读取和写回；这些字节并不属于模型的最终输入输出。融合后，线程可以让池化部分和停留在寄存器，立即加偏置并计算激活，只写一次最终值。收益主要来自减少全局流量和启动次数，而不是减少池化本身的算术。代价是原来可复用的通用算子变成形状、布局和激活函数绑定的专用代码，寄存器压力也可能提高。融合因此适合中间张量大且算术较轻的链条，却不应在所有形状上被视为无条件更快。
+
+\discussionpoint{窗口边界是模型定义而非实现细节。}
+当 $H$ 或 $W$ 不能被池化宽度整除时，可以丢弃尾部、补零到完整窗口，或保留缩小窗口并按实际元素数除；三种选择会产生不同输出形状和数值。最大池化还要定义 NaN 是否传播，平均池化要说明补零是否进入分母，偏置究竟按通道还是按输出位置广播。若训练框架与自写内核在这些约定上不同，即使内部索引完全正确，端到端模型也会发生系统偏差。接口文档和测试应把奇数尺寸、尾窗口、NaN 与广播维度列成语义用例，这揭示了高性能内核必须首先忠于上层算子契约。这类差异常在小张量单元测试中最容易暴露。
+
+\discussionpoint{sigmoid 与池化各有自己的精度策略。}
+直接用 $1/(1+\exp(-x))$ 计算 sigmoid 时，极大负 $x$ 会让 $\exp(-x)$ 溢出；可以按符号分支，正半轴使用原式，负半轴改写成 $\exp(x)/(1+\exp(x))$，使中间量保持有限。池化则涉及多项求和，FP16 或 BF16 输入常用 FP32 累加以减少舍入，再按接口要求转换输出。融合内核必须分别声明输入、累加、初等函数和输出精度，不能用“FP16 实现”掩盖内部混合精度。这个分层思路也适用于归一化和损失函数：稳定公式与高精度累加解决不同误差来源，需要分别验证。
+
+\discussionpoint{图级优化器必须决定融合是否值得。}
+在完整网络中，一层的最快融合方案可能迫使前后算子改变布局，或阻断另一条更有价值的融合链，因此局部微基准并不足以作决定。图编译器会根据具体形状、步长、布局和后继消费者生成候选，再用代价模型或 autotuning 比较；动态形状还可能触发重新编译和缓存增长。评测时应分开报告独立算子总和、融合内核时间和端到端网络时间，并计入布局转换与编译缓存成本。这个过程把手写融合扩展成编译器的全图规划问题：优化目标不是某个内核的漂亮数字，而是整段数据流最少的物化和最低的总延迟。
+\variantheading 若 $N=M=1,H=W=5,K=2$，则输出为 $2\times2$，只使用 16 个输入并丢弃最右列和最底行共 9 个元素；输入全 1、偏置为 0 时四个输出均为 $\sigma(1)\approx0.7310586$。
+\practiceheading 在连续 NCHW、IEEE FP32 且支持 CUDA 的 NVIDIA GPU 上，用 cuDNN average pooling 加 pointwise sigmoid 校验自写融合内核；以 Nsight Compute 的 DRAM Bytes 和 SM Throughput 判断省去中间张量是否值得。
+\sourcecheck{https://docs.nvidia.com/deeplearning/cudnn/backend/latest/}{NVIDIA cuDNN Backend 官方文档的 pooling/tensor 描述；对抗检查：最大池化与平均池化的前向规则不同，尾部窗口和 NaN 传播策略也必须由接口显式约定}
+\end{solutionexercise}
+
+\begin{solutionexercise}{2}
+\problemheading 本章的输入和输出特征采用 $[N,C,H,W]$（NCHW）布局。若改为
+$[N,H,W,C]$（NHWC）布局，能否降低内存带宽需求？采用 $[C,H,W,N]$（CHWN）布局
+可能有哪些好处？回答须区分算法必须传输的标量字节数与实际内存事务，并结合相邻线程所
+遍历的连续维度说明条件。
+
+\approachheading 区分“算法必须读取的元素数”和“硬件实际发出的内存交易数”。布局不改变
+卷积数学，却会改变相邻线程看到的连续维、向量化方式和是否需要布局转换。
+
+\answerheading 单纯把 NCHW 改为 NHWC \textbf{不会减少必须读取和写入的标量个数}，因此
+不能无条件降低理论字节数。它可能降低也可能提高实际 DRAM 交易：
+\begin{itemize}
+  \item 原书的直接 NCHW 内核让相邻线程沿 $W$ 计算相邻输出；固定 $n,c,p,q$ 时，它们读取
+  相邻输入列，天然合并。若不改变线程映射却换成 NHWC，固定通道的相邻像素相隔 $C$，反而
+  可能降低合并性。
+  \item NHWC 把同一像素的通道连续存放。若内核让线程或向量指令沿 $C$ 维工作，特别是
+  通道数满足向量/Tensor Core 对齐时，可以合并通道加载、使用宽向量，并避免库内部转置，
+  从而减少实际交易和中间布局转换。
+\end{itemize}
+
+CHWN 把批次 $N$ 设为最快变化维。CNN 的同一滤波器用于全部样本，所以若 warp 的线程对
+同一 $(c,h,w)$ 处理连续样本，输入和输出都连续，权重还可在这些样本间广播/复用。这在训练
+批次较大、$N$ 对 warp 或向量宽度对齐时很有吸引力。代价是常见算子和框架不一定原生支持，
+$N$ 小或动态时尾部利用率差，沿空间维的内核不再自然合并，层间转换可能抵消全部收益。
+
+可接受答案应至少给出三个评分点：理论标量字节数不因置换而自动减少；合并性取决于线程
+映射；CHWN 利于跨 batch 向量化和权重复用。把某一种布局宣称为所有形状和硬件上的固定最优
+不成立，最终应针对完整网络测量，并把转换成本计入。
+
+\conclusionheading 布局是“哪一维连续”的选择，不是压缩；只有线程映射、硬件指令和相邻
+算子共同配合时，才会减少实际带宽消耗。
+\discussionheading
+\discussionpoint{布局改变的是地址关系而非数学数据量。}
+NCHW、NHWC 和 CHWN 都保存 $NCHW$ 个标量，卷积公式也不会因为字母顺序改变而少读一个逻辑元素。差别出现在相邻 lane 的地址：若一个 warp 固定像素并沿通道展开，NHWC 让 32 个 FP32 通道覆盖连续 128 字节；在 NCHW 中它们可能相隔 $HW$ 个元素，需要更多内存交易。反过来，沿空间铺线程时 NCHW 又可能更自然。因此所谓“布局带宽收益”通常来自更少的 sector、更好的对齐或缓存复用，而不是算法字节数凭空减少；分析必须先写出线程映射，再讨论哪一维应该连续。
+
+\discussionpoint{每类算子希望连续的维度并不相同。}
+逐像素通道归一化和许多 Tensor Core 卷积希望同一位置的通道连续，NHWC 便于向量打包；按特征图逐点处理时，NCHW 的空间平面连续可能更方便。CHWN 把样本索引放在最快维，早期卷积实现可让同一滤波器跨 batch 读取连续样本，但只有 batch 足够大时才能填满 lane。通道数、batch 或空间尺寸过小都会破坏这些优势，尾部还可能需要掩码或填充。布局选择因此是算子形状与线程映射的函数，不能从某个时代或某块 GPU 的成功实现推导成跨模型的永久规则。
+
+\discussionpoint{布局必须沿整个计算图传播。}
+如果某一卷积在 NHWC 下快 0.2~ms，却要求输入和输出各做一次 1~ms 的全张量转置，这个局部优化显然让网络更慢。一次转置 1~GiB 的激活至少要读入并写出各 1~GiB，产生约 2~GiB 数据移动；若不能与相邻算子融合，这笔带宽成本不会因为卷积本身更快而消失。残差连接和多分支结构还要求汇合张量拥有兼容的逻辑索引与 stride，否则转换会在多个分支重复发生。成熟框架会让布局成为张量描述符的一部分，在图上向前后传播选择，并尝试把必要转换融合进生产者或消费者。于是单层 autotuning 需要升级成全图代价问题：不仅比较内核，还要计算转换字节、分支兼容和布局在后续多层中的复用价值。
+
+\discussionpoint{真实物理格式常超出四个字母。}
+高性能内核可能把通道按 8 或 16 个元素分块，形成 NHWC8、NHWC16，也可能在共享内存或全局内存中使用 swizzle，以满足向量指令、bank 或矩阵乘片段的地址要求。逻辑通道数不是块宽倍数时要填充，因而实际 stride 与占用字节大于 $NCHW$ 的简单乘积。用户仍可通过张量描述符看到原始形状，但内核和转换必须理解物理块布局。调优报告应同时给出逻辑形状、实际 stride、填充量、转换次数和端到端延迟，这能避免把一个理想整齐尺寸上的微基准结果误推广到带尾部的真实模型。
+\variantheading 若 $C=64$ 且一个 warp 的 32 个 lane 固定同一 $(n,h,w)$、分别处理 $c=0\ldots31$，NHWC 给出 32 个连续 float 的 128 字节区段；NCHW 中相邻 lane 相隔 $HW$ 个 float，不能由同一连续区段服务。
+\practiceheading 假定 Ampere 或更新 NVIDIA Tensor Core GPU、FP16 输入且 $C$ 满足 16 元素对齐，用 cuDNN Frontend 和 CUTLASS Profiler 比较 NCHW/NHWC；Nsight Systems 必须把布局转换计入，Nsight Compute 再报告实际 DRAM 吞吐。
+\sourcecheck{https://github.com/akrizhevsky/cuda-convnet2/blob/master/cudaconv3/src/filter_acts.cu}{Krizhevsky 的原始 cuda-convnet2 卷积实现直接把图像注释为 $(\code{numImgColors},\code{imgSizeY},\code{imgSizeX},\code{numImages})$，并让图像编号成为连续维；对抗检查：这一实现证实 CHWN 的跨样本连续访问机制，却不证明它对所有形状和算子都优于 NCHW/NHWC}
+\end{solutionexercise}
+
+\begin{solutionexercise}{3}
+\problemheading 实现原书第 19.1 节介绍、附录 B 进一步说明的卷积层反向传播。采用
+NCHW 输入 $X_{N\times C\times H\times W}$、滤波器
+$F_{M\times C\times K\times K}$、无 padding、步长 1，并令
+\[
+Y_{n,m,h,w}=\sum_{c,p,q}X_{n,c,h+p,w+q}F_{m,c,p,q}.
+\]
+给定上游梯度 $G=\partial E/\partial Y$，实现输入梯度 $\partial E/\partial X$ 和
+滤波器梯度 $\partial E/\partial F$，说明线程映射、边界、竞态处理和累加次序。
+
+\approachheading 前向定义为
+\[
+Y_{n,m,h,w}=\sum_{c,p,q}X_{n,c,h+p,w+q}F_{m,c,p,q}.
+\]
+令上游梯度为 $G=\partial E/\partial Y$。为避免原子竞态，给每个 $dX$ 或 $dF$ 元素分配
+唯一线程，在该线程内部完成全部贡献的确定次序累加。
+
+\answerheading
+\begin{align*}
+dX_{n,c,i,j}
+ &=\sum_{\substack{m,p,q\\0\le i-p<H_o,\ 0\le j-q<W_o}}
+     G_{n,m,i-p,j-q}F_{m,c,p,q},\\
+dF_{m,c,p,q}
+ &=\sum_{n,h,w}X_{n,c,h+p,w+q}G_{n,m,h,w}.
+\end{align*}
+对应 CUDA 核心如下：
+\begin{lstlisting}[language=C++]
+__global__ void conv_backward_x(const float* G, const float* F,
+                                float* dX, int N, int M, int C,
+                                int H, int W, int K) {
+  int Ho = H-K+1, Wo = W-K+1;
+  size_t id = size_t(blockIdx.x)*blockDim.x + threadIdx.x;
+  size_t total = size_t(N)*C*H*W;
+  if (id >= total) return;
+  int iw=id%W; id/=W; int ih=id%H; id/=H;
+  int c=id%C; int n=id/C;
+  float s=0.0f;
+  for (int m=0; m<M; ++m)
+    for (int p=0; p<K; ++p)
+      for (int q=0; q<K; ++q) {
+        int oh=ih-p, ow=iw-q;
+        if (oh>=0 && oh<Ho && ow>=0 && ow<Wo) {
+          size_t gy=((size_t(n)*M+m)*Ho+oh)*Wo+ow;
+          size_t f=((size_t(m)*C+c)*K+p)*K+q;
+          s += G[gy]*F[f];
+        }
+      }
+  size_t x=((size_t(n)*C+c)*H+ih)*W+iw;
+  dX[x]=s;
+}
+
+__global__ void conv_backward_f(const float* G, const float* X,
+                                float* dF, int N, int M, int C,
+                                int H, int W, int K) {
+  int Ho=H-K+1, Wo=W-K+1;
+  size_t id=size_t(blockIdx.x)*blockDim.x+threadIdx.x;
+  size_t total=size_t(M)*C*K*K;
+  if (id>=total) return;
+  int q=id%K; id/=K; int p=id%K; id/=K;
+  int c=id%C; int m=id/C;
+  float s=0.0f;
+  for (int n=0; n<N; ++n)
+    for (int h=0; h<Ho; ++h)
+      for (int w=0; w<Wo; ++w) {
+        size_t x=((size_t(n)*C+c)*H+(h+p))*W+(w+q);
+        size_t gy=((size_t(n)*M+m)*Ho+h)*Wo+w;
+        s += X[x]*G[gy];
+      }
+  size_t f=((size_t(m)*C+c)*K+p)*K+q;
+  dF[f]=s;
+}
+
+__global__ void conv_backward_b(const float* G, float* db,
+                                int N, int M, int Ho, int Wo) {
+  int m=blockIdx.x*blockDim.x+threadIdx.x;
+  if (m>=M) return;
+  float s=0.0f;
+  for (int n=0;n<N;++n) for (int h=0;h<Ho;++h)
+    for (int w=0;w<Wo;++w)
+      s += G[((size_t(n)*M+m)*Ho+h)*Wo+w];
+  db[m]=s;
+}
+\end{lstlisting}
+主机端验证 $K>0,H\ge K,W\ge K$，按各自 \code{total} 向上取整启动网格，并在同一
+stream 中依次启动。每个输出地址只有一个线程写，所以没有竞态；若改成“每个 $G$ 线程
+散布贡献”，则必须原子加或做两阶段归约。更新 $F,b$ 的内核必须等待 $dF,db$ 完成，跨
+stream 时应用 event 建立依赖。
+
+\editorialnote 英文底本附录的反向传播材料存在三组相互关联的错误：公式 B.22 使用未定义
+$k$ 写成 $F[k-p,k-q]$；原书图 B.10 把 $w-q$ 误写为 $w-p$ 并重复循环；原书图 B.11 给
+$G$ 多写了通道下标。这里按前向式直接求偏导，使用 $F[p,q]$、$G[m,h,w]$ 和唯一循环，
+与中文译稿的勘误一致。
+
+\complexity{$dX$ 内核实际执行 $O(NMCHWK^2)$ 次边界检查，成功乘加总数为 $NMCH_oW_oK^2$；$dF$ 为 $O(NMCH_oW_oK^2)$，$db$ 为 $O(NMH_oW_o)$}{$dX,dF,db$ 输出空间；每线程 $O(1)$ 累加状态}{$dX$ 有 $NCHW$ 个任务，$dF$ 有 $MCK^2$ 个任务；基础实现的单线程归约可能成为长关键路径}
+\conclusionheading 两个公式分别枚举“哪些输出受该输入影响”和“该权重影响哪些输出”，
+是代码索引与有限差分梯度检查的直接依据。
+\discussionheading
+\discussionpoint{链式法则可以系统地产生三个梯度。}
+把前向写成互相关后，每个输出 $Y$ 依赖一个输入窗口、一个滤波器和一个偏置；上游梯度 $G$ 沿这些依赖反向传播。$dX$ 把 $G$ 乘滤波器权重散回所有覆盖该输入的位置，$dF$ 则对 batch 与输出空间累加 $XG$，$db$ 是相应输出通道上全部 $G$ 的和。前向若采用数学卷积而翻转核，下标规则也必须同步改变，不能仅凭“卷积反向”名称机械套式。自动微分系统保存的正是这些局部雅可比向量积规则，而不是构造巨大的显式雅可比矩阵，这让链式法则既可组合又能高效执行。
+
+\discussionpoint{唯一写者与归约并行度存在张力。}
+让一个线程负责一个 $dF$ 元素并顺序遍历所有 $N H_o W_o$ 项，可以避免原子写并固定累加顺序，但归约很长时并行度不足，而且不同线程会重复读取相同的 $X$ 和 $G$。split-K 或分块方案让多个块计算部分和，再用原子或第二阶段归约合并，吞吐更高却增加临时写流量、workspace 和不确定的浮点加法树。库会根据形状、内存预算和确定性要求选择不同策略。这个取舍与任何大归约相同：扩大写者数量能缩短关键路径，但必须为合并、同步和数值顺序支付代价。
+
+\discussionpoint{解析参考与有限差分承担不同验证角色。}
+小张量适合用 FP64 CPU 按公式逐项计算，能精确定位某个 padding 或索引偏移；大模型则可抽查参数，用中心差分 $[L(w+h)-L(w-h)]/(2h)$ 对比反向梯度。$h$ 太小会让两个损失之差被浮点舍入淹没，太大又引入 $O(h^2)$ 截断误差，因此应扫描几个数量级并看稳定区间。测试还要覆盖 stride、dilation、奇偶尺寸和边界像素，因为内部点正确并不能证明边界下标。两类检查互补：解析参考验证实现公式，有限差分验证整个前向与反向组合的链式关系。
+
+\discussionpoint{训练步的最优算法还受确定性与激活内存约束。}
+高性能卷积反向可能使用原子、动态算法选择或不同 split-K，末位结果会随加法树变化；可复现实验需要请求确定算法，并记录 workspace 上限，因为限制临时内存可能迫使库换路径。训练系统还会用梯度检查点少存激活、在反向时重算前向，以额外 FLOP 换显存；融合和通信重叠又会改变单个内核的时间价值。于是最快的 $dX$ 或 $dF$ 内核未必带来最快训练步。完整评价应同时观察每步时间、峰值内存、数值波动和分布式通信，而不能把局部算子排行榜当成系统结论。
+\variantheading 若 $N=M=C=1,H=W=3,K=2$ 且 $X,F,G$ 全为 1，则 $dF$ 的四项均为 4、$db=4$，而 $dX=\begin{bmatrix}1&2&1\\2&4&2\\1&2&1\end{bmatrix}$；这是可逐项核验的边界梯度模式。
+\practiceheading 在固定同一 NVIDIA GPU、连续 NCHW 和 FP32 计算的前提下，用 cuDNN backward-data/backward-filter 对照，并以 FP64 CPU 有限差分作梯度检查；Nsight Compute 比较 workspace 方案的 DRAM 流量和 achieved occupancy。
+\sourcecheck{https://docs.nvidia.com/deeplearning/cudnn/backend/latest/}{NVIDIA cuDNN Backend 官方文档的卷积数据梯度与滤波器梯度操作；高置信度}
+对抗检查：前向若改成数学卷积，或改变 padding、stride、dilation，梯度下标必须同步改变，
+不能照搬本题的互相关式。
+\end{solutionexercise}
+
+\begin{solutionexercise}{4}
+\problemheading 分析原书图 19.11 矩阵乘法内核的内存访问模式，讨论其全局内存访问
+是否合并，以及共享内存访问是否可能发生存储体冲突。该内核使用
+$16\times16$ 二维线程块；一个 warp 因 \code{threadIdx.x} 最快变化而跨两个
+\code{ty} 行。每一阶段以
+\code{F[Row*(C*K*K)+ph*16+tx]} 加载滤波器，以
+\code{u=ph*16+ty,v=Col} 把概念展开矩阵 $B[u,v]$ 映射回 NCHW 输入 $X$，再计算
+\code{Fds[ty][k]*Bds[k][tx]}。须分别分析 $F$、$B/X$、$Y$ 的全局访问和两个共享 tile
+的加载/乘加访问，并指出非整 tile 边界的影响。
+
+\approachheading CUDA 一维线程线性次序中 \code{threadIdx.x} 变化最快。图中块为
+$16\times16$，所以一个 warp 通常覆盖两个 \code{ty} 行，每行 16 个连续 \code{tx}。
+
+\answerheading 全局访问逐项如下。
+\begin{itemize}
+  \item 加载 $F$ 时，固定 \code{ty} 的 16 个线程读取同一矩阵行的连续 16 个
+  \code{float}。一个 warp 发出两个连续半行区段；地址满足正常对齐时可由少量合并交易
+  服务，但它不是“整个 warp 永远读取一个连续 32 元素区段”。行距 $CK^2$ 未对齐时可能
+  跨更多交易。
+  \item 加载概念矩阵 $B$ 时，固定 \code{ty} 即固定 $u$，相邻 \code{tx} 使 $v$ 连续。
+  在同一个输出行内，映射到 $X$ 的列也连续，因而合并；当 $v$ 跨过 $W_o$ 的行边界时，
+  $X$ 地址从一行末尾窗口跳到下一行起始窗口，跳距为 $K$ 个元素，warp 会被拆成多个连续
+  区段。故结论是“分段合并”，不是对任意 $W_o$ 都完全连续。
+  \item 写 $Y$ 与 $F$ 类似：每个 \code{ty} 半 warp 写连续 16 列；对齐和尾部决定交易数。
+\end{itemize}
+
+共享内存加载阶段，\code{Fds[ty][tx]} 和 \code{Bds[ty][tx]} 都按连续 \code{tx}
+落入连续 bank。乘加阶段读取 \code{Fds[ty][k]}：同一半 warp 的线程读取同一地址，可由
+共享内存广播服务；读取 \code{Bds[k][tx]}：16 个连续 bank，各值被两个不同 \code{ty}
+的 lane 读取，属于相同地址的多播而非两个不同地址落同一 bank。因此在常见 32-bank、
+4 字节 bank 宽配置下没有固有 bank conflict。改变图块宽度、元素大小、bank 模式或数组
+步长后必须重新分析。
+
+原书示例还有三个前提：$M$、$H_oW_o$ 和 $CK^2$ 必须与图块边界兼容；循环条件使用
+整数除法会漏掉 $CK^2$ 的余数阶段；代码也未检查 \code{Row}/\code{Col}/\code{u}
+边界。通用实现应使用向上取整的阶段数，并把越界共享内存槽填 0，在最终写回前检查
+\code{Row<M}、\code{Col<H_oW_o}。这些是正确性条件，不只是性能细节。
+
+\complexity{每个样本的总乘加为 $O(MCK^2H_oW_o)$}{$2\cdot16^2$ 个共享 float，加每线程一个累加器}{每块 256 线程；两次块屏障保护共享 tile 的写后读和下一阶段覆盖}
+\conclusionheading $F$、$B/X$ 和 $Y$ 在常见位置都能形成连续子交易，共享访问依靠广播/
+多播避免冲突；矩阵行边界和非整图块尾部是对“完全合并、无越界”结论的反例。
+\discussionheading
+\discussionpoint{im2col 用数据复制换取规则矩阵乘。}
+卷积的每个输出都读取一个滑动窗口，直接实现时地址包含通道、核坐标和空间边界。im2col 把所有窗口显式展开成矩阵列，同一个输入像素会因出现在多个窗口而被复制，但后续计算变成规则 GEMM，可以复用成熟矩阵乘内核。隐式 GEMM 不真正写出展开矩阵，而是在加载时根据矩阵坐标反算 $X$ 地址，省下大量中间字节，却增加整数索引和边界谓词。两者代表经典的“先物化以简化计算”与“按需生成以节省内存”取舍，数据库查询、张量编译和稀疏算子中也反复出现这种选择。
+
+\discussionpoint{tile 形状同时支配数据复用和驻留。}
+把 $16\times16$ tile 扩到 $32\times32$，一个 warp 可以完整覆盖一行，边界块比例也可能降低；但线程数从 256 增到 1024，寄存器与共享内存总量上升，设备可能只能让更少块同时驻留。较小 tile 提供更多块来隐藏延迟，却增加阶段数、同步次数和半 warp 请求。矩阵的 $M,N,K$ 比例也会让长方形 tile 优于正方形，例如输出列很多而滤波器行较少时，应把资源更多分配给 $N$ 维。最佳 tile 是复用、同步、尾块和占用共同形成的离散优化问题，不能只根据“越大复用越多”作判断。
+
+\discussionpoint{全局合并与共享 bank 必须分别证明。}
+相邻 \code{tx} 让全局地址连续，只能说明搬入阶段可能合并；数据写入共享内存后，乘加若按列读取，多个 lane 可能访问同一 bank 的不同地址而产生冲突。padding、转置或 swizzle 可以改变 bank 映射，但也可能使向量加载对齐更复杂；若多个 lane 读取完全相同地址，则通常是广播而不是冲突。Tensor Core 片段还要求特定块布局和对齐，源码二维下标的直觉不再足够。正确分析应沿实际 warp 线性 lane 写出全局源地址和共享目的地址，再分别检查尾部谓词、交易与 bank，而不是用一个“连续”结论包办两层存储。
+
+\discussionpoint{高性能 GEMM 是多级数据流水而非单一 tile。}
+现代实现会把一个 CTA tile 再划成 warp tile 和指令 tile，让全局到共享的异步复制与前一 tile 的矩阵乘重叠，并以双缓冲避免消费者读到正在覆盖的数据。共享数据进入寄存器片段后由 warp 级 MMA 累加，每一层都有对齐、同步和资源约束；增加流水级数可隐藏延迟，却消耗更多共享内存。比较自写隐式 GEMM 与 cuDNN 或 CUTLASS 时，应使用真实形状并观察有效算术、实际 DRAM 字节、bank 冲突、驻留和尾块比例。峰值 TFLOP/s 只有在操作数形状适配且数据供给不断时才有意义，这把卷积访存题延伸到了完整的层次化性能模型。
+\variantheading 若 tile 从 $16\times16$ 改为 $32\times32$，每个 warp 固定一个
+\code{ty}；访问 $F$、$Y$ 时是 32 个连续 float，对齐时覆盖一个 128 字节区段。访问隐式
+$B/X$ tile 只有在这 32 列未跨越 $W_o$ 的输出行边界时才连续；跨界时仍分成相隔 $K$
+个元素的区段。块含 1024 线程、两块共享 tile 合计 8192 字节，设备还必须允许每块
+1024 线程。
+\practiceheading 假定 warp 为 32 lane、共享内存有 32 个 4 字节宽的 bank，且设备允许
+每块 1024 个线程。在这样的 NVIDIA GPU 上以 CUTLASS 隐式 GEMM 或 cuDNN 作基线，并用
+Nsight Compute 检查每请求扇区数、共享内存 bank 冲突和占用率。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}{CUDA C++ Best Practices Guide 对全局合并访问、共享内存 bank 和广播的官方说明；对抗检查：只观察源码中 tx 连续而忽略 warp 跨两行、隐式展开跨输出行和尾部越界，会得出过强结论}
+\end{solutionexercise}

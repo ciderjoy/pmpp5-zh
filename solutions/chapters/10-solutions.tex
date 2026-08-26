@@ -1,0 +1,365 @@
+\chapter{归约}
+
+\begin{solutionexercise}{1}
+\problemheading 对图 10.5 的简单归约内核，若元素数为 1024、warp 大小为 32，
+第 5 次迭代时块内有多少个 warp 会发生分歧？图 10.5 的基线内核为：
+\begin{lstlisting}[language=C++,firstnumber=1]
+__global__ void SimpleSumReductionKernel(float* input, float* output) {
+    unsigned int i = 2*threadIdx.x;
+    for(unsigned int stride = 1; stride <= blockDim.x; stride *= 2) {
+        if(threadIdx.x % stride == 0) {
+            input[i] += input[i + stride];
+        }
+        __syncthreads();
+    }
+    if(threadIdx.x == 0) {
+        *output = input[0];
+    }
+}
+\end{lstlisting}
+对 1024 个输入元素，单块启动 512 个线程；“第 5 次迭代”从步幅 1 的第一次开始计数。
+
+\approachheading 一个线程先负责两个元素，故块中有 $1024/2=512$ 个线程，即 16 个
+warp。把“第 1 次”对应到步幅 1，逐轮列出活跃线程。
+
+\answerheading 第 5 次迭代的步幅为 $1,2,4,8,16$ 中的 16。条件
+\code{threadIdx.x \% 16 == 0} 使每个 warp 的 lane 0 和 lane 16 执行加法，其余 lane
+不执行。每个 warp 内都有真假两条控制路径，因此 16 个 warp 全部分歧。
+
+\conclusionheading 发生分歧的 warp 数为 $\boxed{16}$。
+\discussionheading
+\discussionpoint{分歧描述的是执行组内部而不是线程总数。}SIMT 让一个 warp 的 lane 共享取指，但每条指令带有活动掩码；当同一 warp 中部分 lane 满足条件、部分不满足时，硬件才需要分别覆盖不同路径。第 5 轮的条件是线程号能被 16 整除，因此每个完整 warp 都有 lane 0 和 16 为真、其余为假，恰好形成 16 个混合掩码。若整个 warp 都为假，它虽然没有做加法，却不算分歧；这个反例能避免把“闲置线程多”与“控制流分歧严重”混成一个概念，也适用于稀疏分支和边界谓词分析。反过来，一个仅有 33 个线程的块即使只有最后一线程有效，尾 warp 也可在活动掩码范围内保持一致，不能只按块中真假线程总数判断。
+
+\discussionpoint{改变索引映射可以改变控制流几何。}交错归约把活跃线程按步幅散布在所有 warp 中，因此即使活跃线程数已经很少，仍可能让许多 warp 各自执行一小部分工作。收敛归约则让活跃线程始终组成从 0 开始的连续前缀，使完整 warp 要么全做、要么全不做；最后缩到 32 项时还可用 shuffle 在寄存器间交换值。这个演进没有改变求和的数学树，却改变了线程到树节点的映射，说明并行算法优化常是“重新安排所有权”而非减少算术工作，类似思想也见于稀疏矩阵行分组和图遍历 frontier 压缩。若重新映射同时把相邻线程对应到连续共享下标，还可能连带减少 bank 冲突，因此控制流与访存收益往往来自同一所有权变换。
+
+\discussionpoint{分歧计数不能单独预测内核时间。}基线代码每轮还执行取模、地址计算、内存读写和块级屏障，后半段又因活跃线程减少而失去并行度；这些成本可能比真假路径本身更大。编译器还可能把很短的条件体变成谓词化指令，此时分支事件看似消失，假 lane 仍占据发射机会而不产生有效加法。因而性能模型至少要同时考虑每轮活跃 lane、指令数、共享事务和同步等待，并用时间验证各项权重；这也是为什么“分支效率提高”并不自动等于应用加速。例如把取模改成位运算后，分歧数完全不变却可能少发多条整数指令；反之消除一个分支却保留十轮屏障，时间也可能几乎不动。应以逐轮耗时和 stall 分类验证谁在关键路径上。
+
+\discussionpoint{执行组宽度是算法参数而不是宇宙常数。}本题明确给出 warp 为 32，所以 lane 0 和 16 的结论成立；在采用 64-lane wavefront 或可变 subgroup 的平台上，同一条件会形成不同数量的混合执行组。即使仍在 CUDA 上，最后一个不足 32 个有效元素的 warp 也必须用实际活动掩码参与 shuffle，不能假定满组。可移植实现应从运行环境或编程模型取得组宽，并用 31、32、33 等边界规模检查掩码。把这种假设显式化后，归约代码才可能安全迁移到合作组、HIP 或着色器子组，而不是只在某个固定块大小下偶然正确。
+\variantheading 若仍有 512 个线程，但问第 6 次迭代（步幅 32），每个 warp 只有 lane 0
+满足条件，16 个 warp 仍全部分歧；活跃加法则从 32 次降为 16 次。
+\practiceheading 可在 Nsight Compute 中比较 Branch Efficiency 与 Warp State Statistics，
+并以不同块大小复测；分析时假定设备 warp 宽度为运行时属性报告的 32，而非把它隐含推广到
+其他并行体系结构。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{NVIDIA CUDA C++ Programming Guide 对 warp 与分支分歧的定义；高置信度}
+假设审查：若把迭代从 0 编号，第 5 号迭代会是步幅 32；题目用“第 5 次”而非“编号 5”，
+应按步幅 16 解释。即使取步幅 32，各 warp 也仍只有 lane 0 活跃，答案仍为 16。
+\end{solutionexercise}
+
+\begin{solutionexercise}{2}
+\problemheading 对图 10.8 的改进归约内核，若元素数为 1024、warp 大小为 32，
+第 5 次迭代时有多少个 warp 会发生分歧？图 10.8 的基线内核为：
+\begin{lstlisting}[language=C++,firstnumber=1]
+__global__ void ConvergentSumReductionKernel(float* input, float* output) {
+    unsigned int i = threadIdx.x;
+    for(unsigned int stride = blockDim.x; stride >= 1; stride /= 2) {
+        if(threadIdx.x < stride) {
+            input[i] += input[i + stride];
+        }
+        __syncthreads();
+    }
+    if(threadIdx.x == 0) {
+        *output = input[0];
+    }
+}
+\end{lstlisting}
+对 1024 个输入元素，单块启动 512 个线程；“第 5 次迭代”从步幅 512 的第一次开始计数。
+
+\approachheading 该内核让活跃线程始终构成从线程 0 开始的连续前缀。第 5 次迭代的
+步幅是 $512,256,128,64,32$ 中的 32。
+
+\answerheading 条件为 \code{threadIdx.x < 32}。warp 0 的 32 个 lane 全部为真，
+warp 1--15 的 lane 全部为假；没有任何一个 warp 同时执行真假两条路径。因此分歧数为 0。
+这里“非活跃 warp”不等同于“发生分歧”：分歧只在同一 warp 的活动 lane 对分支条件
+取值不一致时产生。
+
+\conclusionheading 发生分歧的 warp 数为 $\boxed{0}$。
+\discussionheading
+\discussionpoint{没有分歧仍可能只有很少有效工作。}第 5 轮的 32 个活跃线程恰好填满 warp 0，其余 15 个 warp 对条件全为假，所以控制流是收敛的；然而有效加法只剩初始 512 个线程容量的 $1/16$。若只观察 branch efficiency，会把这个阶段误判为高效，而算术利用率和屏障等待会揭示大部分线程资源已经闲置。这个例子建立了三个独立维度：路径是否一致、lane 是否执行有效指令、硬件是否仍有其他 warp 可调度；分析稀疏计算、条件卷积和尾块时也必须保持这种区分。若一个 SM 同时驻留多个独立归约块，其他块的活跃 warp 尚可填补空槽；只有单块或低占用时，后期闲置才会完全暴露为时间。
+
+\discussionpoint{归约天然需要跨越多个并行层次。}当活动范围大于一个 warp 时，共享内存和块级屏障提供任意线程间的交换；缩到一个 warp 后，shuffle 能直接传递寄存器值，避免继续支付全块同步。数组再大时，单块先产生部分和，第二层再归约这些部分和，必要时递归多层。这个“局部聚合、上层合并”的结构从 GPU 块归约一直延伸到 CPU SIMD、NUMA 节点和分布式 all-reduce，区别只在每层通信代价和同步范围，因此理解本题的边界正是理解大型归约系统的入口。例如多 GPU 先在卡内块归约，再经 NVLink 或网络合并卡级结果，正是把同一树继续向外扩展。
+
+\discussionpoint{删除屏障必须同时维护可见性和参与集合。}连续前缀减少了混合分支，却没有自动消除每轮的 \code{__syncthreads()}；后几轮只有几十次加法，数百线程仍等待屏障，固定成本会占据主要比例。改用 \code{__shfl_down_sync} 时，调用者要传递包含所有参与 lane 的正确掩码，并保证这些 lane 以一致方式执行原语；在独立线程调度架构上，依赖过去“warp 天然锁步”的隐含假设可能读到旧值。类似规则也适用于 warp 级投票和矩阵片段操作：局部原语降低同步范围，却把活动集合变成了显式正确性契约。
+
+\discussionpoint{规模决定应该比较哪一种实现。}几十个元素的归约往往被 kernel launch 和主机往返主导，此时再优化一轮共享访问几乎不可见；数百万元素则更接近内存带宽上限，首层加载与部分和流量成为关键。手写版本应分别与块级库原语、两阶段设备归约和可能的融合消费者比较，并在相同数值语义下核对误差。若只报告一个大规模峰值，会错过小批量推理和在线查询的延迟需求；若只看一个小数组，又无法评价树形映射对带宽的影响。分段绘制规模--时间曲线比单一加速比更能指导生产选择。曲线的转折点还能直接告诉调度器何时走 CPU、小型融合 kernel 或完整设备归约，而不必把一个实现强用于所有输入。
+\variantheading 若第 5 次的活跃前缀改为 20 个线程，则 warp 0 有 20 个真 lane 和 12 个
+假 lane，恰有 1 个 warp 分歧，其余 15 个 warp 全假。
+\practiceheading 用 Nsight Compute 同时检查 Branch Efficiency 和每轮 Executed
+Instructions，才能区分“没有分歧”与“没有工作”；生产代码通常在最后一个 warp 改用
+shuffle 归约以减少块级屏障。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}{NVIDIA CUDA C++ Best Practices Guide 的分支分歧说明；高置信度}
+反例审查：若步幅不是 warp 大小的整数倍，例如 20，则第一个 warp 会有 20 个真 lane 与
+12 个假 lane；本题步幅恰为 32，不能把“只有一个活跃 warp”误判为分歧。
+\end{solutionexercise}
+
+\begin{solutionexercise}{3}
+\problemheading 修改图 10.8 的内核，采用下面所示的访问模式：
+\begin{center}
+\scriptsize
+\setlength{\tabcolsep}{2.2pt}
+\begin{tabular}{c|*{16}{c}}
+  &0&1&2&3&4&5&6&7&8&9&10&11&12&13&14&15\\\hline
+  线程所有者&&&&&&&&&$T_0$&$T_1$&$T_2$&$T_3$&$T_4$&$T_5$&$T_6$&$T_7$\\
+  步 0&&&&&&&&&\colorbox{blue!25}{\strut$\Sigma$}&\colorbox{blue!25}{\strut$\Sigma$}&
+    \colorbox{blue!25}{\strut$\Sigma$}&\colorbox{blue!25}{\strut$\Sigma$}&
+    \colorbox{blue!25}{\strut$\Sigma$}&\colorbox{blue!25}{\strut$\Sigma$}&
+    \colorbox{blue!25}{\strut$\Sigma$}&\colorbox{blue!25}{\strut$\Sigma$}\\
+  步 1&&&&&&&&&&&&&\colorbox{blue!25}{\strut$\Sigma$}&
+    \colorbox{blue!25}{\strut$\Sigma$}&\colorbox{blue!25}{\strut$\Sigma$}&
+    \colorbox{blue!25}{\strut$\Sigma$}\\
+  步 2&&&&&&&&&&&&&&&\colorbox{blue!25}{\strut$\Sigma$}&
+    \colorbox{blue!25}{\strut$\Sigma$}\\
+  步 3&&&&&&&&&&&&&&&&\colorbox{blue!25}{\strut$\Sigma$}
+\end{tabular}
+\\[0.35em]
+\begin{tabular}{c@{\quad}l}
+  步 0 & $\code{input[8+k]}\leftarrow\code{input[8+k]}+\code{input[k]}$，$0\le k<8$\\
+  步 1 & $\code{input[12+k]}\leftarrow\code{input[12+k]}+\code{input[8+k]}$，$0\le k<4$\\
+  步 2 & $\code{input[14+k]}\leftarrow\code{input[14+k]}+\code{input[12+k]}$，$0\le k<2$\\
+  步 3 & $\code{input[15]}\leftarrow\code{input[15]}+\code{input[14]}$
+\end{tabular}
+\end{center}
+图表以 16 个输入、8 个线程说明一般模式：线程拥有右半区，活跃所有者逐轮向区段
+末端收敛，最终和位于最后一个输入位置。
+
+\approachheading 对 $2B$ 个输入启动 $B$ 个线程。步幅依次为 $B,B/2,\ldots,1$；步幅
+$s$ 时只让 $t\ge B-s$ 的线程把位置 $B+t-s$ 加到所有者位置 $B+t$。
+
+\answerheading 以下内核适用于 $B$ 为 2 的幂且输入恰有 $2B$ 个元素：
+\begin{lstlisting}[language=C++]
+__global__ void right_owned_sum(float* input, float* output) {
+    const unsigned int B = blockDim.x;
+    const unsigned int t = threadIdx.x;
+    const unsigned int owner = B + t;
+    for (unsigned int stride = B; stride >= 1; stride >>= 1) {
+        if (t >= B - stride)
+            input[owner] += input[owner - stride];
+        __syncthreads();
+    }
+    if (t == B - 1) *output = input[2 * B - 1];
+}
+// Example: right_owned_sum<<<1, 512>>>(d_input, d_output);
+\end{lstlisting}
+步幅 $B$ 更新位置 $B\ldots2B-1$；步幅 $B/2$ 只更新最后 $B/2$ 个位置。归纳地，
+每轮把两个不相交的索引子集聚合到右侧所有者，子集大小逐轮倍增，最后位置 $2B-1$
+包含全部 $2B$ 项的和。这里的子集一般并不连续：例如 $B=2$ 时，若把操作数写成“左源在
+前”，拓扑顺序仍是 $a,c,b,d$。对本题加法，交换律使该置换不影响总和；每轮源、目的位置
+不重叠，块级屏障又隔开相邻轮，所以没有读写竞态。
+
+\complexity{$O(B)$ 总工作、$O(\log B)$ 并行深度}{$O(1)$ 额外设备空间}{$B$ 个线程，活跃数逐轮减半}
+\conclusionheading 对加法归约，结果位于 \code{input[2*blockDim.x-1]}，访问模式与题图完全一致。
+\discussionheading
+\discussionpoint{所有者在右端不代表它拥有连续区间。}首轮直接把位置 $t$ 与 $B+t$ 配对，所以位置 $B+t$ 保存的是两个相隔 $B$ 的元素之和，而不是以它结尾的长度 2 连续片段。后续轮次继续合并这种交错集合，最终结果确实落在下标 $2B-1$，加法数和树深也与常见归约相同，但中间状态的集合含义完全不同。因而该布局可以省去最终结果搬到数组首端的一步，却不能直接充当游程结束值或分段扫描摘要；算法设计中“结果放在哪里”和“结果代表哪一段输入”必须分别证明。可在调试表中为每个槽保存叶子下标集合而非只保存和，这会立即显示第一轮的集合是 $\{t,B+t\}$。
+
+\discussionpoint{非交换运算给出最直接的反例。}加法满足交换律，所以子树顺序被置换后结果不变；字符串连接和矩阵乘法只满足结合律，不能承受这种置换。取 $B=2$、输入为 $a,b,c,d$，即使每轮都让源操作数写在左边，首轮得到 $ac$ 与 $bd$，末轮仍是 $acbd$ 而不是 $abcd$。要保持原序，应改用先合并相邻区间的树，或先按此拓扑的逆置换重排输入，并明确单位元与尾部补齐规则。这个小反例也说明测试非交换结合算子是发现并行扫描、归约中隐式重排的有效方法。矩阵乘法可用不对易的两个 $2\times2$ 矩阵构造同类数值反例，避免字符串被误认为只是展示技巧。
+
+\discussionpoint{设备范围扩展需要新的同步边界。}单块只能覆盖 $2B$ 项，更长输入通常让每块输出一个部分结果，再启动下一层内核归约这些结果；每次 launch 天然形成设备范围的阶段边界。合作启动允许用 \code{grid.sync()} 把若干层放入一个内核，但要求整个合作网格满足驻留约束，普通内核不能用共享标志自旋来伪造屏障。对交换求和，部分结果的排列通常无碍；对需要固定次序的算子，块分区和上层树还必须保持原始区段顺序。相同问题会出现在多 GPU all-reduce 中，只是同步边界从 kernel launch 变成通信轮次。
+
+\discussionpoint{数值误差使“数学等价”仍不等于逐位相同。}浮点加法在实数上可交换结合，在有限精度中却会因每棵树的配对和舍入点不同而得到不同末位，量级悬殊或强抵消数据尤其明显。固定树只能提供确定的执行顺序，不必然提高准确度；双精度部分和、成对求和或补偿算法则用额外资源换取误差控制。调试时应保存小输入每轮的所有者集合和值，与按同一树序运行的 CPU 模拟比较，同时断言未拥有位置是否允许被覆盖。这样可以把索引错误、缺屏障和纯舍入差异分开，而不是看到最终和不同就笼统归咎于竞态。误差测试可同时给出高精度参考、绝对误差和 ULP 距离，使“可接受差异”成为量化契约。
+\variantheading 若 $B=256$，内核读取 512 项并在 9 轮后把总和留在
+输入数组下标 511；若 $B$ 不是 2 的幂，当前倍减循环会遗漏项，必须先填充到 2 的幂或改写树。
+\practiceheading 可用 CUB 块归约作数值基线，并在 NVIDIA 竞争与同步检查工具下覆盖
+$B=32,256,512$；启动前查询每块线程上限并验证输入至少有
+$2B$ 项。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{NVIDIA 对 \code{__syncthreads()} 的块级内存可见性保证；另以 $B=2$ 的非交换字符串反例对抗核验索引顺序，确认该拓扑不能仅凭结合律推广}
+边界审查：内核不能跨块同步，且没有长度参数；调用方必须保证单块、$2B$ 个有效元素以及
+$B$ 为 2 的幂。任一线程在屏障前提前返回都会令屏障行为未定义。
+\end{solutionexercise}
+
+\begin{solutionexercise}{4}
+\problemheading 修改图 10.20 的内核，使它执行最大值归约而不是求和归约。图 10.20
+给出的粗化关键代码为：
+\begin{lstlisting}[language=C++,firstnumber=1]
+__global__ void CoarsenedSumReductionKernel(float* input, float* output) {
+    ...
+    unsigned int segment = COARSE_FACTOR*2*blockDim.x*blockIdx.x;
+    unsigned int i = segment + threadIdx.x;
+    float partialSum = input[i];
+    for(unsigned int c = 1; c < COARSE_FACTOR*2; ++c) {
+        partialSum += input[i + c*BLOCK_DIM];
+    }
+    ...
+}
+\end{lstlisting}
+省略号表示与图 10.18 相同的共享内存块内归约和块结果提交部分；改写时还必须选择
+适用于任意（包括全负）输入的最大值单位元。
+
+\approachheading 把二元运算从加法换成 \code{fmaxf}，并把单位元从 0 换成负无穷。
+各块先产生一个最大值；对块结果递归调用同一内核，避免依赖浮点 \code{atomicMax} 的
+架构与 NaN 语义差异。
+
+\answerheading 下面是完整的单层内核；主机反复令输入指向上一层 \code{partial}，直到
+只剩一个元素。
+\begin{lstlisting}[language=C++]
+#include <cuda_runtime.h>
+#include <math_constants.h>
+
+template<int B, int C>
+__global__ void coarsened_max(const float* in, float* partial, size_t n) {
+    __shared__ float s[B];
+    size_t segment = size_t(blockIdx.x) * (2 * C * B);
+    size_t i = segment + threadIdx.x;
+    float v = -CUDART_INF_F;
+#pragma unroll
+    for (int c = 0; c < 2 * C; ++c) {
+        size_t p = i + size_t(c) * B;
+        if (p < n) v = fmaxf(v, in[p]);
+    }
+    s[threadIdx.x] = v;
+    __syncthreads();
+    for (int stride = B / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride)
+            s[threadIdx.x] = fmaxf(s[threadIdx.x],
+                                  s[threadIdx.x + stride]);
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) partial[blockIdx.x] = s[0];
+}
+// blocks = (n + 2*C*B - 1) / (2*C*B), B must be a power of two.
+\end{lstlisting}
+不变量是 \code{v} 始终等于该线程已访问元素的最大值；共享内存归约每轮合并两个不相交
+集合的最大值，因此块结果正确。不同块写不同的 \code{partial} 元素，不存在竞态。
+
+\complexity{$O(n)$ 总工作、每层 $O(C+\log B)$}{$O(n/(2CB))$ 首层部分结果空间}{$\lceil n/(2CB)\rceil$ 个块，块内 $B$ 线程}
+\conclusionheading 用负无穷作为单位元后，负数输入也能正确处理；递归归约得到全局最大值。
+\discussionheading
+\discussionpoint{最大值首先是一份接口语义。}对普通有限浮点数，最大运算满足结合律，负无穷又是单位元，因此树形归约可以从任意尾部补入负无穷而不改变答案。NaN 和有符号零却迫使接口作选择：\code{fmaxf} 在只有一个操作数为 NaN 时通常返回数值操作数，而数据质量系统可能要求任何 NaN 都传播；$+0$ 与 $-0$ 的选择也可能影响后续倒数。因而“求最大值”并非天然唯一的位级函数，库实现、CPU 参考和测试必须共享同一契约。类似问题也出现在最小值、argmax 和缺失数据聚合中。例如输入只有 NaN 时，是返回 NaN、负无穷还是错误状态，必须由空值政策而非归约树偶然决定。
+
+\discussionpoint{线程粗化是在减少层次与隐藏延迟之间交易。}每线程读取 $2C$ 项时，块数约缩为原来的 $1/C$，部分结果数组和递归 launch 随之减少，地址计算也被多个输入摊薄。另一方面，每个线程的串行加载链更长，独立线程总数下降；即使只保留一个最大值累加器而没有明显寄存器膨胀，设备也可能缺少足够 warp 来遮蔽内存延迟。例如短数组取很大 $C$ 会只启动少数块，SM 大量空闲。最优粗化因子因此取决于数组规模、带宽延迟和驻留资源，这也是向量化、批处理与循环展开普遍面对的平衡。可把首层块数至少覆盖若干倍 SM 数作为下限，再在满足该并行度的候选 $C$ 中测量。
+
+\discussionpoint{设备级归约有递归与原子两条主路线。}块内缩到一个 warp 后可用 shuffle 完成，块结果则可以写入数组并递归归约，或直接原子更新一个全局最大值。递归方案多读写一轮部分结果，却让每层访问规则、同步边界和吞吐比较稳定；原子方案省空间和 launch，但所有块争用一个地址，且浮点类型、NaN 语义与架构支持需要逐项确认。成熟的 DeviceReduce 还会按规模选择多种策略，所以手写内核应把库结果当作语义与性能基线，而不是假定某一路线普遍最快。当块数只有几十时原子热点可能可接受，达到数万时同址提交尾部往往主导，这给出了自然的分派阈值。
+
+\discussionpoint{很多应用真正需要的是带证据的 argmax。}最大池化只要值，异常检测、数据库 top-1 和注意力解码常还要知道最大值来自哪个位置，因此归约元素应是值--索引对。相等值时选最小索引可以获得稳定结果，若不同层采用不同 tie-break，最终位置就可能随块大小改变；含 NaN 时还要决定它是否胜出。测试集应覆盖全负数、正负无穷、重复最大值、NaN 和不完整尾块，并同时检查值和索引。由单纯 max 扩展到带伴随数据的单子，是理解 top-k、分段最优和动态规划回溯的自然一步。组合运算可定义为先比较值、再比较索引，从而仍满足结合律并可安全放入任意归约树。
+\variantheading 若输入类型改为 \code{double}，应使用 \code{-CUDART_INF} 与
+\code{fmax}；对空输入则没有数组最大值，主机接口应返回错误或显式约定的空集合结果。
+\practiceheading 以 CUB \code{DeviceReduce::Max} 为性能与结果基线，使用全负、含正负无穷、
+含 NaN 和非整除尾部的测试集；用 Nsight Compute 检查增大 $C$ 后的占用率与内存吞吐。
+\sourcecheck{https://github.com/NVIDIA/cccl/tree/main/cub}{CUB DeviceReduce 对归约运算和初值的官方接口说明；高置信度}
+反例审查：以 0 作单位元会把全负数组错误地归约为 0。NaN 的处理取决于 \code{fmaxf}
+语义；若应用要求“遇到 NaN 即返回 NaN”，必须另行累计 NaN 标志。
+\end{solutionexercise}
+
+\begin{solutionexercise}{5}
+\problemheading 修改图 10.20 的内核，使它能处理不一定为
+\code{COARSE_FACTOR*2*blockDim.x} 整数倍的任意长度输入。为内核增加一个表示输入
+长度的参数 \code{N}。图 10.20 的粗化加载关键代码为：
+\begin{lstlisting}[language=C++,firstnumber=1]
+unsigned int segment = COARSE_FACTOR*2*blockDim.x*blockIdx.x;
+unsigned int i = segment + threadIdx.x;
+float partialSum = input[i];
+for(unsigned int c = 1; c < COARSE_FACTOR*2; ++c) {
+    partialSum += input[i + c*BLOCK_DIM];
+}
+\end{lstlisting}
+其后仍执行共享内存块内求和归约并提交块结果；所有线程必须继续到达块级屏障，
+越界输入应贡献加法单位元而不能提前返回。
+
+\approachheading 每次全局读取前检查下标；越界 lane 贡献加法单位元 0。不要在检查失败时
+让线程返回，因为所有线程仍必须到达块级屏障。
+
+\answerheading
+\begin{lstlisting}[language=C++]
+template<int B, int C>
+__global__ void coarsened_sum_any(const float* input, float* partial,
+                                  size_t N) {
+    __shared__ float s[B];
+    const size_t base = size_t(blockIdx.x) * (2 * C * B);
+    const size_t owner = base + threadIdx.x;
+    float sum = 0.0f;
+#pragma unroll
+    for (int c = 0; c < 2 * C; ++c) {
+        const size_t i = owner + size_t(c) * B;
+        if (i < N) sum += input[i];
+    }
+    s[threadIdx.x] = sum;
+    __syncthreads();
+    for (int stride = B / 2; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) s[threadIdx.x] += s[threadIdx.x + stride];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) partial[blockIdx.x] = s[0];
+}
+// If N==0, return 0.0f on the host; a zero-block CUDA launch is invalid.
+// Otherwise grid.x = (N + 2*C*B - 1) / (2*C*B); reduce partial recursively.
+\end{lstlisting}
+每个合法下标恰落入一个块、一个线程和一个粗化循环迭代；越界下标不读取。故各块部分和
+覆盖输入的不相交划分，递归相加得到总和。使用 \code{size_t} 还避免大数组的 32 位乘法
+溢出。
+
+\complexity{$O(N)$ 总工作}{$O(\lceil N/(2CB)\rceil)$ 首层部分和空间}{$O(N/(CB))$ 个线程，块间独立}
+\conclusionheading 边界检查与单位元填充使尾部不完整区段正确且无越界访问。
+\discussionheading
+\discussionpoint{单位元把不规则尾部嵌入规则树。}最后一个块不足 $2CB$ 项时，为每个越界位置贡献 0，等价于把原数组扩展为更长数组，因为 $x+0=x$；归约树的控制流因此无需随有效长度变化。换成最大值时应填负无穷，逻辑与应填真，前提都是该运算存在左右单位元。若操作只有结合律却没有单位元，就不能随意构造虚拟元素，而应让节点携带“是否有效”标志或使用分支合并。这个代数视角把边界检查从 CUDA 技巧提升为通用方法，也适用于扫描、分块卷积和树形数据库聚合。对平均值则不能直接填 0 后除以填充长度，必须同时归约总和与有效计数，这就是错误单位元选择的具体反例。
+
+\discussionpoint{屏障要求无效线程继续参与协议。}若越界线程在加载后直接 \code{return}，同一块的有效线程还会到达 \code{__syncthreads()}，于是参与集合不一致，行为未定义且可能永久等待。正确模式是让所有线程执行相同的同步骨架，只在内存访问和最终写回处用谓词决定是否真正读写；无效线程把单位元写入共享槽后仍参加每一轮。这个原则也解释了为何 tile 边界常用掩码填零，而不是让线程提前退出。更一般地，任何块级集体操作都要求调用集合一致，条件路径必须在进入集体之前重新收敛。
+
+\discussionpoint{一次边界判断不能覆盖整个规模契约。}即使每次读取都检查 $p<N$，表达式 $2CB\cdot\code{blockIdx.x}$ 若先在 32 位中溢出，得到的 $p$ 仍可能落回合法范围并错误读取旧位置。地址、网格数和部分结果容量应使用 \code{size_t} 或经证明足够宽的类型，主机还需特判 $N=0$，因为零块 launch 与递归终止各有接口约束。转换到 CUDA 的有限网格维度前也要验证上界，而非直接截断。这样的全链路整数审查同样适用于张量步幅、文件偏移和分布式计数，许多大规模错误并不发生在最终解引用处。
+
+\discussionpoint{尾部成本应按余数而非单一规模观察。}常见情形只有最后一个块包含无效循环，所以当数组很大时，浪费比例至多约为一个块容量除以 $N$；但短输入或很大的 $C$ 会让大多数 lane 都只执行谓词和同步。可按 $N\bmod(2CB)$ 分组测量，使满块、差一个元素和只含一个元素三种极端清晰可见，再决定是否增加小规模专用 kernel 或 CPU 路径。网格步进加载能让固定块数反复处理长输入，却会改变缓存和归约层次。这样建立的分段成本模型比一句“尾块可忽略”更可靠，也能指导批处理系统如何把多个小数组拼接起来。
+\variantheading 若 $B=256,C=2,N=1025$，每块覆盖 1024 项，网格为 2 块；第二块仅一个
+合法输入，其余 lane 都贡献 0，两个部分和再归约得到总和。
+\practiceheading 对 $N=0,1,2CB-1,2CB,2CB+1$ 做参数化测试，并在 Compute Sanitizer
+memcheck 下运行；生产封装还应检查 \code{size_t} 网格计算是否超过设备 \code{gridDim.x}
+上限以及每次启动的返回错误。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}{NVIDIA Best Practices Guide 的合并访问与边界处理原则；高置信度}
+同步审查：把 \code{if (i>=N) return} 放在屏障之前会导致部分块线程缺席屏障；这里仅跳过
+加载而不退出。浮点加法不满足实数意义上的严格结合律，结果可能随分组产生末位差异。
+\end{solutionexercise}
+
+\begin{solutionexercise}{6}
+\problemheading 假设要对下面的输入数组执行并行归约：
+\[
+  \{6,2,7,4,5,8,3,1\}.
+\]
+分别采用以下内核时，画出每次迭代后数组内容的变化：
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item 图 10.5 中未经优化的内核；
+  \item 图 10.8 中针对访问合并与分歧优化的内核。
+\end{enumerate}
+图 10.5 令线程 $t$ 拥有位置 $2t$，步幅从 1 开始逐轮加倍，满足
+\code{threadIdx.x \% stride == 0} 的线程执行
+\code{input[2*t] += input[2*t + stride]}。图 10.8 令线程 $t$ 拥有位置 $t$，
+步幅从 4 开始逐轮减半，满足 $t<\code{stride}$ 的线程执行
+\code{input[t] += input[t + stride]}；每轮之后均有块级屏障。
+
+\approachheading 两种内核都以 4 个线程处理 8 个元素。严格按每轮屏障前的旧值同时计算，
+未被写入的位置保持不变。
+
+\answerheading 交错活跃版本的步幅依次为 1、2、4：
+\[
+\begin{array}{c|rrrrrrrr}
+\text{初始}&6&2&7&4&5&8&3&1\\
+s=1&8&2&11&4&13&8&4&1\\
+s=2&19&2&11&4&17&8&4&1\\
+s=4&36&2&11&4&17&8&4&1
+\end{array}
+\]
+收敛式版本的步幅依次为 4、2、1：
+\[
+\begin{array}{c|rrrrrrrr}
+\text{初始}&6&2&7&4&5&8&3&1\\
+s=4&11&10&10&5&5&8&3&1\\
+s=2&21&15&10&5&5&8&3&1\\
+s=1&36&15&10&5&5&8&3&1
+\end{array}
+\]
+两条路径的最终和都可独立复算为 $6+2+7+4+5+8+3+1=36$。
+
+\complexity{两者均为 $7$ 次加法、$O(N)$ 工作}{$O(1)$ 额外空间}{$N/2$ 个线程，$O(\log N)$ 轮}
+\conclusionheading 两种状态演化不同，但最终都在位置 0 得到 $\boxed{36}$。
+\discussionheading
+\discussionpoint{树形拓扑编码了允许的代数变换。}两种求和过程都把八个叶子逐层合并，在没有整数溢出的数学模型中，结合律和交换律保证最终都是 36；不同之处是中间节点落在哪些下标、代表哪些叶子集合。若操作只结合而不交换，树可以重新加括号，却不能调换叶子顺序，右侧所有权的交错配对便可能失效。用字符串连接作为测试，正确结果必须保持 $1,2,\ldots,8$ 的次序，任何重排都会立刻暴露。这种“用更弱代数结构审查实现”的方法也适合扫描、矩阵链和函数复合。测试框架还可随机生成短字符串并与顺序左折叠比较，使隐藏置换不再依赖一个人工样例。
+
+\discussionpoint{浮点的确定性与准确度是两项目标。}IEEE 加法每次都舍入，因此 $(a+b)+c$ 与 $a+(b+c)$ 可能不同；例如大数与小数混合、正负抵消时，差异甚至会累积到多个 ULP。固定块大小、树形和编译选项可以让同一平台重复得到相同位型，却不保证它最接近实数真值；使用双精度、成对求和或补偿求和可能提高准确度，又会改变吞吐和结果位型。科学计算应先决定需要误差界、统计稳定还是逐位复现，再选择算法。把这三者混称为“数值正确”会使测试标准无法落实。还应固定是否允许 FMA 收缩和快速数学优化，因为编译器变换本身也能改变舍入位置。
+
+\discussionpoint{控制流和地址轨迹由同一映射共同决定。}交错树用取模选出稀疏线程，使活动 lane 分散在多个 warp，同时访问下标也跨越越来越大的间隔；收敛树把活动线程聚为前缀，通常减少混合分支和地址计算。可是两者都要在每轮隔离读写并同步，所以共享 bank 映射、屏障次数和后期并行度仍会影响性能。中间数组表不仅是算术演示，也是逐轮内存轨迹：给每个单元标注读者、写者和所属 bank，就能把抽象树转成可检查的体系结构预测。这种方法同样适合扫描和动态规划波前。例如连续前缀若让 lane $t$ 访问 $t+s$，可直接按地址字模 32 推导当前轮是否存在 bank 冲突。
+
+\discussionpoint{中间状态是比最终答案更强的测试预言。}若只断言最终值为 36，两个相反的索引错误可能偶然抵消，缺少屏障也可能在某次调度中侥幸通过。把每轮数组作为黄金结果，可以精确指出从哪个步幅开始偏离；CPU 参考还应按完全相同的树序更新，而不是只调用顺序 \code{accumulate}。调试构建可让一个小块写出快照并配合竞争检查，发布构建则关闭记录以免改变时序和带宽。属性测试还能随机生成输入，验证每个中间节点等于其声明叶子集合的和，把一个固定手算例子扩展成持续回归工具。对浮点输入，参考模拟还应在每个节点用相同精度舍入，否则会把参考模型差异误报为内核错误。
+\variantheading 若把最后一项从 1 改为 $-1$，两条树的中间状态相应改变，但精确总和均为
+$34$；按各轮旧值重算是评分时的核心要求。
+\practiceheading 可把两张状态表编码为 CPU 单元测试的黄金结果，再用 CUB
+\code{BlockReduce} 验证最终值；浮点生产测试应采用误差界或 ULP 容差，而非默认要求与顺序
+累加逐位一致。
+\sourcecheck{https://github.com/NVIDIA/cccl/tree/main/cub}{CUB BlockReduce 官方文档对块级归约的运算语义；高置信度}
+对抗审查：若在同一轮使用刚写回的新值，会得到错误状态；CUDA 屏障把轮次分开，表中每一
+行必须只依赖上一行。对非结合运算，两棵树不保证给出相同结果。
+\end{solutionexercise}

@@ -1,0 +1,155 @@
+\documentclass[UTF8,zihao=-4,openany,fontset=fandol]{ctexbook}
+
+\usepackage[a4paper,top=2.35cm,bottom=2.35cm,left=2.55cm,right=2.55cm]{geometry}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs,longtable,tabularx,array}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,calc,positioning,shapes.geometric}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage{bookmark}
+
+\hypersetup{
+  colorlinks=true,
+  breaklinks=true,
+  linkcolor=blue!55!black,
+  urlcolor=blue!65!black,
+  pdftitle={大规模并行处理器编程（第5版）习题详解},
+  pdfauthor={习题详解编写组},
+}
+
+\setcounter{tocdepth}{1}
+\setlist{itemsep=0.25em,topsep=0.35em}
+\setlength{\parskip}{0.35em}
+\setlength{\parindent}{2em}
+\setlength{\emergencystretch}{2em}
+\raggedbottom
+
+\definecolor{solutionblue}{RGB}{35,85,135}
+\definecolor{solutiongray}{RGB}{245,247,249}
+\lstset{
+  basicstyle=\ttfamily\small,
+  columns=fullflexible,
+  keepspaces=true,
+  breaklines=true,
+  breakatwhitespace=false,
+  showstringspaces=false,
+  commentstyle=\color{green!40!black}\upshape\ttfamily,
+  keywordstyle=\color{blue!60!black}\bfseries,
+  stringstyle=\color{red!55!black},
+  frame=single,
+  rulecolor=\color{black!25},
+  numbers=left,
+  numberstyle=\scriptsize\color{gray},
+  numbersep=6pt,
+  xleftmargin=2em,
+  framexleftmargin=2em,
+  aboveskip=0.7em,
+  belowskip=0.7em,
+}
+
+\newcommand{\code}[1]{\allowbreak\texttt{\detokenize{#1}}\allowbreak}
+\newenvironment{solutionexercise}[1]{%
+  \section{第 #1 题}\label{sol:\thechapter:#1}%
+}{\par\medskip}
+\newcommand{\problemheading}{\par\noindent\textbf{题目}\quad}
+\newcommand{\approachheading}{\par\noindent\textbf{解题思路}\quad}
+\newcommand{\answerheading}{\par\noindent\textbf{详细解答}\quad}
+\newcommand{\conclusionheading}{\par\noindent\textbf{结论}\quad}
+\newcommand{\discussionheading}{\par\medskip\noindent\textbf{进一步讨论}\par\nopagebreak[3]}
+\newcommand{\discussionpoint}[1]{\par\smallskip\noindent\textbf{#1}\quad}
+\newcommand{\variantheading}{\par\noindent\textbf{变体练习与答案要点}\quad}
+\newcommand{\practiceheading}{\par\noindent\textbf{工程实践}\quad}
+\newcommand{\pitfallheading}{\par\noindent\textbf{常见错误}\quad}
+\newcommand{\verificationheading}{\par\noindent\textbf{联网核验与对抗审查}\quad}
+\newcommand{\sourcecheck}[2]{\verificationheading\href{#1}{[来源]}\ #2。}
+\newcommand{\editorialnote}{\par\noindent\textbf{题解编者注：}}
+\newcommand{\complexity}[3]{%
+  \par\noindent\textbf{复杂度与并行性}\par
+  \noindent\textbf{时间复杂度：}#1。\par
+  \noindent\textbf{空间复杂度：}#2。\par
+  \noindent\textbf{并行性：}#3。}
+\newcommand{\noexercises}{\par\bigskip\begin{center}\fbox{\begin{minipage}{0.82\textwidth}\centering\vspace{0.7em}\textbf{本章无习题}\vspace{0.7em}\end{minipage}}\end{center}}
+
+\begin{document}
+
+\frontmatter
+\begin{titlepage}
+  \centering
+  \vspace*{2.6cm}
+  {\Huge\bfseries 大规模并行处理器编程（第 5 版）\par}
+  \vspace{0.9cm}
+  {\LARGE\bfseries 习题详解\par}
+  \vspace{1.5cm}
+  {\large 依据中文学习译稿与英文底本逐题编写\par}
+  \vfill
+  {\small 独立学习资料；不替代原书正文\par}
+  \vspace{0.6cm}
+  {\small \today\par}
+\end{titlepage}
+
+\chapter*{使用说明}
+\addcontentsline{toc}{chapter}{使用说明}
+本题解按原书第 1--24 章及附录 A--C 的顺序编排。每题均给出题目、解题思路、详细解答、
+结论、进一步讨论、变体练习与答案要点以及工程实践；算法题另说明复杂度与并行性。题目
+文字以仓库中的中文译稿为主要来源，并与英文底本练习页逐项核对。底本或译稿中需要修正
+之处以“题解编者注”明确说明。
+
+CUDA 代码以 CUDA C++ 为准。代码中的 CUDA API 错误检查、内核启动错误检查、同步和 CPU
+参考验证用于说明完整程序结构；具体性能数字仍依赖 GPU 架构、CUDA 版本和编译选项。
+可执行版本位于 \code{solutions/code/}，与本 PDF 独立构建。每题的联网来源优先采用官方
+文档、作者公开版和机构仓储；题解只作短引或独立转述，不以网络材料代替推导。
+
+\tableofcontents
+
+\mainmatter
+\input{chapters/01-solutions}
+
+\part{基础概念}
+\input{chapters/02-solutions}
+\input{chapters/03-solutions}
+\input{chapters/04-solutions}
+\input{chapters/05-solutions}
+\input{chapters/06-solutions}
+
+\part{并行模式}
+\input{chapters/07-solutions}
+\input{chapters/08-solutions}
+\input{chapters/09-solutions}
+\input{chapters/10-solutions}
+\input{chapters/11-solutions}
+\input{chapters/12-solutions}
+\input{chapters/13-solutions}
+\input{chapters/14-solutions}
+\input{chapters/15-solutions}
+
+\part{高级模式与应用}
+\input{chapters/16-solutions}
+\input{chapters/17-solutions}
+\input{chapters/18-solutions}
+\input{chapters/19-solutions}
+\input{chapters/20-solutions}
+\input{chapters/21-solutions}
+\input{chapters/22-solutions}
+\input{chapters/23-solutions}
+\input{chapters/24-solutions}
+
+\part{附录}
+\appendix
+\input{appendices/appendix-a-solutions}
+\input{appendices/appendix-b-solutions}
+\input{appendices/appendix-c-solutions}
+
+\backmatter
+\chapter*{验证说明}
+\addcontentsline{toc}{chapter}{验证说明}
+数值题使用独立算式复核；数组与图算法题使用小规模逐步状态复核；CUDA 题检查索引范围、
+同步点、竞态条件、分配与释放生命周期，并给出 CPU 参考路径或可手算样例。当前构建环境用
+CUDA Toolkit 13.3 的 \code{nvcc} 与 MSVC 14.44 编译链接全部 27 个 CUDA 程序，并实际运行
+全部 27 个 \code{--cpu-only} 参考路径；普通 C++ 与两秩 MPI 的 CTest 为 6/6。另以
+\code{sm_90} 编译 Smith--Waterman，检查 DPX 条件分支。本机未检测到 NVIDIA GPU，因此不把
+CPU 参考运行误报为设备端运行。
+
+\end{document}

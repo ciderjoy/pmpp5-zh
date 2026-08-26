@@ -1,0 +1,284 @@
+\chapter{过滤}
+
+\begin{solutionexercise}{1}
+\problemheading 使用三个独立内核实现带排他扫描的稳定过滤：条件求值、排他扫描和输出生成。
+
+输入为 $x_0,\ldots,x_{N-1}$，谓词产生 $f_i\in\{0,1\}$；排他扫描应得到
+$p_i=\sum_{j<i}f_j$，输出生成阶段在 $f_i=1$ 时把 $x_i$ 写到 $y_{p_i}$，并返回
+保留元素总数。实现应保持输入中被保留元素的相对次序，并处理空输入与尾块边界。
+
+\approachheading 对输入 $x_i$ 产生标志 $f_i\in\{0,1\}$，令
+$p_i=\sum_{j<i}f_j$。若 $f_i=1$，唯一目的位置就是 $p_i$。中间扫描采用生产级 CUB
+实现，避免在本题中重复实现任意长度全局扫描。
+
+\answerheading 以下程序片段以“保留非零值”为具体谓词；替换 \code{keep()} 即可使用
+其他条件。
+\begin{lstlisting}[language=C++]
+#include <cuda_runtime.h>
+#include <cub/device/device_scan.cuh>
+#include <climits>
+#include <stdexcept>
+
+__device__ __forceinline__ int keep(int x) { return x != 0; }
+__global__ void eval(const int* x, int* flags, size_t n) {
+  size_t i=size_t(blockIdx.x)*blockDim.x+threadIdx.x;
+  if(i<n) flags[i]=keep(x[i]);
+}
+__global__ void scatter(const int* x,const int* flags,const int* pos,
+                        int* y,size_t n,int* outSize) {
+  size_t i=size_t(blockIdx.x)*blockDim.x+threadIdx.x;
+  if(i<n) {
+    if(flags[i]) y[pos[i]]=x[i];
+    if(i==n-1) *outSize=pos[i]+flags[i];
+  }
+}
+
+// Device arrays flags[n], pos[n], outSize[1] are already allocated.
+void stable_filter(const int* x,int* y,size_t n,int* flags,int* pos,
+                   int* outSize,void* temp,size_t tempBytes) {
+  constexpr unsigned B=256;
+  if(n==0) { cudaMemset(outSize,0,sizeof(*outSize)); return; }
+  if(n>size_t(INT_MAX)) throw std::length_error("int positions overflow");
+  size_t G64=(n+B-1)/B;
+  int device; cudaDeviceProp prop;
+  cudaGetDevice(&device); cudaGetDeviceProperties(&prop,device);
+  if(G64>size_t(UINT_MAX) || G64>size_t(prop.maxGridSize[0]))
+    throw std::length_error("grid.x overflow");
+  unsigned G=static_cast<unsigned>(G64);
+  eval<<<G,B>>>(x,flags,n);                         // stage 1
+  cub::DeviceScan::ExclusiveSum(temp,tempBytes,flags,pos,n); // stage 2
+  scatter<<<G,B>>>(x,flags,pos,y,n,outSize);        // stage 3, including size
+}
+// Query tempBytes once with temp=nullptr using the same CUB call.
+\end{lstlisting}
+若 $i<j$ 且二者都保留，则 $p_j-p_i=\sum_{k=i}^{j-1}f_k\ge1$，所以目的下标严格递增，
+既不冲突又保持输入相对次序。主机在复用或释放临时存储前必须等待同一 stream 完成。
+
+\complexity{$O(N)$ 工作、扫描深度 $O(\log N)$}{$2N+O(1)$ 个整数及 CUB 临时空间}{$N$ 个条件与散射任务}
+\conclusionheading 排他扫描给出唯一且有序的输出位置，因而实现稳定过滤。
+\discussionheading
+\discussionpoint{稳定过滤把真假判断转化为地址分配。}谓词为真可看成当前元素申请一个输出槽，为假则申请零个；对这些 0/1 做排他扫描，$p_i=\sum_{j<i}f_j$ 就是第 $i$ 项之前已经批准的槽数。若 $i<j$ 且二者保留，则 $p_i<p_j$，所以写地址唯一并保持原相对次序，这正是稳定性的核心证明。把“一个槽”改成每条记录的可变字节数，同一方法就成为压缩编码和序列化的偏移生成器；换成每行非零数，又得到稀疏矩阵行指针。扫描因此不仅求累计量，更是在并行任务间无冲突地切分输出空间。以 flags $[1,0,1,1]$ 为例，排他秩 $[0,1,1,2]$ 让三个真项依次写入 0、1、2，唯一性和稳定性可同时观察。
+
+\discussionpoint{三阶段设计以额外流量换取可组合性。}条件内核只负责 flags，扫描只把 flags 变成 positions，散射再消费两者；每个阶段都有清楚输入输出，可以单独与 CPU 参考比较，也能在多个消费者间复用位置。代价是两个长度 $N$ 的数组被写入又读回，当谓词只是一次整数比较时，这些字节往往比算术更昂贵。若谓词本身代价很高或 positions 还供后续索引使用，分阶段成本则更容易被摊薄。这个取舍与编译器循环融合、数据库物化中间表相同：融合减少通信，物化增加可观察性与复用，不能只按 launch 数决定。
+
+\discussionpoint{容量和异步生命周期是算法接口的一部分。}最坏情况下全部元素保留，因此调用方若一次完成散射，输出缓冲必须容纳 $N$ 项；位置类型也要表示 $N-1$ 和总长度，使用 32 位 \code{int} 时应拒绝超出 \code{INT_MAX} 的规模。设备端 \code{outSize} 只有在所属 stream 完成后主机才能安全读取，提前据它分配精确缓冲会形成时序错误。生产流水线通常预留最大容量、使用内存池，或先只计数再进行第二阶段精确分配。由此可见过滤返回的不只是数据，还包括容量、类型和完成事件三项契约。
+
+\discussionpoint{选择率把同一算法变成不同的性能问题。}数据库谓词下推可能只保留百分之一，图 frontier 有时几乎全保留，粒子淘汰又可能随时间步剧烈变化；相同代码的散射事务和输出字节因此完全不同。若选择率为 $r$、记录宽度为 $s$，理想输出流量约为 $rNs$，但谓词与扫描仍要触及全部 $N$ 项，所以低 $r$ 并不会让总时间同比缩小。基准应从 0\% 扫到 100\% 选择率，并把谓词成本、扫描流量与输出写入分开观察，再用携带原始下标的记录检查稳定次序。重复值不足以验证稳定性，因为交换两个相等值在数值上不可见。这样的数据集设计能把过滤原语扩展为数据库、图计算和流处理系统共同可比较的基础操作。
+\variantheading 若谓词改为“保留偶数”，输入 $[3,4,2,5]$ 的 flags 为 $[0,1,1,0]$、排他
+位置为 $[0,0,1,2]$，输出为 $[4,2]$，长度为 2。
+\practiceheading 生产代码可直接采用 CUB \code{DeviceSelect}，并用 $N=0,1,257$ 及全保留、
+全丢弃测试校验；当 \code{pos} 为 \code{int} 时拒绝 $N>\code{INT_MAX}$，网格转为
+\code{unsigned} 前还要查询 \code{maxGridSize[0]}。
+\sourcecheck{https://github.com/NVIDIA/cccl/tree/main/cub}{CUB DeviceScan 官方排他扫描接口；高置信度}
+假设审查：接口层严格只有条件、扫描、生成三个阶段，输出长度已并入生成阶段；CUB 仍可能在
+扫描阶段内部启动多个内核。若要求恰好三次底层 launch，应换成单次扫描实现并证明其前向进度。
+\end{solutionexercise}
+
+\begin{solutionexercise}{2}
+\problemheading 把过滤代码加入单遍扫描内核，以单个内核实现稳定过滤。单内核实现有哪些主要
+优点？
+
+仍采用第 1 题的稳定过滤定义：谓词标志的排他前缀给出保留元素目的位置。单内核版本
+应在块内完成局部扫描，通过正确的跨块前缀协议取得此前逻辑区段的保留数，然后直接
+散射输出并给出总长度；必须说明如何避免仅按静态 \code{blockIdx.x} 等待前驱造成的
+前向进度问题。
+
+\approachheading 每块先做局部排他扫描，再用解耦回看取得此前逻辑块的保留总数，最后
+直接散射。逻辑块号在块开始执行后动态分配，使较小编号一定已有执行机会。
+
+\answerheading 下列内核使用 CUB 块扫描和三状态回看；\code{aggregates}、
+\code{prefixes}、\code{states} 长度均为 $\lceil N/B\rceil$，启动前清零
+\code{states} 与 \code{counter}。
+\begin{lstlisting}[language=C++]
+#include <cub/block/block_scan.cuh>
+#include <cuda/atomic>
+enum : unsigned { EMPTY=0, AGG=1, PREFIX=2 };
+
+__device__ int publishLookback(int total,unsigned bid,int* aggregates,
+    int* prefixes,unsigned* states) {
+  __shared__ int base;
+  if(threadIdx.x==0) {
+    aggregates[bid]=total;
+    cuda::atomic_ref<unsigned,cuda::thread_scope_device> me(states[bid]);
+    me.store(AGG,cuda::memory_order_release);
+    int sum=0;
+    for(int p=int(bid)-1;p>=0;) {
+      cuda::atomic_ref<unsigned,cuda::thread_scope_device> st(states[p]);
+      unsigned k;
+      do{k=st.load(cuda::memory_order_acquire);}while(k==EMPTY);
+      if(k==PREFIX){sum+=prefixes[p];break;}
+      sum+=aggregates[p--];
+    }
+    base=sum; prefixes[bid]=sum+total;
+    me.store(PREFIX,cuda::memory_order_release);
+  }
+  __syncthreads();
+  return base;
+}
+
+template<int B>
+__global__ void stable_filter_onepass(const int* x,int* y,size_t n,
+    unsigned* counter,int* aggregates,int* prefixes,unsigned* states,
+    int* outSize) {
+  using Scan=cub::BlockScan<int,B>;
+  __shared__ typename Scan::TempStorage scan;
+  __shared__ unsigned bid_s;
+  if(threadIdx.x==0) bid_s=atomicAdd(counter,1u);
+  __syncthreads();
+  unsigned bid=bid_s; size_t i=size_t(bid)*B+threadIdx.x;
+  int value=(i<n)?x[i]:0, flag=(i<n && value!=0), rank,total;
+  Scan(scan).ExclusiveSum(flag,rank,total);
+  int base=int(publishLookback(total,bid,aggregates,prefixes,states));
+  if(flag) y[base+rank]=value;
+  unsigned segments=unsigned((n+B-1)/B);
+  if(threadIdx.x==0 && bid==segments-1) *outSize=base+total;
+}
+\end{lstlisting}
+局部 rank 保持块内次序；动态 \code{bid} 同时决定输入区段与全局基址，因此块间也保持
+输入次序。每个保留元素的目的位置唯一。主要优点是只读一次输入、只写一次保留输出，省去
+两个 $N$ 长中间数组和阶段间全局流量，也减少启动次数。
+
+\complexity{$O(N)$ 常规工作；回看最坏 $O(G^2)$}{$O(G)$ 跨块状态与 CUB 块临时空间}{$G$ 块并行并沿前缀依赖推进}
+\conclusionheading 单内核融合降低流量和 launch 开销，但增加跨块协议、状态空间及调试复杂度。
+\discussionheading
+\discussionpoint{单遍融合没有消灭前缀依赖，只是搬了同步边界。}三阶段方案把 flags 和 positions 写到全局，并依靠 kernel 边界保证全设备完成；融合方案让标志与局部秩留在寄存器或共享内存，只输出保留项和每块少量状态。省掉的是 $O(N)$ 中间流量和若干 launch，仍需知道前面逻辑块一共保留多少项，才能形成全局基址。因此全局同步被替换为运行中的状态发布和回看协议，复杂度从显式阶段进入并发控制。即使某块本地保留 17 项，它也不能仅凭这个数写回，因为前块可能已占据 0 个或数千个槽；全局偏移仍是不可消除的数据依赖。这个变化与流式数据库算子融合相似：减少物化会提升局部性，却把背压和顺序保证变成在线协议。
+
+\discussionpoint{动态逻辑编号解决的是一种资源死锁。}若静态高编号块先占满设备并自旋等待未调度的低编号前驱，前驱永远拿不到驻留资源，算法就无法前进。块开始执行后再原子领取递增逻辑号，可以保证被等待的较小逻辑块至少已经启动；逻辑号同时决定输入区段，因而稳定顺序仍与编号一致。不过 CUDA 不承诺每个已启动块在固定时间内公平运行，自旋次数不能写成常数，资源压力仍需控制。若设备只能驻留 8 块而恰由静态 8--15 号先占满，这八块等待 0--7 号的状态就形成具体反例。生产级持久化任务通常限制网格为可驻留规模，并加入超时诊断，这与线程池中的有序任务调度有相同风险。
+
+\discussionpoint{发布状态必须携带载荷的可见性。}块先写 aggregate 或完整 prefix，再用 device-scope release 原子把状态从 EMPTY 改为 AGG/PREFIX；回看块用 acquire 读到新状态后，才能合法消费对应普通数组。若把顺序颠倒，状态可能先跨缓存可见，而数值仍是旧内容；\code{volatile} 只能限制部分编译优化，并不建立跨线程块的 happens-before。压力测试偶尔成功只说明某次时序有利，不能替代内存模型证明。相同的发布--获取模式广泛用于 GPU 工作队列、无锁环形缓冲和 CPU 消息传递，因此本题也是理解现代并发正确性的具体入口。
+
+\discussionpoint{单遍方案最适合通信成本显著的长流水。}大数组配廉价谓词时，中间 flags 和 positions 的两次全局往返占比较高，融合通常有明确收益；昂贵谓词可能掩盖这部分流量，小输入又可能主要由 launch 延迟决定。成熟库还优化回看窗口、缓存布局和架构差异，自定义实现应在相同选择率与稳定语义下和 DeviceSelect 比较，而不是只与朴素三阶段代码比较。低 occupancy、随机延时和全保留/全丢弃数据能主动放大死锁与边界错误。只有吞吐、稳定性和前向进度都验证后，少一次遍历才是可接受的工程收益。
+\variantheading 若 $B=256,N=513$，逻辑区段数为 3；最后区段只有一个有效元素，但仍由
+256 个线程共同执行块扫描，最后逻辑块写出的 \code{base+total} 才是总长度。
+\practiceheading 与 CUB \code{DeviceSelect::Flagged} 对照输出稳定性和吞吐量，并用受限
+占用率压力测试动态编号协议；调用方对 $N=0$ 应直接清零 \code{outSize}，且在使用
+\code{int} 前缀时限制 $N\le\code{INT_MAX}$。
+\sourcecheck{https://research.nvidia.com/publication/2016-03_single-pass-parallel-prefix-scan-decoupled-look-back}{NVIDIA 解耦回看原始报告；高置信度}
+对抗审查：直接按 \code{blockIdx.x} 等待前块可能死锁；把块和与前缀存入同一普通位置也
+会发生竞态。输出大小可在内核完成后读取，不能把最后逻辑块发布大小误当作整个内核已结束。
+\end{solutionexercise}
+
+\begin{solutionexercise}{3}
+\problemheading 对练习 2 的内核应用私有化。
+
+练习 2 的基线是单内核稳定过滤：每块对谓词标志做局部排他扫描，取得跨块前缀后把
+保留元素直接散射到全局输出。本题要求先在每块的私有共享缓冲中按局部秩稳定打包，
+再由块内线程协作把连续区段写到全局输出；说明所需同步、共享内存容量和稳定性依据。
+
+\approachheading 用共享内存建立每块私有输出。直接使用排他 rank 时，同一 warp 的有效
+线程已经写向单调且紧凑的地址；共享 staging 的额外价值是把整个块的保留项重新交给从 0
+开始的稠密线程前缀冲刷，从而合并跨稀疏 warp 边界的短区段，而不是把真正随机地址变连续。
+
+\answerheading 下列内核沿用上一题的 \code{publishLookback()} 和状态数组协议：
+\begin{lstlisting}[language=C++]
+template<int B>
+__global__ void stable_filter_private(const int* x,int* y,size_t n,
+    unsigned* counter,int* aggregates,int* prefixes,unsigned* states,
+    int* outSize) {
+  using Scan=cub::BlockScan<int,B>;
+  __shared__ typename Scan::TempStorage scan;
+  __shared__ int packed[B], base_s, total_s;
+  __shared__ unsigned bid_s;
+  if(threadIdx.x==0) bid_s=atomicAdd(counter,1u);
+  __syncthreads();
+  unsigned bid=bid_s; size_t i=size_t(bid)*B+threadIdx.x;
+  int v=(i<n)?x[i]:0, f=(i<n && v!=0), rank,total;
+  Scan(scan).ExclusiveSum(f,rank,total);
+  if(f) packed[rank]=v;
+  __syncthreads();
+  int blockBase=int(publishLookback(total,bid,aggregates,prefixes,states));
+  if(threadIdx.x==0){base_s=blockBase; total_s=total;}
+  __syncthreads();
+  for(int j=threadIdx.x;j<total_s;j+=B) y[base_s+j]=packed[j];
+  if(threadIdx.x==0 && bid==(n+B-1)/B-1) *outSize=base_s+total_s;
+}
+\end{lstlisting}
+\code{packed[0..total-1]} 按原输入下标递增排列，块基址也按逻辑块递增，因此私有化不
+破坏稳定性。屏障保证共享数组写完后才冲刷；冲刷时每个 $j$ 只有一个写者。
+
+\complexity{$O(N)$ 常规工作加回看开销}{$B$ 个私有整数/块及 $O(G)$ 全局状态}{$G$ 个块，写出阶段为连续协作访问}
+\conclusionheading 私有化把每块若干局部紧凑的秩写重新打包为一次稠密连续冲刷；收益取决于保留率和 warp 分布，代价是共享内存和一次块级屏障。
+\discussionheading
+\discussionpoint{直接按秩写回并不等于完全随机散射。}排他 rank 随输入位置单调增加，所以同一 warp 中所有保留 lane 的目标编号仍是连续序列；只是这些 lane 在执行掩码中可能稀疏，不同 warp 又分别发出很短的连续区段。共享 staging 把整块保留项先压紧到 \code{packed[0..total)}，再让稠密线程前缀统一写出，主要改善跨 warp 的事务打包，而不改变总输出字节。若原来每个 warp 已有足够多连续有效 lane，DRAM 扇区数可能并不下降。准确理解地址序列可以避免把任何 scatter 都笼统标成“随机访问”。
+
+\discussionpoint{选择率决定共享打包究竟是帮助还是额外绕路。}接近 100\% 保留时，直接秩写已是连续存储，共享写、屏障和再读只增加成本；中等选择率且有效 lane 分散在多个 warp 时，块级压紧更可能把多个短事务合成饱满区段。选择率极低时，原方案本来只有几次存储，执行打包和同步又可能得不偿失。本内核并没有清零整个共享数组，成本模型应只计实际 packed 写、连续冲刷与必要屏障。例如四个 warp 各只保留两个 lane 时，直接路径会形成四段很短的写事务，块级打包则可由八个连续线程一次冲刷。由这种分段曲线可设计按选择率自适应路径，但路径判定本身也需低成本且块内一致。
+
+\discussionpoint{记录宽度会把共享容量问题放大。}若元素是一个整数，缓冲需要 $B\times4$ 字节；若是包含键、值和时间戳的 32 字节记录，同样的线程块要占八倍共享空间，可能使驻留块数急降。以 $B=512$ 为例，两者分别约为 2 KiB 和 16 KiB，后者可能直接减少同一 SM 可驻留的块数。结构体布局还会引入对齐、无用填充和向量搬运问题，可以只缓存索引再从源数组聚集，也可采用结构分离布局分别压紧字段。无论选择哪条路线，各字段必须使用同一 rank，不能让键和值因独立压紧而错配。这个所有权约束连接到列式数据库、粒子结构和图边列表的内存布局设计。
+
+\discussionpoint{诊断应同时证明稳定性和解释事务变化。}图 frontier、碰撞候选和查询物化都可能采用块级 staging，但其选择率、记录大小和后续消费者不同，单看 Global Store Efficiency 无法决定收益。实验应把 global store sectors、共享事务、屏障停顿、occupancy 和总时间随选择率一起绘制，并用带唯一原始下标的记录验证输出严格递增；仅用重复值会掩盖换序。若扇区减少却时间上升，通常说明共享或占用成本更大。这样的因果核对能把“指标看起来更好”与“应用真正更快”区分开。
+\variantheading 若一个 8 项块的 flags 为 $[1,0,1,1,0,0,1,0]$，私有数组依次保存原输入
+的第 $0,2,3,6$ 项，\code{total=4}，随后四个连续位置从块基址写出。
+\practiceheading 用 Nsight Compute 比较原始散射与私有化版本的 Global Store Efficiency、
+Shared Memory Usage 和 Occupancy；用 CUB DeviceSelect 校验全保留、全丢弃及交替谓词的稳定次序。
+\sourcecheck{https://github.com/NVIDIA/cccl/tree/main/cub}{CUB DeviceSelect 官方稳定选择语义；高置信度}
+边界审查：共享缓冲必须至少容纳块可能保留的全部 $B$ 项。若谓词有副作用或依赖处理顺序，
+并行求值本身可能改变语义，不能仅凭稳定输出次序弥补。
+\end{solutionexercise}
+
+\begin{solutionexercise}{4}
+\problemheading 对练习 3 的内核应用线程粗化。
+
+练习 3 的基线先把每块保留元素稳定打包到共享内存，再连续写回全局输出。本题要求
+每个线程处理多个输入元素，同时保持全局稳定次序；应明确线程到输入子段的映射、
+逐项尾部检查、线程内秩与线程间扫描的组合方式，以及粗化对并行度、寄存器和共享内存
+占用的影响。
+
+\approachheading 每线程按输入顺序处理 $C$ 个连续元素，先得到线程保留数，再扫描线程
+计数。线程基址加线程内秩给出共享私有数组位置；这同时保持线程内和线程间次序。
+
+\answerheading
+\begin{lstlisting}[language=C++]
+template<int B,int C>
+__global__ void stable_filter_coarse(const int* x,int* y,size_t n,
+    unsigned* counter,int* aggregates,int* prefixes,unsigned* states,
+    int* outSize) {
+  using Scan=cub::BlockScan<int,B>;
+  __shared__ typename Scan::TempStorage scan;
+  __shared__ int packed[B*C],base_s,total_s;
+  __shared__ unsigned bid_s;
+  if(threadIdx.x==0) bid_s=atomicAdd(counter,1u);
+  __syncthreads();
+  unsigned bid=bid_s;
+  size_t first=size_t(bid)*B*C+size_t(threadIdx.x)*C;
+  int values[C], localCount=0;
+#pragma unroll
+  for(int c=0;c<C;++c){
+    size_t i=first+c; values[c]=(i<n)?x[i]:0;
+    localCount += (i<n && values[c]!=0);
+  }
+  int threadBase,total; Scan(scan).ExclusiveSum(localCount,threadBase,total);
+  int q=0;
+#pragma unroll
+  for(int c=0;c<C;++c)
+    if(first+c<n && values[c]!=0) packed[threadBase+q++]=values[c];
+  __syncthreads();
+  int blockBase=int(publishLookback(total,bid,aggregates,prefixes,states));
+  if(threadIdx.x==0){base_s=blockBase;total_s=total;}
+  __syncthreads();
+  for(int j=threadIdx.x;j<total_s;j+=B) y[base_s+j]=packed[j];
+  unsigned G=unsigned((n+B*C-1)/(B*C));
+  if(threadIdx.x==0 && bid==G-1) *outSize=base_s+total_s;
+}
+\end{lstlisting}
+每个块覆盖 $BC$ 个不相交输入，尾部逐项检查。线程内循环没有同步或竞态；CUB 只扫描
+$B$ 个计数而非 $BC$ 个标志，减少同步和跨块状态数量。
+
+\complexity{$O(N)$ 工作、每线程 $O(C)$ 串行段}{$BC$ 个私有共享元素/块，$O(N/(BC))$ 状态}{$N/C$ 个线程；$C$ 增大时并行度下降}
+\conclusionheading 粗化摊薄扫描、同步和回看成本，并保持稳定性；$C$ 应以占用率和输入规模调优。
+\discussionheading
+\discussionpoint{线程到输入区段的映射决定稳定次序。}blocked 映射让线程 $t$ 按顺序处理 $[tC,(t+1)C)$，线程计数的排他扫描按线程号分配基址，因此线程内次序和线程间区段次序都与原输入一致。若改为 striped 下标 $t+cB$ 却仍按线程号拼接，$B=2,C=2$ 会把顺序 $0,1,2,3$ 变成 $0,2,1,3$，数值相等时很难察觉。要兼得 striped 合并与稳定性，必须经共享交换恢复 blocked 所有权，或直接计算每个原始位置的 rank。这个反例与稳定基数排序中的布局约束完全相同。
+
+\discussionpoint{粗化把块间开销换成线程内串行链。}因子 $C$ 使块数、跨块状态和块扫描参与项约缩小 $C$ 倍，一次同步覆盖更多输入；每线程却要依次求值 $C$ 个谓词并保存局部值，关键路径和寄存器需求随之增长。编译器若不能把数组保留在寄存器，可能把它放入 local memory；共享 \code{packed[BC]} 也随 $C$ 线性增大并压低 occupancy。因而最优点出现在通信摊薄与延迟隐藏的交叉处，而不是最大可编译 $C$。还要测试 $N\bmod (BC)\ne0$ 的尾块，因为高粗化下多数线程只处理虚拟槽时，摊薄收益会迅速消失。这种成本曲线也适用于每线程多像素卷积、向量归约和批量哈希探测。
+
+\discussionpoint{加载合并与谓词负载均衡可能要求不同布局。}blocked 输入让每线程获得连续段，便于 \code{float4} 等向量指令，但一个 warp 的线程起点相隔 $C$，$C$ 较大时事务利用率下降；striped 加载让同一轮 lane 访问连续地址，却要转置才能保持稳定输出。如果谓词成本还随数据变化，一个线程连续遇到多个昂贵记录会拖慢整个 warp，可先用 ballot 分类、使用工作队列或把昂贵项二次调度。每种修正都会增加交换与元数据，因此应把访存布局和计算不均分别建模。它们经常在 ETL 解析、可变长度文本和图邻接过滤中同时出现。
+
+\discussionpoint{真实流水线的最佳粗化因子由消费者共同决定。}过滤输出可能马上进入排序、压缩或图遍历，下游若偏好某种 tile 或对齐，单独让过滤最快的 $C$ 未必令端到端最快；内存池是否复用共享状态也会改变固定成本。测试应覆盖 $N\bmod BC$ 的各种尾部、全保留、全丢弃与交替谓词，还要检查 $BC$ 和全局 rank 的宽度不会溢出。可将多项 BlockScan、单项版本和成熟 DeviceSelect 放在相同输入上比较，再计入消费者时间。这样才能从内核参数调优上升到流水线级设计，而不是把局部峰值当成最终目标。
+\variantheading 若 $B=128,C=4,N=513$，共有 2 个逻辑块；第二块只有一个有效输入，必须
+逐项掩蔽，其余 511 个槽不参与计数，不能作为 0 值误保留。
+\practiceheading 对 $C=1,2,4,8$ 用 Nsight Compute 比较寄存器数、占用率和写事务，并与
+CUB BlockScan 的 blocked 多项接口对照；主机需特判 $N=0$，还要验证 $BC$ 乘法、网格数
+和 \code{int} 输出秩均不溢出。
+\sourcecheck{https://github.com/NVIDIA/cccl/tree/main/cub}{CUB BlockScan 对每线程多项输入与前缀回调的官方说明；高置信度}
+对抗审查：若改成每线程处理条带式下标 \code{first=c*B+tid} 却仍按线程顺序打包，会改变
+全局相对次序。这里采用连续 blocked 映射；大 $C$ 还会增加寄存器与共享内存压力。
+\end{solutionexercise}

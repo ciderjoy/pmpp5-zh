@@ -1,0 +1,396 @@
+\chapter{图遍历}
+
+\begin{solutionexercise}{1}
+\problemheading 考虑原书练习 1 所示的有向无权图。为避免复制原图，按图重述其顶点集
+$V=\{0,1,2,3,4,5,6,7\}$ 和有向边集
+\[
+\begin{split}
+E=\{&(0,5),(0,2),(5,1),(5,7),(1,7),(1,0),(1,4),\\
+    &(7,2),(7,6),(7,4),(2,3),(3,6),(3,0),(6,4),(4,3)\}.
+\end{split}
+\]
+分别完成以下各项：
+\begin{enumerate}[label=(\alph*)]
+  \item 用邻接矩阵表示该图。
+  \item 用 CSR 格式表示该图。每个顶点的邻居列表必须有序。
+  \item 从顶点 0 开始在该图上执行并行 BFS，也就是说顶点 0 位于第 0 层。对于 BFS
+  遍历的每一次迭代，分别回答：
+  \begin{itemize}
+    \item 若采用顶点中心推送式实现：\textup{A.} 启动多少个线程？
+    \textup{B.} 有多少个线程会遍历自己顶点的邻居？
+    \item 若采用顶点中心拉取式实现：\textup{A.} 启动多少个线程？
+    \textup{B.} 有多少个线程会遍历自己顶点的邻居？
+    \textup{C.} 有多少个线程会标记自己的顶点？
+    \item 若采用边中心实现：\textup{A.} 启动多少个线程？
+    \textup{B.} 有多少个线程可能标记一个顶点？
+    \item 若采用基于前沿的顶点中心推送式实现：\textup{A.} 启动多少个线程？
+    \textup{B.} 有多少个线程会遍历自己顶点的邻居？
+  \end{itemize}
+\end{enumerate}
+
+\approachheading 从图中逐边抄录并按源顶点排序。BFS 的前沿依次决定推送、边中心和
+前沿实现的活动线程；拉取实现则检查所有尚未访问顶点的入邻居。
+
+\answerheading 边集合为
+\[
+\begin{split}
+&0\to\{2,5\},\quad 1\to\{0,4,7\},\quad 2\to\{3\},
+\quad 3\to\{0,6\},\\
+&4\to\{3\},\quad 5\to\{1,7\},\quad 6\to\{4\},
+\quad 7\to\{2,4,6\}.
+\end{split}
+\]
+所以邻接矩阵（行是源、列是目的）为
+\[
+\begin{bmatrix}
+0&0&1&0&0&1&0&0\\
+1&0&0&0&1&0&0&1\\
+0&0&0&1&0&0&0&0\\
+1&0&0&0&0&0&1&0\\
+0&0&0&1&0&0&0&0\\
+0&1&0&0&0&0&0&1\\
+0&0&0&0&1&0&0&0\\
+0&0&1&0&1&0&1&0
+\end{bmatrix}.
+\]
+排序邻接表的 CSR 是
+\[
+ \code{srcPtrs}=[0,2,5,6,8,9,11,12,15],
+\]
+\[
+ \code{dst}=[2,5,\;0,4,7,\;3,\;0,6,\;3,\;1,7,\;4,\;2,4,6].
+\]
+
+从根 0 得到
+\[
+L_0=\{0\},\quad L_1=\{2,5\},\quad
+L_2=\{1,3,7\},\quad L_3=\{4,6\}.
+\]
+下表把产生 $L_1,L_2,L_3$ 的三轮以及用于确认没有新顶点的最后一轮都列出。每格按题目
+的子问顺序排列；“边可标记”统计同时满足“源在上一层、目的在本轮开始时尚未访问”的边，
+所以同一目的可能被计多次。
+\begin{center}
+\small
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{c|c|c|c|c|c}
+\toprule
+轮次 & 新前沿 & \shortstack{推送\\启动/遍历} &
+\shortstack{拉取\\启动/遍历/标记} & \shortstack{边中心\\启动/可标记} &
+\shortstack{前沿推送\\启动/遍历}\\
+\midrule
+1 & $\{2,5\}$ & $8/1$ & $8/7/2$ & $15/2$ & $1/1$\\
+2 & $\{1,3,7\}$ & $8/2$ & $8/5/3$ & $15/3$ & $2/2$\\
+3 & $\{4,6\}$ & $8/3$ & $8/2/2$ & $15/4$ & $3/3$\\
+4 & $\varnothing$ & $8/2$ & $8/0/0$ & $15/0$ & $2/2$\\
+\bottomrule
+\end{tabular}
+\end{center}
+第 3 轮的 4 条候选边是 $1\to4$、$3\to6$、$7\to4$、$7\to6$；它们只产生两个
+不同顶点，体现了推送/边中心实现需要原子“首次访问”或幂等写。若实现通过已知全图访问数
+提前判断结束而不启动空轮，可删去表中第 4 轮；本章依赖“本轮是否发现新顶点”的实现必须
+执行它才能终止。
+
+\complexity{邻接矩阵构造 $O(V^2+E)$，CSR 构造 $O(V+E)$；BFS 有效工作 $O(V+E)$，全扫描实现可达 $O((V+E)D)$}{$O(V^2)$ 邻接矩阵或 $O(V+E)$ CSR，另有 $O(V)$ 层号/前沿}{$V$ 个顶点线程、$E$ 个边线程或仅当前前沿线程，取决于实现}
+\conclusionheading 矩阵含 15 个 1，CSR 末项也是 15，BFS 层集合并集恰为全部 8 个顶点，
+三项交叉检查一致。
+\discussionheading
+\discussionpoint{BFS 也可以看成布尔稀疏线性代数。}
+从根开始的第 $k$ 层前沿可写成布尔向量 $f_k$。按照本题“行是源、列是目的”的邻接矩阵约定，列向量形式的推送应在布尔半环上计算 $A^{\mathsf T}f_k$；等价地，若把前沿写成行向量，则计算 $f_k^{\mathsf T}A$，之后再用未访问集合掩码。这里的“加法”是逻辑或，“乘法”是逻辑与，重复父节点不会改变集合语义，但实现仍要避免重复入队。只有 frontier-sparse 的 CSR 推送仅枚举当前前沿各源顶点的出边时，才可因每个顶点至多扩展一次而把全程累计为 $O(V+E)$；若每层都对完整稀疏矩阵做 SpMV，则可能扫描全部 $E$ 条边 $D$ 次，并不自动具有该界。这个视角既连接了 GraphBLAS 原语，也说明存储格式与执行方式共同决定复杂度。
+
+\discussionpoint{前沿的形状会改变遍历方式。}
+当一层只有几个顶点时，队列只枚举这些顶点的出边，几乎不碰无关数据；当前沿覆盖大半个图时，维护和争抢队列可能不如用位图扫描未访问顶点。位图让集合交、并和成员测试变得规则，也便于 pull 阶段查询“某个邻居是否在前沿”，但每层要扫描更多位置并承担清零或代际标记成本。生产图框架常在队列、位图和稠密布尔数组之间切换，阈值应把表示转换的时间也完整算进去。这个例子说明数据结构不只是保存同一集合，它还能改变算法可执行的操作以及每轮应启动多少工作。在方向优化 BFS 中，切换本身因此也是被计量的算法步骤。
+
+\discussionpoint{并发发现需要把集合语义落实成唯一写者。}
+图中两个父顶点可能在同一层同时到达顶点 $v$，若线程都先普通读取“未访问”再写入，它们可能重复增加下一前沿计数。用 CAS 把距离从未访问哨兵原子地改成 $k+1$，只有成功者获得入队权，便把“集合中只有一个 $v$”落实到了并发执行。某些算法允许重复入队，最终最短层号仍可能正确，但前沿容量、后续边扫描和执行不确定性都会放大，甚至触发容量溢出。原子唯一化因此不是装饰性的同步细节，而是把数学集合、内存容量和终止条件连接起来的实现不变量。若距离数组和队列计数使用不同原子协议，还需检查发布次序。
+
+\discussionpoint{线程计数必须先说明统计边界。}
+题目中的小图可以逐层数线程，但“执行了多少”至少有三种口径：只计非空前沿的有效顶点，计入检测终止的空轮，或统计内核实际启动的全部 lane，包括边界检查后退出者。边级映射还会让高出度顶点产生更多任务，所以顶点数与边访问数也不能混为一个指标。两张图即使拥有相同的 $V$ 和 $E$，道路网可能有深而窄的前沿，社交图却会在少数层突然膨胀，运行形状完全不同。严谨实验应给出每层前沿、访问边数、启动线程和耗时，先固定口径再比较算法，避免用单一总数掩盖遍历结构。
+\variantheading 若根改为 4，有向 BFS 层依次为 $\{4\},\{3\},\{0,6\},\{2,5\},\{1,7\}$，下一轮为空；五个非空层仍覆盖全部 8 个顶点，但深度由 3 增为 4。
+\practiceheading 在顶点和边均用 32 位编号、CSR 可完整放入 NVIDIA GPU HBM 的前提下，用 RAPIDS cuGraph \code{bfs} 校验两组根的 distance；再以 Nsight Systems 核对是否执行终止空轮及每轮内核启动数。
+\sourcecheck{https://github.com/rapidsai/cugraph}{RAPIDS cuGraph 官方实现仓库；对抗检查：把有向边当成无向边会改变矩阵、CSR 和所有 BFS 层，漏掉终止空轮则会少报一次全扫描内核}
+\end{solutionexercise}
+
+\begin{solutionexercise}{2}
+\problemheading 实现原书第 18.3 节所述方向优化 BFS 的主机端代码。主机端须维护层次、
+当前/下一前沿及模式状态，根据前沿边数或未访问工作量在顶点中心推送和拉取内核之间切换，
+逐层启动正确内核，直到前沿为空；还须说明设备缓冲区清零、交换、同步和终止判定。
+
+\approachheading 同时保留出边 CSR 和入边 CSC。用“本轮前沿规模乘平均度”与剩余未访问
+顶点数作启发式比较，并使用滞回阈值避免频繁切换。发现计数必须只统计第一次标记成功的顶点。
+
+\answerheading 下面的两个内核展示关键的竞态处理，主机函数接收已经上传到设备且生命周期
+覆盖整个调用的 \code{CSRGraph}/\code{CSCGraph}：
+\begin{lstlisting}[language=C++]
+constexpr unsigned UNVISITED = 0xffffffffu;
+
+__global__ void bfs_push_cas(CSRGraph g, unsigned* level,
+                             unsigned* newCount, unsigned curr) {
+    unsigned v = blockIdx.x * blockDim.x + threadIdx.x;
+    if (v >= g.numVertices || level[v] != curr - 1) return;
+    for (unsigned e = g.srcPtrs[v]; e < g.srcPtrs[v + 1]; ++e) {
+        unsigned w = g.dst[e];
+        if (atomicCAS(&level[w], UNVISITED, curr) == UNVISITED)
+            atomicAdd(newCount, 1u);
+    }
+}
+
+__global__ void bfs_pull(CSCGraph g, unsigned* level,
+                         unsigned* newCount, unsigned curr) {
+    unsigned v = blockIdx.x * blockDim.x + threadIdx.x;
+    if (v >= g.numVertices || level[v] != UNVISITED) return;
+    for (unsigned e = g.dstPtrs[v]; e < g.dstPtrs[v + 1]; ++e) {
+        if (level[g.src[e]] == curr - 1) {
+            // Exactly one thread owns v in this kernel.
+            level[v] = curr;
+            atomicAdd(newCount, 1u);
+            break;
+        }
+    }
+}
+
+std::vector<unsigned> direction_bfs(CSRGraph csr_d, CSCGraph csc_d,
+                                    unsigned V, unsigned E,
+                                    unsigned root) {
+    if (V == 0 || root >= V) throw std::invalid_argument("BFS root");
+    unsigned *dLevel = nullptr, *dNew = nullptr;
+    CHECK(cudaMalloc(&dLevel, size_t(V) * sizeof(unsigned)));
+    CHECK(cudaMalloc(&dNew, sizeof(unsigned)));
+    CHECK(cudaMemset(dLevel, 0xff, size_t(V) * sizeof(unsigned)));
+    unsigned zero = 0;
+    CHECK(cudaMemcpy(dLevel + root, &zero, sizeof(unsigned),
+                     cudaMemcpyHostToDevice));
+
+    constexpr unsigned BLOCK = 256;
+    unsigned blocks = (V + BLOCK - 1) / BLOCK;
+    unsigned frontier = 1, visited = 1, curr = 1;
+    bool pull = false;
+    const double avgDegree = double(E) / V;
+    const double alpha = 14.0; // Tune on the target graph/device.
+    const double beta  = 24.0;
+
+    while (frontier != 0) {
+        unsigned remaining = V - visited;
+        if (!pull && double(frontier) * avgDegree > remaining / alpha)
+            pull = true;
+        else if (pull && frontier < double(V) / beta)
+            pull = false;
+
+        CHECK(cudaMemset(dNew, 0, sizeof(unsigned)));
+        if (pull)
+            bfs_pull<<<blocks, BLOCK>>>(csc_d, dLevel, dNew, curr);
+        else
+            bfs_push_cas<<<blocks, BLOCK>>>(csr_d, dLevel, dNew, curr);
+        CHECK(cudaGetLastError());
+        CHECK(cudaMemcpy(&frontier, dNew, sizeof(unsigned),
+                         cudaMemcpyDeviceToHost)); // completion point
+        visited += frontier;
+        ++curr;
+    }
+
+    std::vector<unsigned> level(V);
+    CHECK(cudaMemcpy(level.data(), dLevel, size_t(V)*sizeof(unsigned),
+                     cudaMemcpyDeviceToHost));
+    CHECK(cudaFree(dNew)); CHECK(cudaFree(dLevel));
+    return level;
+}
+\end{lstlisting}
+启发式常数不是 BFS 正确性的一部分，合理答案可以改用前沿边数与未访问边数、或离线调优的
+切换规则。正确性只要求一轮完整处理第 $d-1$ 层后才开始标记第 $d+1$ 层；默认 stream 中
+逐轮内核和同步回传满足该依赖。推送用 CAS 保证多父顶点争抢同一邻居时只计数一次；拉取的
+每个目的顶点只有一个线程，并在首个匹配入邻居处退出。
+
+\complexity{取决于切换点；推送检查前沿出边，拉取检查未访问顶点直到首个匹配入边，最坏仍为 $O((V+E)D)$}{$O(V+E)$ 的 CSR 与 CSC 各一份，另有 $O(V)$ 层号}{每轮启动 $V$ 个线程；可进一步用显式前沿减少推送阶段的无效线程}
+\conclusionheading 方向优化改变每轮检查的边集合，不改变层次语义。
+CAS、轮间完成点以及 CSR 与 CSC 的生命周期，都是主机代码不可省略的正确性条件。
+\discussionheading
+\discussionpoint{push 与 pull 利用了前沿密度的变化。}
+遍历早期只有少数活动顶点，push 沿它们的出边寻找新节点，工作量接近当前前沿出边数；当前沿膨胀后，许多边会指向已经访问的顶点，这些尝试大多浪费。pull 改让每个未访问顶点检查入边，只要找到一个前沿父节点就能早停，因此在稠密阶段可能少看很多无效边。二者的交叉点取决于度分布、剩余未访问集合和命中位置，不是固定的第几层。方向优化的广泛意义在于：同一个可达性问题可以从生产者或消费者一侧求解，系统应根据当前活动集合选择较少的候选工作。高偏斜图中，切换判据应估计边数而不能只数前沿顶点。
+
+\discussionpoint{双向邻接索引用空间换取遍历方向。}
+push 需要快速枚举出边，CSR 按源顶点分段最自然；pull 需要枚举入边，CSC 或转置图才能给出同样的顺序访问。两种格式同时驻留几乎复制了全部边索引，并各自带一组指针，但切换方向时不必临时扫描或转置。以 32 位顶点编号为例，额外方向至少再保存约 $4E$ 字节的邻接索引和 $4(V+1)$ 字节的偏移，十亿边图仅索引副本就接近 4~GB。静态图上的一次构造可由许多次 BFS、PageRank 或查询摊销，动态图却要让每次插入删除同时维护两份索引，否则两种方向会看到不一致拓扑。这个取舍与数据库的辅助索引相似：额外索引加速特定查询，同时增加容量、构建时间与更新一致性责任。
+
+\discussionpoint{切换条件应估算边工作而不是只数顶点。}
+一个含 1000 个度为 1 顶点的前沿只需检查约 1000 条出边，而一个超级节点可能独自拥有百万条边；把两者都记成“前沿大小 1000 或 1”会严重误判 push 成本。较可靠的启发式会估算当前前沿出边总数、剩余未访问顶点的入边量以及 pull 的近期命中率，并用两个不同阈值形成回滞。即使未访问顶点的入度总和相同，若前沿邻居常出现在第一条入边，pull 会很快早停；若几乎没有命中，它就要把候选入边扫到底，因此近期命中位置也是有效反馈。否则图在临界密度附近可能每层来回切换，转换位图和队列的成本抵消收益。这里体现了负载预测的一般原则：任务数量只是第一层信息，任务权重分布和切换成本才决定控制策略。
+
+\discussionpoint{主机控制可能比一层遍历更昂贵。}
+若每层都把新前沿长度复制到主机，再由 CPU 决定下一内核，设备同步和链路往返可能达到微秒级；对直径很小、单层工作也很短的图，这与计算本身处在同一量级。设备端队列、CUDA Graph 或持久内核可以减少启动往返，但分别引入动态控制复杂度、固定图结构约束或长期占用资源。进入多 GPU 后，远程发现去重、分区边通信和全局终止检测又会加入控制路径，单卡阈值无法原样照搬。优化 BFS 因而不只是在内核里少看几条边，还要设计谁作决策、状态在哪里以及何时必须全局一致。
+\variantheading 若设备内存只容纳 CSR，禁用拉取并始终运行 \code{bfs_push_cas}，本题图仍产生新前沿规模 $2,3,2,0$ 和第 1 题相同层号；代价是不能利用未访问集合很小时的入边早停。
+\practiceheading 假定 32-lane NVIDIA GPU、32 位顶点编号且 CSR/CSC 都驻留显存，用 RAPIDS cuGraph BFS 作正确性基线；在 Nsight Compute 中记录访问边数、原子吞吐和分支效率，针对真实图调节 $\alpha,\beta$ 而非沿用常数。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{CUDA C++ Programming Guide 对原子操作、内核顺序和内存模型的官方说明；对抗检查：若推送仅先读“未访问”状态再普通写，两个父线程会重复增加新节点计数，使切换统计和终止条件失真}
+\end{solutionexercise}
+
+\begin{solutionexercise}{3}
+\problemheading 修改原书图 18.17 的内核，使每层只使用一次网格范围屏障同步，而不是
+三次。原内核在持久合作网格中依次清零下一前沿计数、扩展当前前沿、交换前沿并更新层号；
+修改后须用线程 0 的顺序操作和一次全网格屏障同时保证本层结果对所有块可见，并避免任何块
+在屏障前提前退出。
+
+\approachheading 原实现复用一个当前前沿计数器，所以必须“完成写入、全部读完、清零完成”
+三次同步。为第 $d$ 层准备独立计数器，内核启动前一次性清零，便不再需要读后清零。块私有
+前沿采用有界数组：前 \code{PRIVATE_CAPACITY} 个发现留在共享内存，其余发现立即原子追加
+到全局前沿；块尾再为共享部分一次性领取连续全局区间并 flush。
+
+\answerheading 以下是可由 \code{nvcc} 编译的完整内核和主机启动函数。传入的 CSR 两个
+指针已经位于当前设备，\code{rowPtr} 长度为 $V+1$，
+\code{rowPtr[V]==numEdges}，所有目的顶点均小于 $V$：
+\begin{lstlisting}[language=C++]
+#include <cuda_runtime.h>
+#include <cooperative_groups.h>
+#include <algorithm>
+#include <stdexcept>
+#include <vector>
+
+namespace cg = cooperative_groups;
+
+inline void check_cuda(cudaError_t e) {
+  if (e != cudaSuccess) throw std::runtime_error(cudaGetErrorString(e));
+}
+#define CHECK(call) check_cuda(call)
+
+struct CSRGraphView {
+  const unsigned* rowPtr;
+  const unsigned* colIdx;
+  unsigned numVertices;
+  unsigned numEdges;
+};
+
+template<class T> struct DeviceBuffer {
+  T* p = nullptr;
+  explicit DeviceBuffer(size_t count) {
+    CHECK(cudaMalloc(reinterpret_cast<void**>(&p), count * sizeof(T)));
+  }
+  ~DeviceBuffer() { if (p) cudaFree(p); }
+  DeviceBuffer(const DeviceBuffer&) = delete;
+  DeviceBuffer& operator=(const DeviceBuffer&) = delete;
+};
+
+constexpr unsigned UNVISITED = ~0u;
+constexpr unsigned PRIVATE_CAPACITY = 256;
+
+__global__ void bfs_one_grid_barrier(
+    CSRGraphView g, unsigned* level,
+    unsigned* prevFrontier, unsigned* currFrontier,
+    unsigned* frontierSizes) {
+  cg::grid_group grid = cg::this_grid();
+  unsigned numPrev = frontierSizes[0];
+
+  for (unsigned currLevel = 1; numPrev != 0; ++currLevel) {
+    __shared__ unsigned privateFrontier[PRIVATE_CAPACITY];
+    __shared__ unsigned privateCount;
+    __shared__ unsigned publicBase;
+    if (threadIdx.x == 0) privateCount = 0;
+    __syncthreads();
+
+    for (unsigned long long i = grid.thread_rank(); i < numPrev;
+         i += grid.size()) {
+      unsigned src = prevFrontier[i];
+      for (unsigned e = g.rowPtr[src]; e < g.rowPtr[src + 1]; ++e) {
+        unsigned dst = g.colIdx[e];
+        if (atomicCAS(&level[dst], UNVISITED, currLevel) == UNVISITED) {
+          unsigned slot = atomicAdd(&privateCount, 1u);
+          if (slot < PRIVATE_CAPACITY) {
+            privateFrontier[slot] = dst;
+          } else {
+            // Overflow entries bypass the full shared queue.
+            unsigned out = atomicAdd(&frontierSizes[currLevel], 1u);
+            currFrontier[out] = dst;
+          }
+        }
+      }
+    }
+    __syncthreads();
+
+    unsigned staged = privateCount < PRIVATE_CAPACITY
+                    ? privateCount : PRIVATE_CAPACITY;
+    if (threadIdx.x == 0)
+      publicBase = atomicAdd(&frontierSizes[currLevel], staged);
+    __syncthreads();
+    for (unsigned i = threadIdx.x; i < staged; i += blockDim.x)
+      currFrontier[publicBase + i] = privateFrontier[i];
+
+    grid.sync();                 // exactly one grid-wide barrier per level
+    numPrev = frontierSizes[currLevel];
+    unsigned* tmp = prevFrontier;
+    prevFrontier = currFrontier;
+    currFrontier = tmp;
+  }
+}
+
+std::vector<unsigned> cooperative_bfs(CSRGraphView g, unsigned root) {
+  const unsigned V = g.numVertices;
+  if (V == 0 || root >= V || !g.rowPtr || (g.numEdges && !g.colIdx))
+    throw std::invalid_argument("CSR graph/root");
+
+  int device = 0, cooperative = 0, smCount = 0, blocksPerSM = 0;
+  CHECK(cudaGetDevice(&device));
+  CHECK(cudaDeviceGetAttribute(&cooperative,
+                               cudaDevAttrCooperativeLaunch, device));
+  if (!cooperative)
+    throw std::runtime_error("device has no cooperative launch support");
+
+  constexpr int BLOCK = 256;
+  CHECK(cudaDeviceGetAttribute(&smCount,
+                               cudaDevAttrMultiProcessorCount, device));
+  CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+      &blocksPerSM, bfs_one_grid_barrier, BLOCK, 0));
+  int residentLimit = smCount * blocksPerSM;
+  int workBlocks = int((size_t(V) + BLOCK - 1) / BLOCK);
+  int gridBlocks = std::min(workBlocks, residentLimit);
+  if (gridBlocks <= 0)
+    throw std::runtime_error("cooperative grid cannot be resident");
+
+  DeviceBuffer<unsigned> level(V), prev(V), curr(V);
+  DeviceBuffer<unsigned> sizes(size_t(V) + 1);
+  unsigned *dLevel = level.p, *dPrev = prev.p, *dCurr = curr.p;
+  unsigned *dSizes = sizes.p;
+  CHECK(cudaMemset(dLevel, 0xff, size_t(V) * sizeof(unsigned)));
+  unsigned zero = 0, one = 1;
+  CHECK(cudaMemcpy(dLevel + root, &zero, sizeof(zero),
+                   cudaMemcpyHostToDevice));
+  CHECK(cudaMemcpy(dPrev, &root, sizeof(root), cudaMemcpyHostToDevice));
+  CHECK(cudaMemset(dSizes, 0, (size_t(V) + 1) * sizeof(unsigned)));
+  CHECK(cudaMemcpy(dSizes, &one, sizeof(one), cudaMemcpyHostToDevice));
+
+  void* args[] = {&g, &dLevel, &dPrev, &dCurr, &dSizes};
+  CHECK(cudaLaunchCooperativeKernel(
+      (void*)bfs_one_grid_barrier, dim3(gridBlocks), dim3(BLOCK),
+      args, 0, nullptr));
+  CHECK(cudaDeviceSynchronize());
+
+  std::vector<unsigned> result(V);
+  CHECK(cudaMemcpy(result.data(), dLevel, size_t(V) * sizeof(unsigned),
+                   cudaMemcpyDeviceToHost));
+  return result;
+}
+\end{lstlisting}
+每个成功的 CAS 对应一个且仅一个前沿元素。共享计数器可以超过容量，但只有槽号小于容量的
+元素写共享数组；其余元素直接写入原子领取的全局槽，故不会覆盖或丢失。块尾的
+\code{staged=min(privateCount,PRIVATE_CAPACITY)} 只 flush 实际存在的有界部分。CAS 使每个
+顶点最多进入一次前沿，因此两个长度为 $V$ 的前沿缓冲区不会溢出。
+
+唯一的 \code{grid.sync()} 保证所有全局前沿写入及本层计数原子更新完成；屏障后所有线程
+读取同一计数并交换相同指针。下一层使用另一个预先清零、从未写过的计数项，因而不需要
+“全部读完再清零”和“清零完成再写”两道屏障。长度 $V+1$ 还容纳最长简单路径末尾的空前沿。
+主机既检查 cooperative launch 能力，又用 occupancy 上限乘 SM 数限制网格；若启动超过
+同时驻留容量，网格屏障可能无法取得进展。块内三个 \code{__syncthreads()} 仍是共享队列
+初始化、计数完成和 flush 基址发布所需，它们不属于题目要求减少的网格屏障。
+
+\complexity{$O(V+E)$ 有效遍历工作；每层网格屏障从 3 次降至 1 次，原子争用可能增加常数}{$O(V)$ 层计数器和两个 $O(V)$ 前沿；每块另有固定 \code{PRIVATE_CAPACITY} 个共享槽}{$\min(\lceil V/256\rceil,\text{驻留上限})$ 个持久块，以 grid-stride 遍历前沿；全部块必须同时驻留}
+\conclusionheading 每层独立计数器把跨层生命周期变成单赋值，因而一次“生产完成”屏障
+已经足够。
+\discussionheading
+\discussionpoint{持久协作内核把层循环留在设备上。}
+普通 BFS 每一层结束一个内核，内核边界天然提供全网格同步，也让主机有机会读取前沿长度。协作组的网格屏障可以在单个持久内核内建立同样的阶段边界，从而省去反复启动与主机往返；条件是参与屏障的所有块必须能够同时驻留，否则未调度块与已驻留块会互相等待。这个驻留上限由线程、寄存器和共享内存共同决定，不能把普通网格尺寸直接用于 cooperative launch。持久方案适合层数多而每层较短的图，但若一层本来就足以占满设备，多内核方案的弹性和可移植性可能更好。
+
+\discussionpoint{版本化计数器是在用空间消除清零竞争。}
+若上一层长度和下一层写入位置共用一个计数器，线程必须先全部读完旧值，再由一个线程清零，并在任何新写入前再次完成网格同步；少一个屏障都可能把新计数清掉。按层号保存 \code{count[level]} 相当于给状态加版本，读者只访问旧槽，写者只更新新槽，从结构上消除了生命周期重叠。最坏情况下 BFS 深度为 $V-1$，这种做法需要 $O(V)$ 计数空间；双缓冲可降到常数，但必须恢复严格的读、屏障、清零、屏障协议。版本化状态也是无锁队列和分代缓存中的常见思想：多占一点空间，换取更容易证明的时间所有权。
+
+\discussionpoint{块私有前沿只缓解全局原子热点。}
+让每个新顶点直接对全局尾指针执行原子加，会让所有块争用一个地址；先写入共享内存队列，再由块一次申请连续全局区间，可以把许多全局原子压缩成少量批量操作。典型 flush 先由一个线程以一次 \code{atomicAdd} 预留 $n$ 个连续槽，再把返回基址广播给全块并行散写；预留前后的块内屏障若缺失，就可能读取未完成的本地队列或未发布的基址。共享队列内部仍需要原子或确定分配，容量满时也必须有直接写全局等溢出路径，否则高峰前沿会静默丢顶点。容量增大能减少 flush，却提高每块共享内存并可能降低驻留块数，所以它不是越大越好。类似的分层聚合还用于直方图和日志缓冲，其共同原则是把高代价的全局争用变成本地争用，再以批量方式跨层级提交。
+
+\discussionpoint{长期活性比单轮数值更难验证。}
+协作内核即使在一个小图上给出正确层号，也可能在更大网格上因启动超过可驻留上限而失败，或因某条异常路径没有到达 \code{grid.sync()} 而死锁。测试应覆盖空图、长链、星形图、重复边、队列恰满和溢出，并用 occupancy API 根据实际寄存器与共享内存核对最大协作块数。桌面 GPU 还可能对长时间内核施加看门狗限制，使算法正确却无法在该部署环境长期运行。生产系统因此会在持久内核、多内核和 CUDA Graph 之间选择，权衡启动延迟、抢占能力、可诊断性与跨设备可移植性，而不是只比较一次内核计时。
+\variantheading 若把 \code{PRIVATE_CAPACITY} 改为 128，某块一层发现 300 个唯一顶点时，128 个经共享队列批量 flush，172 个直接追加全局前沿；屏障后该块对总计数的贡献仍恰为 300。
+\practiceheading 在 \code{cooperativeLaunch=true}、256 线程块且网格不超过 occupancy 驻留上限的 NVIDIA GPU 上，用 CUDA Occupancy API 核对可驻留块数，并以 Nsight Compute 的 Barrier Stall、原子吞吐和共享内存占用比较容量 64、128、256。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{CUDA C++ Programming Guide 的 Cooperative Groups 网格同步与协作启动规范；对抗检查：若仍复用两个计数器却直接删掉读后/清零屏障，快线程可能在慢线程读取前清零，或在清零前写入下一层}
+\end{solutionexercise}

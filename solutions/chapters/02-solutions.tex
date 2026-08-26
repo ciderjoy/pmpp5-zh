@@ -1,0 +1,361 @@
+\chapter{异构数据并行计算}
+
+\begin{solutionexercise}{1}
+\problemheading 如果希望网格中的每个线程计算向量加法的一个输出元素，那么在内核函数中，
+把线程/块索引映射到数据索引 $i$ 的表达式是什么？
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item \code{i = threadIdx.x + threadIdx.y;}
+  \item \code{i = blockIdx.x + threadIdx.x;}
+  \item \code{i = blockIdx.x * blockDim.x + threadIdx.x;}
+  \item \code{i = blockIdx.x * threadIdx.x;}
+\end{enumerate}
+
+\approachheading 全局线程号由“前面完整线程块中的线程数”与“块内线程号”相加得到。
+
+\answerheading 已知一维网格、一维线程块，\code{blockIdx.x} 是块号，\code{blockDim.x}
+是每块线程数，\code{threadIdx.x} 是块内线程号。因此
+\[
+ i=\code{blockIdx.x}\,\code{blockDim.x}+\code{threadIdx.x}.
+\]
+选项 c 正确。该映射在网格内唯一且连续；实际内核还应检查 $i<N$。
+
+\conclusionheading 选 c。
+\discussionheading
+\discussionpoint{全局线程号是一种混合进位表示。}
+为什么块号不能直接与线程号相加？因为块 $b$ 之前已经排着 $b$ 个完整线程块，每块各含 $T$ 个位置，所以它们共同占去 $bT$ 个线性编号，当前线程再在此基础上加块内偏移 $t$。这和把二维坐标 $(r,c)$ 展平为 $rW+c$、把 MPI 进程坐标转换为 rank 是同一种混合进位思想：先确定每一位的容量，再累加高位所跨过的完整区间。推广到二维或三维网格时，还必须先声明哪一维变化最快，否则同一组坐标会被解释成不同的线性次序。索引公式因而不仅是算术技巧，也是线程布局、数据布局和调试输出共同遵守的一份契约。
+\discussionpoint{网格步长循环把启动规模与数据规模解耦。}
+若数组有数十亿项，既没有必要也未必能用一次网格为每项创建唯一线程；更常见的做法是先算本题的首索引，再反复增加整个网格的线程总数 $G T$。线程 $i$ 依次处理 $i,i+GT,i+2GT,\ldots$，只要每轮检查上界，所有余数类便共同覆盖数组且互不重叠。这样可以把网格限制在足以占满设备的规模，并让常驻线程摊薄启动和地址计算成本，归约前处理与持久化内核经常采用这种形式。不过循环增加了每线程工作量和寄存器生存期，若任务耗时不均，还可能把同一余数类中的慢项集中到一个线程，不能只凭覆盖正确就认定配置合理。
+\discussionpoint{正确索引仍需要完整的边界契约。}
+向上取整块数时，最后一个块通常包含一些没有对应数据的线程；因此 $i=bT+t$ 即使唯一且连续，也只证明映射没有重号，并不证明 $i$ 一定小于 $N$。边界谓词必须支配由 $i$ 派生的每一次读取和写入，例如先读取 \code{a[i]}、最后才检查写回仍然已经越界。规模很大时还要审查类型：若 $bT$ 先按 32 位整数计算，即使随后赋给 \code{size_t}，溢出也已经发生，安全写法应让乘法的操作数本身足够宽。这个区别在二维展平时更重要，因为 $rW+c$ 比单维索引更早越过 32 位范围。
+\discussionpoint{连续编号只是良好访存的起点。}
+当一个 warp 的 lane 0--31 分别访问 $i,i+1,\ldots,i+31$ 时，请求字节通常能落入少量连续内存扇区，这正是该映射常被采用的性能原因。但若数组元素变宽、基址带非对齐偏移，或逻辑相邻元素在结构体中实际相隔很远，线程号连续也不能保证事务利用率理想。验证时可以让一个小内核把每个线程算出的秩写回，与 CPU 枚举逐项对照，从而先排除覆盖错误；随后再比较请求字节与实际传输字节，判断布局是否浪费带宽。把正确性验证和事务效率分开，能避免把“答案数值正确”误当成“线程映射已经高效”。
+\variantheading 若每块 256 个线程且处理 $N=1000$ 个元素，则需 4 个块、启动 1024 个线程，最后 24 个线程应被 $i<N$ 屏蔽。
+\practiceheading 生产内核可用 Nsight Compute 的 Launch Statistics 核对实际网格、块维度和越界线程比例，并用 Compute Sanitizer memcheck 捕获漏写边界判断造成的越界。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{NVIDIA CUDA C++ Programming Guide 的线程层次定义支持上述映射；高置信度}
+\end{solutionexercise}
+
+\begin{solutionexercise}{2}
+\problemheading 假设希望每个线程计算向量加法中相邻的两个元素。把线程/块索引映射到线程
+要处理的第一个元素的数据索引 $i$ 的表达式是什么？
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item \code{i = blockIdx.x * blockDim.x + threadIdx.x + 2;}
+  \item \code{i = blockIdx.x * threadIdx.x * 2;}
+  \item \code{i = (blockIdx.x * blockDim.x + threadIdx.x) * 2;}
+  \item \code{i = blockIdx.x * blockDim.x * 2 + threadIdx.x;}
+\end{enumerate}
+
+\approachheading 先求线程的线性全局编号 $t$，再把每个线程负责的元素数 2 乘进去。
+
+\answerheading $t=\code{blockIdx.x*blockDim.x+threadIdx.x}$，故第一个元素
+$i=2t$，第二个元素为 $i+1$。即
+\[
+ i=(\code{blockIdx.x*blockDim.x+threadIdx.x})*2.
+\]
+选项 c 正确。边界条件分别是 $i<N$ 和 $i+1<N$。
+
+\conclusionheading 选 c；不能简单在索引末尾加 2。
+\discussionheading
+\discussionpoint{线程粗化是在并行度与单线程工作量之间换挡。}
+每线程只算一个元素时，索引和边界判断几乎与一次加法同样显眼；让线程连续算两项，可以让这些固定指令服务更多有效工作，这就是线程粗化。它看起来像 CPU 的循环展开，却多出 GPU 特有的代价：逻辑线程数减半，一个 warp 覆盖的地址集合发生变化，每线程同时存活的输入和中间值也可能增加。对于很短的逐元素算子，减少控制指令有时能带来收益；对于本来就缺少并行任务的小数组，减半线程数反而可能让设备更空闲。因此粗化不是“每线程多做事必然更快”，而是把调度开销、并行度和局部状态重新分配。
+\discussionpoint{相邻两项与分段两项具有不同的访存几何。}
+本题映射让线程 $t$ 负责 $2t$ 与 $2t+1$，最直观的实现是一次读取一个对齐的 \code{float2}，此时相邻线程的向量对象在内存中仍首尾相接。若编译器生成两条标量指令，第一条却会让 lane 依次访问 $0,2,4,\ldots$，第二条访问 $1,3,5,\ldots$，每条指令的地址集合都有步长 2，事务形态便不同。分段式方案则让所有 lane 第一轮访问连续区间、第二轮整体平移一个块宽，所以不依赖向量指令也能保持每轮单位步长。两种布局数学工作相同，但其性能取决于对齐、生成的机器指令和缓存层次，不能仅凭源码中“元素相邻”四个字判断。
+\discussionpoint{奇数长度暴露了粗化边界的真实难点。}
+设 $N=9$，线程 4 的首索引是 8，第一项合法而第二项 9 已越界；如果用 \code{if (i+1<n)} 包住两次运算，就会错误漏掉元素 8，若只检查 \code{i<n} 又会非法访问元素 9。正确结构是分别保护两项，或者先处理所有完整二元组，再由唯一线程或独立尾部路径处理余数。这个例子虽只有一个尾元素，却代表任意粗化因子 $C$ 的共同规则：必须覆盖 $N\bmod C$ 的每个余数类，读取本身也要在谓词之内。随着 $C$ 增大，尾部失衡和寄存器占用同时增加，边界测试因而是资源调优之前不可省略的正确性门槛。
+\discussionpoint{生产级粗化通常服务于减少数据搬运。}
+在实际框架中，单纯省下一次索引乘法往往不值得复杂化代码；更有价值的场景是把加法、缩放和激活融合到同一线程，使刚读入的值在寄存器中完成多步处理，而不把中间数组写回全局内存。相邻式粗化还可与对齐向量加载结合，网格步长循环则让固定数量线程持续消费多个向量包，但每一种组合都必须保留标量前缀和尾部路径。评估时应先用 $N\bmod2=0,1$ 以及非对齐子数组证明结果和边界，再比较端到端字节流量与吞吐，而不是只比较内核指令数。只有数据搬运确实减少且资源占用没有抵消收益，粗化才成为可维护的工程优化。
+\variantheading 若 $N=9$ 且启动 5 个逻辑线程，则线程 4 的首索引为 8，只处理元素 8；其第二个索引 9 越界。
+\practiceheading 可编译运行 \code{solutions/code/ch02-09/ch02_ex02_vector_add.cu}，并在 Compute Sanitizer memcheck 下覆盖 $N\bmod2=0$ 和 $N\bmod2=1$ 两类尾部。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{CUDA 线程索引规则；高置信度}
+\end{solutionexercise}
+
+\begin{solutionexercise}{3}
+\problemheading 希望每个线程计算两个元素。每个线程块处理由两个区段组成的、连续的
+$2\times\code{blockDim.x}$ 个元素。块中的所有线程先处理第一个区段，每个线程
+处理一个元素；然后它们一起移动到下一个区段，每个线程再处理一个元素。假设
+变量 $i$ 是线程要处理的第一个元素的索引，那么把线程/块索引映射到第一个
+元素数据索引的表达式是什么？
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item \code{i = blockIdx.x * blockDim.x + threadIdx.x + 2;}
+  \item \code{i = blockIdx.x * threadIdx.x * 2;}
+  \item \code{i = (blockIdx.x * blockDim.x + threadIdx.x) * 2;}
+  \item \code{i = blockIdx.x * blockDim.x * 2 + threadIdx.x;}
+\end{enumerate}
+
+\approachheading 块 $b$ 之前已有 $2b$ 个完整区段；块内线程 $t$ 在当前区段取第 $t$ 个元素。
+
+\answerheading
+\[
+ i=2\,\code{blockIdx.x}\,\code{blockDim.x}+\code{threadIdx.x}.
+\]
+第二个元素位于 $i+\code{blockDim.x}$。因此选项 d 正确。与第 2 题不同，这里同一块的
+线程先协同处理整个区段，连续线程仍访问连续地址，利于访问合并。
+
+\conclusionheading 选 d。
+\discussionheading
+\discussionpoint{分段式粗化为什么仍然合并。}
+乍看之下，一个线程承担两个元素似乎会把相邻线程的地址拉开，然而关键不在“某个线程最终碰过哪些地址”，而在一个 warp 执行\emph{同一条}访存指令时形成的地址集合。设块号为 $b$、块宽为 $T$、lane 为 $t$，第一轮地址是 $2bT+t$，32 个 lane 仍覆盖连续元素；第二轮只是整体平移 $T$，地址变成 $2bT+T+t$，仍然是单位步长。两轮之间相隔多远不会破坏各轮的合并性，这与逐线程相邻映射的标量首轮地址 $2t$ 形成鲜明对比。由此可见，判断 GPU 数据布局必须沿动态指令横向观察整个 warp，而不能沿单线程时间线纵向观察。
+\discussionpoint{从两个区段推广到任意粗化因子。}
+若每线程处理 $C$ 个区段，块 $b$ 应先跳过前面 $b$ 个块覆盖的 $CbT$ 个元素，第 $k$ 轮再加区段偏移 $kT$ 和线程偏移 $t$，所以统一公式是 $i_{b,k,t}=CbT+kT+t$，其中 $0\le k<C$。固定 $b,k$ 后，$t$ 每增加 1，地址也只增加 1，因此任意一轮都保持连续；固定 $b,t$ 后改变 $k$，才表现为同一线程跨区段工作。这个推导可直接迁移到 SAXPY、像素通道变换或规则网格更新，因为它把“任务属于哪个块、哪个轮次、哪个 lane”三层含义明确分开。若 $C$ 是编译期常量，循环还可展开，但展开只是减少控制指令，并不改变上述覆盖证明。
+\discussionpoint{尾块为何必须逐轮保护。}
+危险通常藏在最后一个块：第一段存在有效元素，并不能推出第二段或更后的区段也有效。以 $T=128,C=2,N=850$ 为例，块 3 的第一轮覆盖 $768\ldots895$，只有前 82 个 lane 有效，而第二轮从 896 开始，所有 lane 都越界；若只在循环外检查一次首地址，第二轮仍会非法读取。稳妥写法是在每个 $k$ 上计算 $i_{b,k,t}$ 后独立判断 $i<N$，并让读取与写回都受这一谓词支配。对于每个元素计算量还随数据变化的任务，粗化会把多个“重元素”固定交给同一线程，尾部问题便从越界进一步演化成负载不均，这时动态工作队列或重新分桶可能比继续增大 $C$ 更合适。
+\discussionpoint{粗化因子不是越大越好。}
+$C$ 增大时，索引计算和块调度成本可由更多有效工作摊薄，同一线程也可能同时准备多个独立加载，从而增加指令级并行；但每多保留一个待处理值，寄存器生存期往往随之延长。寄存器过多会减少可驻留 warp，极端时还会溢出到 local memory，使原本想节省的流量反而增加，而线程总数下降也可能让小规模输入无法填满设备。实际选择可先保证 $C=1,2,4,8$ 都通过余数类与边界测试，再在目标尺寸分布上比较吞吐、实际传输字节和编译器报告的资源用量。这样的实验不仅告诉我们哪个 $C$ 更快，也能解释为何同一取值在另一代 GPU 或另一个问题规模上会反转。
+\variantheading 若每块 128 线程、块号为 3，则第一区段首索引为 $2\times3\times128=768$，线程 7 处理 775 和 903。
+\practiceheading 可用 Nsight Compute 的 Global Memory Load/Store Efficiency 比较分段式与逐线程连续式粗化，并同时检查两种布局在实际缓存层次上的差异。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}{CUDA Best Practices Guide 的合并访问原则；高置信度}
+\end{solutionexercise}
+
+\begin{solutionexercise}{4}
+\problemheading 对于一次向量加法，向量长度为 8000，每个线程计算一个输出元素，线程块
+大小为 1024。程序员把内核调用配置为覆盖所有输出元素所需的最少线程块数。
+网格中有多少个线程？
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item 8000
+  \item 8196
+  \item 8192
+  \item 8200
+\end{enumerate}
+
+\approachheading 使用向上取整块数 $B=\lceil N/T\rceil$，再算 $BT$。
+
+\answerheading
+\[
+ B=\left\lceil\frac{8000}{1024}\right\rceil=8,\qquad
+ N_{\rm thread}=8\times1024=8192.
+\]
+其中 8000 个线程处理有效元素，192 个线程由边界检查屏蔽。
+
+\conclusionheading 选 c，网格共 8192 个线程。
+\discussionheading
+\discussionpoint{向上取整是离散执行资源的覆盖证明。}
+数据规模 8000 不是块容量 1024 的整数倍，因此块数不能用整数除法截断为 7；那样只能覆盖前 7168 个元素，剩余 832 项永远没有线程。写成 $\lceil N/T\rceil$ 的意义，是把连续编号区间 $[0,N)$ 分割成若干容量为 $T$ 的离散容器，最后一个容器允许不满但不能缺席。相同思想出现在缓存瓦片、文件分片和分布式批处理中，只是 GPU 还要求多出来的线程通过边界谓词保持无副作用。到了二维或三维问题，每一维都必须独立向上取整，遗漏任一维的尾块都会漏掉整条边或整张切片，而不只是少算几个点。
+\discussionpoint{最大合法线程块不等于最佳线程块。}
+1024 常是设备允许的单块线程上限，但“能启动”只回答合法性，没有回答吞吐量。一个大块会一次占用较多寄存器和线程槽，某些内核因而只能让一个块驻留在 SM 上；若该块在屏障处等待，调度器可选择的其他独立工作就很少。较小块提供更细的调度粒度，也较容易适配短尾部，却可能削弱共享内存协作范围并增加块级固定开销。选择 128、256、512 或 1024 时，应先同时核对线程、寄存器和共享内存限制，再让代表性输入决定哪个配置真正缩短时间，而不是把硬件上限当作推荐值。
+\discussionpoint{块内尾部与网格波次是两种不同浪费。}
+本题最后一个块有 832 个有效线程和 192 个无效线程，后者仍会执行索引与条件，但组成的是 6 个完整越界 warp，并不会在边界分支内部产生半 warp 分歧。另一方面，网格只有 8 个块，若设备一次能并发远多于 8 个块，整个网格从一开始就无法填满全部 SM；这属于网格规模与并发槽位之间的“波次”量化，不是 192 个线程直接造成的。长向量含有很多完整波次时，一个尾块的成本会被摊薄；大量短向量则会反复支付启动和空槽成本，常适合批处理或融合。区分这两层尾效应，才能知道应调整块宽、合并任务，还是接受不可避免的最后余数。
+\discussionpoint{占用率只描述潜在并发，不描述完成速度。}
+占用率回答“资源最多允许多少 warp 同时驻留”，它有助于判断隐藏内存延迟的余地，却没有说明这些 warp 是否持续发出有用指令。一个带宽受限的向量内核可能在中等占用率就把 DRAM 用满，再增加驻留 warp 也不会提高传输上限；相反，依赖链很长的内核可能需要更多就绪 warp 才能填补停顿。因而块宽实验要同时观察总运行时间、实际带宽、寄存器用量和完整波次数，并覆盖实际业务中的长度分布。这样得到的选择才具有跨输入解释力，而不是只对 8000 这个单点恰好最优。
+\variantheading 若仍有 8000 个元素但每块 256 线程，则需 $\lceil8000/256\rceil=32$ 块，共 8192 个线程，同样有 192 个越界线程。
+\practiceheading 启动前可用 \code{cudaOccupancyMaxPotentialBlockSize} 比较候选块大小，再以 Nsight Compute 的 Achieved Occupancy 和尾块效率验证选择。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{CUDA 执行配置与线程块定义；数值另行复算，置信度高}
+\end{solutionexercise}
+
+\begin{solutionexercise}{5}
+\problemheading 要为包含 $v$ 个整数元素的数组分配设备全局内存。
+\code{cudaMalloc} 的第二个参数应使用哪个表达式？
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item \code{n}
+  \item \code{v}
+  \item \code{n * sizeof(int)}
+  \item \code{v * sizeof(int)}
+\end{enumerate}
+
+\approachheading \code{cudaMalloc} 的大小参数以字节为单位。
+
+\answerheading 数组元素数乘每个元素的字节数，得到
+\code{v * sizeof(int)}。使用 \code{sizeof} 比假定 \code{int} 固定为 4 字节更可移植。
+
+\conclusionheading 选 d。
+\discussionheading
+\discussionpoint{分配器接收字节，而程序员思考元素。}
+题目给出的 $v$ 是整数元素个数，但 \code{cudaMalloc} 并不知道返回的区域以后会被解释为 \code{int}、\code{float} 还是某个结构体；它只接收一段无类型存储需要多少字节。这就是为什么必须写 $v\,\code{sizeof(int)}$：\code{sizeof} 把类型的对象表示宽度显式带入容量计算，也避免把“某台机器上 int 恰为 4 B”误写成接口契约。这个模型与 C 的 \code{malloc} 相同，类型信息存在于调用方指针和后续访问中，而不附着在设备分配本身。把元素数、元素类型和字节容量分开记录，还能让模板缓冲区在类型改变时自动重算所需空间。
+\discussionpoint{容量乘法本身也可能越界。}
+若 $v$ 来自文件或网络，直接计算 $v\times\code{sizeof(int)}$ 可能在 \code{size_t} 中回绕成一个较小值，分配调用甚至会成功，随后内核却按原始 $v$ 大量越界。安全前置条件是 $v\le\code{SIZE_MAX}/\code{sizeof(int)}$，并且在任何有符号值转换为 \code{size_t} 之前先排除负数。零长度也应作为独立状态处理，因为不同分配接口对零字节返回值的细节不适合作为可解引用数组的依据。类似检查不仅用于 GPU，图像尺寸乘通道数、矩阵行列乘积和序列批量容量都需要在分配之前逐层验证。
+\discussionpoint{获得存储不等于获得已初始化对象。}
+\code{cudaMalloc} 成功只说明地址范围存在，并不保证其中位为零；内核在任何写入前读取它，会得到不确定内容，数值测试有时却因旧页恰好为零而偶然通过。若算法确实需要全零\emph{位模式}，可以调用 \code{cudaMemset}，但它按字节重复一个值，不能用来构造任意非零整数或浮点数组。更复杂的 C++ 类型还涉及构造、析构和对象生命周期，取得原始设备存储并不会自动执行构造函数。工程接口因此应把“分配”“初始化”和“对象建立”作为三个可检查阶段，而不是让一个裸指针暗示它们都已经完成。
+\discussionpoint{高频分配会把内存管理变成运行时瓶颈。}
+若训练循环每一步都分配并释放多个临时数组，即使每次字节数正确，分配器的同步、元数据维护和地址空间操作也可能淹没短内核的计算时间。长寿命程序通常复用 RAII 缓冲区，或使用 stream-ordered 内存池，让释放与后续复用按流依赖排序；代价是需要管理池的高水位和跨 stream 生命周期。容量规划也不能只把永久数组相加，还要考虑库工作区、并发批次和峰值临时区，因为它们可能在时间线上重叠。将分配失败和缩小批次路径纳入测试，能把一次偶然的显存不足变成可诊断、可恢复的系统行为。
+\variantheading 若分配 1500 个 \code{double}，第二个参数为元素数 1500 乘
+\code{sizeof(double)}。常见平台的 \code{double} 为 8 B，因此总计 12,000 B。
+\practiceheading 生产封装应检查 \code{cudaMalloc} 返回值并使用 \code{cudaMemGetInfo} 或内存池指标监控容量；需要确定初值时另行调用 \code{cudaMemset} 或初始化内核。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__MEMORY.html}{CUDA Runtime API 的 cudaMalloc 参数定义；高置信度}
+\end{solutionexercise}
+
+\begin{solutionexercise}{6}
+\problemheading 如果希望分配一个包含 $n$ 个浮点元素的数组，并让浮点指针变量
+\code{A_d} 指向所分配的内存，\code{cudaMalloc} 调用的第一个参数应使用什么
+表达式？
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item \code{n}
+  \item \code{(void *) A_d}
+  \item \code{*A_d}
+  \item \code{(void **) &A_d}
+\end{enumerate}
+
+\approachheading API 要修改调用者的指针变量，因此必须传指针变量的地址，并转换成
+\code{void **}。
+
+\answerheading 正确形式为
+\begin{lstlisting}[language=C++,numbers=none]
+cudaMalloc((void **)&A_d, n * sizeof(float));
+\end{lstlisting}
+故选 d。现代 C++ 的 CUDA 头文件也提供模板重载；题目所列的是传统 C API 形式，
+其第一个实参是转换成 \code{void **} 的指针变量地址。
+
+\conclusionheading 选 d。
+\discussionheading
+\discussionpoint{二级指针来自“返回一个指针”的需要。}
+\code{cudaMalloc} 要把新地址写进调用者的变量 \code{A_d}，若只传 \code{A_d} 的当前值，函数得到的只是一个副本，无法改变调用方保存的地址。传入 \code{&A_d} 后，函数拿到“指针变量本身的地址”，于是参数类型自然多出一级，传统 C 接口再把它统一表示为 \code{void**}。这与用输出参数返回文件句柄、树根指针或 MPI 对象是同一种接口设计，而强制转换只处理类型匹配，并不会替调用者证明字节数正确。现代 CUDA C++ 头文件可提供类型化重载来隐藏转换，但底层的写回语义没有改变，理解指针层次仍是排查错误地址的基础。
+\discussionpoint{指针数值相同不代表处理器都能访问。}
+统一虚拟寻址让运行时能从地址识别它属于哪类内存，也让支持对等访问的 GPU 在适当配置下共享地址值；这并不意味着 CPU 可以用普通加载指令解引用纯设备分配。托管内存会在处理器间迁移或建立映射，映射的页锁定主机内存则由设备经互连访问，它们都与本题的设备局部分配具有不同的可见性和成本。设计接口时应把“地址如何表示”“哪些执行主体可以访问”以及“何时完成迁移或同步”分别说明。否则一个看似普通的 \code{float*} 很容易越过地址空间边界，在编译期完全合法、运行时才失败。
+\discussionpoint{所有权还必须包含异步时间线。}
+分配成功后，地址只在其分配生命周期内有效；释放后即使变量仍保留旧数值，也不能再次读取、重复释放或交给新内核。传统 \code{cudaFree} 对普通分配可能引入隐式同步，而 stream-ordered 分配得到的指针交给 \code{cudaFree} 时并不保证替调用者等待所有访问，\code{cudaFreeAsync} 又必须放在正确的流依赖之后，因此不能把“调用了释放函数”等同于生命周期自动安全。RAII 包装除了保存地址和大小，还应记录设备归属、分配方式及最后使用它的 stream 或事件。这样析构策略才能既避免 use-after-free，又不会无意中用全设备同步破坏原本的并发流水线。
+\discussionpoint{类型化缓冲区把易错契约提升到接口层。}
+裸 \code{void**} 把元素类型、元素数、设备和释放方式都留给调用点记忆，错误路径中很容易遗漏释放，复制对象时也可能制造两个所有者。专门的 \code{device_buffer<T>} 可以在构造时检查 $n\,\code{sizeof(T)}$ 是否溢出，在移动时转移唯一所有权，并提供显式的设备号与 stream-aware 释放策略。多 GPU 对等访问、进程间 IPC 和 CUDA Graph 会继续增加句柄导出、捕获期限制与上下文归属，因而更需要禁止无意的浅复制。这样的封装并非为了隐藏 CUDA，而是把本题揭示的二级指针契约变成编译器可以协助维护的不变量。
+\variantheading 若变量为 \code{double *D_d}，传统接口应写成 \code{cudaMalloc((void **)&D_d, n*sizeof(double))}，成功后 \code{D_d} 指向设备分配区。
+\practiceheading C++ 项目宜用 RAII 包装 \code{cudaFree}，并用 Compute Sanitizer initcheck/racecheck 配合单元测试排查未初始化读取和错误生命周期。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__MEMORY.html}{CUDA Runtime API；高置信度}
+\end{solutionexercise}
+
+\begin{solutionexercise}{7}
+\problemheading 如果希望把 3000 字节数据从主机数组 \code{A_h}（\code{A_h} 指向源数组
+的第 0 个元素）复制到设备数组 \code{A_d}（\code{A_d} 指向目标数组的第 0 个
+元素），CUDA 中适合进行该复制的 API 调用是什么？
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item \code{cudaMemcpy(3000, A_h, A_d, cudaMemcpyHostToDevice);}
+  \item \code{cudaMemcpy(A_h, A_d, 3000, cudaMemcpyDeviceToHost);}
+  \item \code{cudaMemcpy(A_d, A_h, 3000, cudaMemcpyHostToDevice);}
+  \item \code{cudaMemcpy(3000, A_d, A_h, cudaMemcpyHostToDevice);}
+\end{enumerate}
+
+\approachheading \code{cudaMemcpy} 参数次序是目标、源、字节数、方向。
+
+\answerheading 应调用
+\begin{lstlisting}[language=C++]
+cudaMemcpy(A_d, A_h, 3000, cudaMemcpyHostToDevice);
+\end{lstlisting}
+即选 c。生产代码还要检查返回值；源和目标至少都要覆盖 3000 字节的有效区间。
+
+\conclusionheading 选 c。
+\discussionheading
+\discussionpoint{四个参数共同构成一次原始字节复制。}
+把 \code{cudaMemcpy} 记成“复制数组”的函数容易掩盖两个事实：第一个参数永远是目标，第二个永远是源，第三个单位是字节而不是元素。方向枚举还必须与两个地址实际所属空间一致，主机到设备不能通过交换参数后仍保留原枚举来补救。函数不会把 3000 B 的整数转换成浮点，也不知道源和目标是否具有相同对象布局；它只搬运位模式。工程封装最好从元素类型和计数推导字节数，并在调试构建中核对指针属性，这样才能同时防住参数次序、容量和地址空间三类彼此独立的错误。
+\discussionpoint{“同步”和“异步”不能只看函数名字。}
+CUDA 运行时明确说明，复制是否相对主机同步还取决于方向及主机内存是否 pageable。同步调用从 pageable 主机内存执行 H2D 时，运行时可先把源数据复制到内部 staging buffer，待这一步完成并且调用返回后，原 pageable 源缓冲便可修改或复用，即使 staging 到设备的 DMA 尚未结束。页锁定源配合 \code{cudaMemcpyAsync} 时则不同：在所属 stream 的复制完成前，应用不能改写或释放该源缓冲；设备目标同样要由同一 stream 的顺序、事件或显式同步保护，之后才能被无依赖地消费、覆盖或释放。D2D 复制也未必阻塞主机，而 pageable 的 \code{Async} 传输反过来可能因暂存而阻塞，因此应依据具体内存类型和完成事件管理生命周期，不能只看函数后缀。
+\discussionpoint{复制带宽属于互连层而非设备内存层。}
+若 GPU 的 DRAM 峰值达到每秒数百 GB，也不能推出主机到设备复制具有同样速度，因为数据还要经过 PCIe、CPU 内存控制器或特定平台上的 NVLink 路径。多 GPU 系统又要区分直接点对点传输与经主机内存中转，两条路径的拓扑距离和并发能力可能完全不同。统一内存省去了显式复制语句，却没有消灭数据移动，只是把它转换成页迁移、缺页处理和一致性开销。容量规划和性能报告因此应分别列出主机互连、GPU 间互连和设备 DRAM 三个层级，避免把不同屋顶混成一个“内存带宽”。
+\discussionpoint{流水线成立需要数据依赖与硬件能力同时满足。}
+双缓冲的理想时间线是：一块缓冲执行 H2D 时，另一块运行内核，第三阶段把更早结果传回主机；stream 和事件负责表达它们之间真正的数据依赖。要实现重叠，主机缓冲通常需要页锁定，设备需要相应复制引擎，内核资源还不能独占所有可并发能力，所以代码中出现 \code{cudaMemcpyAsync} 只是必要条件之一。验证时应使用非整块长度和带偏移子区间检查正确性，再观察时间线确认三阶段确实重叠且没有默认流或分配调用引入隐式同步。最终数组相等只能证明数据大致到了目的地，无法证明流水线按预期并发。
+\variantheading 若把 4096 B 从 \code{A_d} 回传 \code{A_h}，调用为 \code{cudaMemcpy(A_h, A_d, 4096, cudaMemcpyDeviceToHost)}。
+\practiceheading 流水化程序可改用页锁定主机内存和 \code{cudaMemcpyAsync}，再用 Nsight Systems 检查复制与内核是否真正重叠及是否发生隐式同步。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-runtime-api/api-sync-behavior.html}{CUDA Runtime API 对同步/异步 memcpy 按传输方向及 pageable/pinned 内存分类的语义；对抗检查：不能仅凭函数名推断主机完成边界}
+\end{solutionexercise}
+
+\begin{solutionexercise}{8}
+\problemheading 应如何声明变量 \code{err}，才能适当地接收 CUDA API 调用返回的值？
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item \code{int err;}
+  \item \code{cudaError err;}
+  \item \code{cudaError_t err;}
+  \item \code{cudaSuccess_t err;}
+\end{enumerate}
+
+\approachheading 查 API 的统一错误类型。
+
+\answerheading Runtime API 的返回类型是 \code{cudaError_t}，故选 c。声明为：
+\begin{lstlisting}[language=C++,numbers=none]
+cudaError_t err;
+\end{lstlisting}
+\code{cudaSuccess} 是这个枚举类型的成功值，不是类型名。
+
+\conclusionheading 选 c。
+\discussionheading
+\discussionpoint{CUDA 错误沿异步时间线分层出现。}
+主机调用若参数非法或资源申请立即失败，通常能在该 API 的返回值中看到错误；内核里的越界访问却发生在设备稍后执行时，启动语句返回时可能还什么都没做。于是某个同步或复制 API 报错，不一定是它自身出错，也可能是在替之前排队的工作传递状态。理解这一点要记录“最后一次已知成功的完成边界”，再向后定位最早可能失败的异步操作。错误值 \code{cudaError_t} 因而不仅是一个枚举结果，还需要与 stream、调用顺序和同步位置共同解释。多 stream 程序还应把事件依赖纳入时间线，否则“之前”本身就未必等于主机代码的文本顺序。
+\discussionpoint{启动检查和执行检查回答不同问题。}
+内核启动后立即调用 \code{cudaGetLastError}，可以发现块维度非法、参数设置或启动资源超限等问题，但设备代码尚未完成时，它无法证明数组索引和同步语义正确。随后必须在真正依赖结果的位置等待事件、同步对应 stream 或同步设备，才能暴露非法访存和断言失败等执行期错误。开发阶段可在每个可疑内核后临时同步，以牺牲性能换取更短的故障区间；生产路径则应把检查放在已有依赖边界，避免把流水线强行串行化。两层检查配合，才能避免“启动成功”被误读成“计算成功”。
+\discussionpoint{不同错误具有不同的恢复边界。}
+显存不足可能通过释放缓存、减小批次或换用分块算法恢复，参数错误通常应在调用方修正后重试；非法设备访问或严重启动失败却可能使当前上下文处于不再可靠的状态。若程序统一打印一行字符串后继续，后续 API 可能接连报告派生错误，最终覆盖最初原因并把损坏结果交给下一阶段。服务程序应预先区分可重试、需要重建上下文和必须终止进程的类别，并为每类设计资源清理与请求失败语义。恢复策略也是正确性的一部分，因为“进程没有退出”并不意味着 GPU 状态仍可安全使用。请求标识与首个错误位置也应保留，便于把设备故障追溯到原始输入。
+\discussionpoint{错误封装应保留第一现场。}
+一个有用的检查宏不应只输出错误数字，还要保存失败表达式、源文件行号、设备号、stream 以及 \code{cudaGetErrorName} 和 \code{cudaGetErrorString}。清理阶段本身也可能失败，若每次都覆盖同一个变量，最有价值的首个错误就会被最后一次 \code{cudaFree} 的状态替代。对于异步故障，可在最小输入上逐步增加同步点，再借助内存与同步检查工具定位实际设备指令，而不是责怪最先观察到错误的同步函数。良好的可观测性把一次难以复现的“稍后失败”转化为带时间边界和上下文的证据链。
+\variantheading 若 \code{cudaMalloc} 失败，应保存其 \code{cudaError_t}，与 \code{cudaSuccess} 比较，并用 \code{cudaGetErrorString(err)} 输出诊断。
+\practiceheading 生产代码应统一封装每个 Runtime API 返回值，并在内核启动后调用 \code{cudaGetLastError}、在同步边界检查异步执行错误。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html}{CUDA Runtime API 数据类型；高置信度}
+\end{solutionexercise}
+
+\begin{solutionexercise}{9}
+\problemheading 考虑下面的 CUDA 内核及调用它的主机函数：
+\begin{lstlisting}[language=C++,firstnumber=1]
+__global__ void foo_kernel(float* a, float* b, unsigned int N) {
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < N) {
+        b[i] = 2.7f * a[i] - 4.3f;
+    }
+}
+void foo(float* a_d, float* b_d) {
+    unsigned int N = 200000;
+    foo_kernel<<<(N + 128 - 1)/128, 128>>>(a_d, b_d, N);
+}
+\end{lstlisting}
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item 每个块中的线程数是多少？
+  \item 网格中的线程总数是多少？
+  \item 网格中的块数是多少？
+  \item 执行第 02 行代码的线程数是多少？
+  \item 执行第 04 行代码的线程数是多少？
+\end{enumerate}
+
+\approachheading 先向上取整网格大小，再区分所有启动线程与通过 $i<N$ 检查的线程。
+
+\answerheading
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item 每块线程数为 128。
+  \item 块数 $B=\lceil200000/128\rceil=1563$，故总线程数为
+  $1563\times128=200064$。
+  \item 网格含 1563 个块。
+  \item 第 2 行索引计算在所有已启动线程中执行，共 200064 个线程。
+  \item 第 4 行赋值受 $i<N$ 保护，恰由 200000 个线程执行。
+\end{enumerate}
+最后 64 个线程只计算索引并判断条件，不访问数组。
+
+\conclusionheading 依次为 128、200064、1563、200064、200000。
+\discussionheading
+\discussionpoint{逻辑任务数与启动线程数回答不同问题。}
+数组有 200000 个待计算元素，这是算法层的逻辑任务数；网格却只能按 128 线程的整块分配，所以创建了 200064 个线程上下文。多出的 64 个线程不是计算错误，而是离散调度粒度为覆盖任意长度付出的冗余，只要边界谓词让它们不触碰数组即可。相同区分在稀疏计算中更明显：线程即使索引合法，也可能发现该行没有非零元或该顶点没有边，启动数量仍不等于有用运算数量。报告性能时若只写线程数，会把调度资源、有效工作和 FLOP 三个层次混在一起。至少还应给出有效线程比例，才能知道空槽在当前规模上是否值得优化。
+\discussionpoint{部分 warp 与全空 warp 的行为并不相同。}
+本题 $200000\bmod32=0$，有效区间恰好落在 warp 边界，所以最后 64 个越界线程组成两个全空 warp，所有 lane 对 \code{i<N} 得到相同结果，不发生分支内部分歧。若 $N$ 增加 1，则下一个 warp 只有一个 lane 有效，硬件会用活动掩码执行主体，其余 31 个 lane 在该路径上闲置。无论是否分歧，空闲线程仍需要完成地址计算和条件判断，并占据已启动 warp 的调度位置。这个反例说明分支效率与有效工作比例是两种指标：一个全空 warp 可以没有分歧，却没有产生任何输出。
+\discussionpoint{向上取整公式也需要防整数溢出。}
+常见写法 $(N+T-1)/T$ 简洁，但当 $N$ 已接近整数类型上限时，加上 $T-1$ 会先回绕，随后得到完全错误的块数。等价形式 $N/T+(N\bmod T\ne0)$ 不需要这次加法，更适合处理外部输入和超大数组；全局索引中的 $bT+t$ 也应在足够宽的类型中计算。二维矩阵的 $rW+c$、批量张量的多维乘积更容易超过 32 位，所以只用小型单元测试无法覆盖这种故障。容量检查、网格计算和内核索引必须使用一致宽度，否则主机认为已分配足够空间，设备仍可能以截断索引写错位置。
+\discussionpoint{独立枚举能把覆盖问题变成可检验计数。}
+对小规模配置，可以在 CPU 上遍历每个块和线程，记录总启动数、有效数、部分 warp 数以及全空 warp 数，再与内核回写的索引集合比较。这样不仅能发现漏算和重复，还能把“边界造成多少浪费”从模糊印象变成精确计数；随后才需要用设备测量解释调度和带宽后果。对于在线服务，还应测试块数刚好等于、略小于和略大于设备一次可并发块数的情形，因为最后一波只剩少量块时会影响尾延迟。覆盖枚举提供算法证据，时间分布提供系统证据，两者结合比只检查前几个输出更可靠。索引集合若还能验证恰等于 $[0,N)$，就同时证明了不重与不漏。
+\variantheading 若 $N=200001$，块数仍为 1563、总线程仍为 200064，但赋值线程变为 200001，尾部仅 63 个线程被屏蔽。
+\practiceheading 可用 Nsight Compute 的线程/warp 启动统计和分支效率验证尾块行为，并用 Compute Sanitizer memcheck 确认保护条件覆盖每次数组访问。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{CUDA SIMT 执行与线程索引定义；算术独立复核，置信度高}
+\end{solutionexercise}
+
+\begin{solutionexercise}{10}
+\problemheading 一位新的 CUDA 程序员对 CUDA 感到沮丧。他抱怨 CUDA 太繁琐：自己计划
+在主机和设备上都执行的许多函数，必须分别声明两次，一次声明为主机函数，一次
+声明为设备函数。你会如何帮助这位新程序员？
+
+\approachheading CUDA 允许把执行空间限定符组合使用。
+
+\answerheading 把函数同时声明为 \code{__host__ __device__}，编译器会分别生成主机版本
+和设备版本，例如：
+\begin{lstlisting}[language=C++]
+__host__ __device__ float affine(float x) {
+    return 2.7f * x - 4.3f;
+}
+\end{lstlisting}
+函数体中只能无条件使用两端都可用的语言或库功能。若需分支，可用预处理条件隔离设备路径：
+\begin{lstlisting}[language=C++,numbers=none]
+#if defined(__CUDA_ARCH__)
+// device path
+#endif
+\end{lstlisting}
+双重限定不会让任意主机 API 自动变成设备可调用。
+
+\conclusionheading 使用组合限定符共享源代码，同时审查两种编译目标的可用功能。
+\discussionheading
+\discussionpoint{一份函数体会生成两个执行世界中的版本。}
+\code{__host__ __device__} 并不是让同一段机器码在 CPU 和 GPU 间移动，而是要求编译器分别为两个目标编译函数体。于是一个普通加法在两端都可成立，读取 \code{threadIdx.x}、调用主机文件接口或依赖设备地址空间的操作却只属于其中一端。这个模型类似跨后端的泛型算法：数学接口可以共享，可调用的库、异常机制和存储语义仍受目标约束。理解“双重生成”后，新程序员就不会期待加上限定符能自动把任意主机函数变成设备函数，也更容易读懂为何错误有时只在一端编译时出现。
+\discussionpoint{条件编译应隔离能力差异而非复制算法。}
+当设备版本需要使用内建指令、主机版本要提供参考路径时，可以用 \code{__CUDA_ARCH__} 选择局部实现；问题在于大量条件分支会逐渐形成两套难以同步的程序。更稳妥的结构是把无副作用的纯计算核心保持共同，把分配、访存和目标专用操作放进薄适配层，并让两端调用相同的数学接口。这样既能利用设备特性，也能让 CPU 版本成为容易执行的正确性基线。条件编译的范围越小，未来修改公式时遗漏某一目标的风险越低，这一原则同样适用于 SIMD、HIP 或其他异构后端。
+\discussionpoint{源码相同不保证位级结果和成本相同。}
+双重限定会产生两个函数版本，模板与多种数据类型还会成倍增加实例，因而可能扩大编译时间和二进制体积。CPU 与 GPU 可采用不同的 FMA 融合、舍入模式、数学库近似和次正规数处理，即使 C++ 表达式逐字相同，浮点结果也未必逐位一致；设备端的内联与寄存器分配还会改变性能。测试应依据算法误差建立绝对与相对容差，而不是把主机位型当作唯一正确答案。若业务确实需要可复现位序列，则必须明确限制编译选项和运算路径，并接受由此带来的吞吐代价。跨后端参考还应固定输入与求和次序，避免把两个变量同时改变后无法归因。
+\discussionpoint{双端函数最适合承载可验证的小型纯算法。}
+几何坐标变换、边界谓词、哈希步骤和短小数值算子常被声明为主机与设备均可调用，因为它们容易保持无副作用，也便于直接在 CPU 单元测试中覆盖大量输入。构建系统仍要确保两个版本都被实际实例化：只调用主机路径会让设备端不支持的函数长期隐藏，只编译 GPU 又失去快速参考验证。一个可靠流程是在主机执行穷举或随机属性测试，再至少为部署目标编译设备版本，并在有 GPU 时比较结果与容差。这样，代码共享带来的主要价值不是少写一份函数，而是让同一数学契约在两个后端接受独立验证。
+\variantheading 若函数需要设备端 \code{threadIdx.x}、主机端固定返回 0，可用 \code{#if defined(__CUDA_ARCH__)} 分支，设备版本读取线程号而主机版本返回 0。
+\practiceheading 构建系统应同时编译并测试主机路径和至少一个目标 SM 的设备路径，借助 \code{nvdisasm} 或 \code{cuobjdump} 确认预期架构代码确已生成。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{CUDA C++ 函数执行空间限定符；高置信度}
+\end{solutionexercise}

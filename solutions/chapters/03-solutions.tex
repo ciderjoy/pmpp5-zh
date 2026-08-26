@@ -1,0 +1,228 @@
+\chapter{多维网格与数据}
+
+\begin{solutionexercise}{1}
+\problemheading 本章实现了一个矩阵乘法内核，每个线程生成一个输出矩阵元素。本题要求
+实现不同的矩阵--矩阵乘法内核并比较它们。
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item 编写一个让每个线程生成一个输出矩阵行的内核，并为该设计填写执行
+  配置参数。
+  \item 编写一个让每个线程生成一个输出矩阵列的内核，并为该设计填写执行
+  配置参数。
+  \item 分析上述两种内核设计各自的优点和缺点。
+\end{enumerate}
+
+\approachheading 对 $P=MN$，一行线程固定 $i$、遍历全部 $j,k$；一列线程固定 $j$、
+遍历全部 $i,k$。两者都要检查线程对应的行或列是否越界。
+
+\answerheading 可编译的核心实现如下（矩阵按行主序）：
+\begin{lstlisting}[language=C++]
+__global__ void matmul_row(const float* M, const float* N,
+                           float* P, int n) {
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= n) return;
+    for (int col = 0; col < n; ++col) {
+        float sum = 0.0f;
+        for (int k = 0; k < n; ++k)
+            sum += M[row*n + k] * N[k*n + col];
+        P[row*n + col] = sum;
+    }
+}
+__global__ void matmul_col(const float* M, const float* N,
+                           float* P, int n) {
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    if (col >= n) return;
+    for (int row = 0; row < n; ++row) {
+        float sum = 0.0f;
+        for (int k = 0; k < n; ++k)
+            sum += M[row*n + k] * N[k*n + col];
+        P[row*n + col] = sum;
+    }
+}
+// dim3 block(256), grid((n + block.x - 1) / block.x);
+\end{lstlisting}
+行方案中单线程对 $M$ 的行访问连续，但同一 warp 在同一时刻访问不同的 $M$ 行；列方案中
+同一 warp 的线程在给定 $k$ 时读取 $N$ 的连续列，合并性较好，但各线程写不同列也连续。
+两者每线程都做 $O(n^2)$ 工作，暴露的并行任务仅 $n$ 个，远少于每元素一线程的 $n^2$ 个；
+且没有共享内存分块复用，所以通常性能较差。
+
+\complexity{$O(n^3)$ 总工作、每线程 $O(n^2)$}{$O(1)$ 每线程额外空间}{仅 $n$ 个并行任务}
+\conclusionheading 两种实现均正确，但并行度低；列方案通常更利于 $N$ 的合并读取，最终应以
+测量结果判断。
+\discussionheading
+\discussionpoint{同样的总工作量可以暴露完全不同的并行度。}
+三种映射最终都执行约 $2n^3$ 次浮点运算，但每元素一线程会产生 $n^2$ 个独立点积，而每行或每列一线程只留下 $n$ 个长任务。以 $n=1024$ 为例，后者仅有 1024 个线程，每线程顺序计算 1024 个输出且每个输出还含 1024 项累加；在大 GPU 上，这点线程可能不足以持续隐藏访存延迟。长线程也可能复用某些地址计算并提高局部指令连续性，所以它并非逻辑上荒谬，只是把大量线程级并行换成了线程内顺序工作。这个例子说明复杂度相同只约束总功，不决定关键路径和可调度任务数量。
+\discussionpoint{行线程与列线程的好坏由 warp 地址集合决定。}
+行主序常让人直觉认为“每线程算一行”必然更好，因为单个线程写回一行时地址连续；然而同一时刻一个 warp 的 32 个行线程可能分别落在相隔 $n$ 的 32 行上，形成大步长请求。列线程在给定 $k$ 时读取 $N[k,n\text{的连续列}]$，相邻 lane 往往访问相邻元素，输出列的写回也可呈连续地址。反过来，leading dimension、子矩阵偏移和缓存复用都可能改变物理事务，所以不能只凭线程名字判断。正确分析应写出 lane $t$ 在某条动态加载上的地址公式，再观察 32 个地址如何映射到内存扇区。
+\discussionpoint{朴素映射可以沿协作层次逐步演化。}
+若一条点积太长，可以让一个 warp 的 lane 分别累加不同 $k$ 项，再用 shuffle 归约；若输入复用不足，则让线程块生成一个输出瓦片，把 $M$ 与 $N$ 的子块载入共享内存。继续增加寄存器微瓦片和双缓冲，便接近高性能 GEMM 的多级分块结构，低精度场景还可把合适的片段交给 Tensor Core。每一步都不是凭空更换算法，而是把顺序循环中的独立工作和数据复用暴露给更宽的硬件层级。成熟库会按矩阵形状、转置、类型和架构选择不同微内核，正因为没有一个固定映射能覆盖所有这些边界。
+\discussionpoint{实验必须把正确性基线和性能基线分开。}
+CPU 双精度实现适合检查数值，因为它提供独立且较高精度的参考；cuBLAS 更适合充当性能基线，但库与朴素代码的累加次序不同，不能要求结果逐位一致。比较三种内核时应使用相同矩阵、预热和计时区间，并依据 $n$ 与数据幅值建立混合误差容差，再报告有效 GFLOP/s 和实际数据流量。若还记录线程数量、寄存器和事务效率，就能解释某个尺寸上的交叉点来自并行度不足、访存布局还是资源压力。只有一条“加速了几倍”的曲线无法告诉读者优化是否能迁移到另一尺寸或设备。
+\variantheading 对 $n=1024$、每块 256 线程，两种方案都启动 4 个块、1024 个工作线程；每个线程计算 1024 个输出元素并执行约 $1024^2$ 次乘加。
+\practiceheading 用 cuBLAS \code{cublasSgemm} 作为正确性和性能基线，并在 Nsight Compute 中比较 Global Load Efficiency、Store Efficiency 与每线程寄存器压力。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}{CUDA Best Practices Guide 的合并访问原则；高置信度}
+\end{solutionexercise}
+
+\begin{solutionexercise}{2}
+\problemheading 矩阵--向量乘法接收输入矩阵 $B$ 和向量 $\mathbf{c}$，生成输出向量
+$\mathbf{a}$。输出向量 $\mathbf{a}$ 的每个元素都是输入矩阵 $B$ 的一行与
+$\mathbf{c}$ 的点积，即
+\[
+  a_i=\sum_j B_{i,j}\times c_j.
+\]
+为简单起见，只处理元素为单精度浮点数的方阵。编写矩阵--向量乘法内核以及
+可以调用它的主机存根函数。该存根函数接收四个参数：输出向量 $\mathbf{a}$ 的
+指针、输入矩阵 $B$ 的指针、输入向量 $\mathbf{c}$ 的指针，以及每个维度的
+元素数量 $N$。使用一个线程计算输出向量的一个元素。
+
+\approachheading 把线程映射到行 $i$，检查 $i<N$，再顺序累加该行点积。主机端完成分配、
+复制、启动、同步、错误检查、回传与释放。
+
+\answerheading
+\begin{lstlisting}[language=C++]
+#include <cuda_runtime.h>
+#include <cstdio>
+#include <cstdlib>
+#define CHECK(x) do { cudaError_t e=(x); if(e!=cudaSuccess){ \
+  std::fprintf(stderr,"CUDA: %s\n",cudaGetErrorString(e)); std::exit(1); } } while(0)
+
+__global__ void matvec(const float* B, const float* c, float* a, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float sum = 0.0f;
+    for (int j = 0; j < n; ++j) sum += B[i*n + j] * c[j];
+    a[i] = sum;
+}
+void matvec_host(float* a, const float* B, const float* c, int n) {
+    float *dB=nullptr, *dc=nullptr, *da=nullptr;
+    size_t mb=size_t(n)*n*sizeof(float), vb=size_t(n)*sizeof(float);
+    CHECK(cudaMalloc(&dB, mb)); CHECK(cudaMalloc(&dc, vb));
+    CHECK(cudaMalloc(&da, vb));
+    CHECK(cudaMemcpy(dB, B, mb, cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(dc, c, vb, cudaMemcpyHostToDevice));
+    matvec<<<(n+255)/256,256>>>(dB,dc,da,n);
+    CHECK(cudaGetLastError()); CHECK(cudaDeviceSynchronize());
+    CHECK(cudaMemcpy(a, da, vb, cudaMemcpyDeviceToHost));
+    CHECK(cudaFree(da)); CHECK(cudaFree(dc)); CHECK(cudaFree(dB));
+}
+\end{lstlisting}
+CPU 参考式就是题给求和；逐元素比较时应使用绝对/相对混合容差，因为浮点累加次序可能不同。
+
+\complexity{$O(N^2)$ 总工作、$O(N)$ 理想并行时间}{$O(N^2)$ 输入与 $O(N)$ 输出设备空间}{$N$ 个独立输出}
+\conclusionheading 索引、边界、生命周期和错误检查均完整；该基础实现没有缓存向量或分块优化。
+\discussionheading
+\discussionpoint{GEMV 缺少 GEMM 的第二个复用维度。}
+矩阵--向量乘的每个输出是一行与同一向量的点积，因此有 $N$ 个独立输出，却必须流过约 $N^2$ 个矩阵元素。矩阵--矩阵乘还能让一个输入瓦片服务二维输出区域，而 GEMV 中每个矩阵元素通常只贡献一次，输出写回也仅有 $N$ 项，所以算术强度较低。即使 GPU 具有很高的乘加峰值，性能也常先被读取矩阵的带宽限制；增加计算单元不能突破这个数据移动屋顶。这个结构解释了为什么看似简单的 GEMV 很难达到 GEMM 的 GFLOP/s，也提示优化应优先考虑减少流量或与相邻算子融合。
+\discussionpoint{共享向量与协作点积代表两种分解方向。}
+基础实现让一个线程串行累加整行，所有线程都会读取公共向量 $c$；可按片段把 $c$ 载入共享内存，使块内多个行线程复用同一片段，但每个片段需要生产者与消费者同步。另一方案让一个 warp 共同计算一行，每个 lane 负责若干列，再用 shuffle 或树形归约合并部分和，这会增加单行内部并行，却减少同时处理的行数。前者围绕输入复用组织线程，后者围绕点积关键路径组织线程，两者适合的 $N$ 和批量规模不同。理解这种双向选择，也有助于分析稀疏矩阵向量乘中“每行一个线程”与“每行一个 warp”的经典取舍。
+\discussionpoint{点积的归约树也决定数值误差。}
+浮点加法不满足结合律，串行顺序 $(((x_0+x_1)+x_2)+\cdots)$ 与平衡树会在不同位置舍入，所以 GPU 协作归约不应与 CPU 单精度结果逐位比较。对 $N$ 项数量级相近的和，成对归约通常把误差增长从与 $N$ 相关的长链缩短到与 $\log N$ 相关的层数，但数据抵消严重时仍可能丢失有效位。双精度累加或补偿求和能改善准确度，却会增加指令和状态，某些设备上的吞吐代价很大。工程接口应先规定允许的误差和输入范围，再选择归约结构，而不是先追求最快实现后才为差异寻找容差。
+\discussionpoint{小批量场景往往被启动与权重流量主导。}
+GEMV 出现在小批量全连接推理、迭代线性求解器和图排序中，这些场景的共同点是每次矩阵只乘很少的向量。若向量很短，单次内核启动时间可能接近计算本身；若矩阵很大，权重又会在每次请求中反复从显存读取。批量接口可以把多个向量提升为小型 GEMM，融合后续偏置或激活则避免中间写回，两者都从端到端数据流而非单条点积寻找收益。评估时应同时比较库实现、融合实现和真实批量分布，并用算术强度与有效带宽解释结果，避免只在一个大矩阵上给出孤立加速比。在线系统还要报告批处理等待时间，否则吞吐改善可能掩盖请求延迟恶化。
+\variantheading 若 $N=513$ 且每块 256 线程，网格需 3 个块、768 个线程，其中 255 个线程由边界判断提前返回。
+\practiceheading 以 cuBLAS \code{cublasSgemv} 和 CPU 双精度参考结果作基线，用 Compute Sanitizer 检查边界，并用 Nsight Compute 判断瓶颈是带宽还是低占用率。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{CUDA 编程模型与 Runtime API；高置信度}
+\end{solutionexercise}
+
+\begin{solutionexercise}{3}
+\problemheading 考虑下面的 CUDA 内核以及调用它的主机函数：
+\begin{lstlisting}[language=C++,firstnumber=1]
+__global__ void foo_kernel(float* a, float* b, unsigned int M, unsigned int N) {
+    unsigned int row = blockIdx.y*blockDim.y + threadIdx.y;
+    unsigned int col = blockIdx.x*blockDim.x + threadIdx.x;
+    if (row < M && col < N) {
+        b[row*N + col] = a[row*N + col]/2.1f + 4.8f;
+    }
+}
+void foo(float* a_d, float* b_d) {
+    unsigned int M = 150;
+    unsigned int N = 300;
+    dim3 bd(16, 32);
+    dim3 gd((N - 1)/16 + 1, (M - 1)/32 + 1);
+    foo_kernel<<<gd, bd>>>(a_d, b_d, M, N);
+}
+\end{lstlisting}
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item 每个线程块中的线程数是多少？
+  \item 网格中的线程数是多少？
+  \item 网格中的线程块数是多少？
+  \item 执行第 05 行代码的线程数是多少？
+\end{enumerate}
+
+\approachheading $x$ 方向覆盖列，$y$ 方向覆盖行；分别向上取整。
+
+\answerheading 每块线程数 $16\times32=512$。网格维度为
+\[
+ G_x=\lceil300/16\rceil=19,\qquad G_y=\lceil150/32\rceil=5.
+\]
+因此块数 $19\times5=95$，线程总数 $95\times512=48640$。第 5 行条件体仅由有效
+$150\times300=45000$ 个线程执行；3640 个边界线程被屏蔽。
+
+\conclusionheading (a)--(d) 分别为 512、48640、95、45000。
+\discussionheading
+\discussionpoint{二维坐标最终仍按 x 维优先组成 warp。}
+线程块写成 $(16,32)$ 并不意味着硬件先把同一列的 32 个线程组成 warp；CUDA 线性化线程号时让 x 维变化最快，所以前 16 个线程来自 $y=0$，后 16 个来自 $y=1$，一个 warp 横跨两行。若相邻 x 对应矩阵连续列，这种组织通常仍能产生每半 warp 连续的地址片段，但交换 x、y 映射可能把 lane 间距放大为整行宽度。坐标公式只决定“算哪个元素”，线性线程次序还决定“哪些元素同时发出请求”。因此设计二维块时应同时画出坐标覆盖和前两个 warp 的 lane 分布，而不能只检查网格面积。
+\discussionpoint{合法启动需要同时通过总量和逐维限制。}
+块内线程总数 $16\times32=512$ 必须不超过 \code{maxThreadsPerBlock}，但这不是唯一条件；x、y、z 各维还分别受 \code{maxThreadsDim} 约束，网格维度又有自己的范围。一个乘积不大的瘦长块仍可能因为某一维过大而非法，反过来各维单独合法也不能保证乘积合法。题目提供的配置在典型目标上可用，生产代码却应针对部署设备查询属性，并紧接启动检查返回状态。把硬约束验证放在调优之前，可以避免把“没有输出”误诊成访存或占用率问题。
+\discussionpoint{二维尾块有边、角和不同活动掩码。}
+x 方向 300 列需要 19 个块，最右块只有 12 列有效；y 方向 150 行需要 5 个块，最下块只有 22 行有效。于是普通内部块全有效，右边块、下边块和右下角块分别具有不同的活动线程比例，内核必须让行、列两个条件共同支配读写。把矩阵展平成 45000 个一维任务可以减少二维角落的空闲组合，却要用除法和取模还原坐标，也可能改变行局部性。选择二维还是一维映射，本质上是在边界利用率、地址计算和后续邻域结构之间权衡，而不是简单追求更少的越界线程。若后续算子按行取邻域，保留二维坐标往往还能简化共享瓦片与 halo 处理。
+\discussionpoint{非方形哨兵数据能同时揭露多类索引错误。}
+若测试使用方阵或全 1，交换行列、写错步长甚至局部转置都可能得到看似合理的结果。给位置 $(r,c)$ 写入唯一编码 $1000r+c$，再选择长宽均不整除块维的矩阵，就能从错误值的十进制结构看出是行号、列号还是边界发生偏移。还应显式检查四角、跨行位置和右下尾块，并把手算的 95 个块、48640 个启动线程与运行时配置对照。这样的测试先建立可解释的正确性证据，再使用性能工具观察活动线程与事务，能避免在索引尚未可靠时过早调优。CPU 参考若采用相同哨兵公式，还能自动定位首个错误坐标而非只返回失败布尔值。
+\variantheading 若块改为 $(32,8)$，网格为 $(10,19)$，共 190 块、48640 个启动线程，执行第 05 行的仍是 45000 个线程。
+\practiceheading 启动前查询 \code{cudaDeviceProp} 的线程维度限制，并在 Nsight Compute Launch Statistics 中核对块、网格和尾部未满 warp。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{CUDA 多维线程索引；数值独立复核，置信度高}
+\end{solutionexercise}
+
+\begin{solutionexercise}{4}
+\problemheading 考虑一个宽度为 400、高度为 500 的二维矩阵。该矩阵以一维数组形式存储。
+请分别指定矩阵第 20 行、第 10 列元素的数组索引：
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item 矩阵按行主序存储时；
+  \item 矩阵按列主序存储时。
+\end{enumerate}
+
+\approachheading 使用从 0 开始的行、列下标；行主序步长为宽度，列主序步长为高度。
+
+\answerheading 行主序：$20\times400+10=8010$。列主序：$10\times500+20=5020$。
+若题意采用从 1 开始的自然序号，需先减 1；但全书 CUDA 下标约定为从 0 开始。
+
+\conclusionheading (a) 8010；(b) 5020。
+\discussionheading
+\discussionpoint{行主序和列主序是存储契约，不是矩阵属性。}
+数学上的矩阵只有行列关系，并没有规定内存中哪个方向相邻；行主序选择列坐标为低位，故索引是 $rW+c$，列主序则选择行坐标为低位，故索引是 $cH+r$。若文件读取器、CPU 库和 CUDA 内核对契约理解不同，访问仍可能全部落在合法范围内，却把数据解释成转置或更隐蔽的错位排列。错误因此不一定触发越界工具，甚至在方阵上看起来维度完全正确。接口应把布局与尺寸一起记录，而不是仅传一段裸指针后靠调用方猜测。批次跨距与子矩阵偏移也属于同一契约，不能由宽高两个整数完整表达。
+\discussionpoint{主导维描述物理跨距而非逻辑宽度。}
+实际矩阵可能在每行末尾填充若干元素以满足对齐，也可能只是大矩阵中的一个矩形视图，此时相邻逻辑行在内存中的距离不等于视图宽度。行主序公式应写成 $r\,ld+c$，其中 $ld$ 是 leading dimension；列主序同理以物理列跨距为准。cuBLAS 的 \code{lda}、\code{ldb} 和 \code{ldc} 正是把这种信息纳入运算契约，否则对子矩阵的第二行开始就会寻址错误。紧凑方阵会让 $ld=W$ 恰好成立，因此测试必须包含填充和非方形视图，才能证明代码真正使用了物理步长。
+\discussionpoint{连续维应与 warp 的主要变化方向配合。}
+若一个 warp 的 lane 依次改变列号，行主序能让它们请求相邻元素；若 lane 依次改变行号，列主序才提供同样的连续性。转置、结构数组到数组结构转换以及张量维度置换，本质上都在选择哪个逻辑维成为物理连续维，以适应后续算子的主要访问。转换本身会产生额外读写，所以不能为了一个短内核盲目重排整个数据集；若许多后续阶段共享新布局，成本才可能被摊薄。布局选择因而是跨算子的数据流决策，而不只是单个索引公式的局部优化。端到端模型应把一次重排成本按后续复用次数摊销，再与不重排的跨距事务比较。
+\discussionpoint{跨库互操作需要同时转换布局、尺寸和步长。}
+与列主序 BLAS 互操作时，可以真实转置缓冲区，也可以交换操作数并调整转置标志，从代数上重新解释同一位模式；后一方案节省搬运，却要求行列尺寸和 leading dimension 一起修正。若只切换一个转置标志，方阵或单位矩阵常会掩盖错误，因为转置后形状不变或数值仍相同。更有诊断力的测试使用 $2\times3$ 等非方形矩阵，填入不对称递增值，并检查四角与跨行位置。这样既能验证公式，也能证明库调用的元数据与实际内存布局一致。若调用处理子矩阵，还应加入大于逻辑行列数的 leading dimension，专门测试填充区域未被误读。
+\variantheading 对第 499 行、第 399 列，行主序索引为 $499\times400+399=199999$，列主序同样为 $399\times500+499=199999$。
+\practiceheading 与 cuBLAS 交互时应显式记录 leading dimension 和转置标志，并用小型非方阵测试防止行列主序在方阵上偶然掩盖错误。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{CUDA C++ 数组采用 C/C++ 的零基下标；高置信度}
+\end{solutionexercise}
+
+\begin{solutionexercise}{5}
+\problemheading 考虑一个宽度为 400、高度为 500、深度为 300 的三维张量。该张量按行主序
+存储为一维数组。请指定 $x=10$、$y=20$、$z=5$ 的张量元素的数组索引。
+
+\approachheading 令 $x$ 为最快变化维，先线性化一个 $xy$ 平面，再加第 $z$ 个平面偏移。
+
+\answerheading
+\[
+ i=x+yW+zWH=10+20\times400+5\times400\times500=1{,}008{,}010.
+\]
+边界检查为 $0\le x<400,0\le y<500,0\le z<300$，给定坐标满足条件。
+
+\conclusionheading 数组索引为 1,008,010。
+\discussionheading
+\discussionpoint{三维线性化仍是逐层跨过完整低维区域。}
+要到达切片 $z$，必须先跨过 $z$ 个完整的 $W\times H$ 平面；进入该切片后，到达行 $y$ 又要跨过 $y$ 个宽度为 $W$ 的行，最后才加列偏移 $x$。于是公式自然成为 $zWH+yW+x$，它把 $(z,y,x)$ 看成一个 x 维最快的混合进位数。更高维张量只需继续在外层乘上所有更快维度的容量，但维度乘积应使用足够宽的整数类型，否则体数据还未耗尽显存，32 位偏移就可能先溢出。线性化顺序也是数据格式的一部分，改变最快维意味着所有生产者与消费者都要同步改变。
+\discussionpoint{三维 pitched memory 只填充行，切片跨距仍用逻辑高度。}
+\code{cudaMalloc3D} 可把每行字节宽度向上填充为 \code{pitch}，所以地址应写成 $z\,\text{slicePitch}+y\,\text{pitch}+x\,\code{sizeof(T)}$。返回的 \code{cudaPitchedPtr.ysize} 表示一个完整二维切片的逻辑行数，官方典型公式正是 $\text{slicePitch}=\text{pitch}\times\text{ysize}$；“物理高度”并不是另一个被自动填充的字段。若参数只描述所属分配中的子视图，跨到下一 z 切片时仍须使用完整分配的 slice pitch，不能改乘子视图高度。这个边界说明 pitch 不是抽象宽度的替代词，而是必须随分配元数据一起传递的物理字节跨距。
+\discussionpoint{张量布局是在为未来访问选择连续方向。}
+题目让 x 连续，但图像批次可能采用 NCHW 或 NHWC，推理内核还可能把通道分成固定宽度的 blocked layout，以便向量指令或矩阵单元消费。某种布局对卷积读取友好，未必对归一化、转置或注意力友好，框架因此有时插入显式转换，有时选择能直接读取现有布局的内核。转换会遍历整个张量并产生额外流量，只有后续多个算子共享收益时才值得。理解 $zWH+yW+x$ 的真正价值，是能够针对任意维序和 stride 写出地址，而不是把一个公式硬套到所有张量格式。
+\discussionpoint{体数据测试必须覆盖面、棱、角和跨切片位置。}
+医学成像、流体网格和三维卷积都使用体数组，但它们还会叠加各向异性体素、halo 与不同边界条件，索引错一维往往仍生成平滑图像而不易肉眼发现。可给每点编码 $10^6z+10^3y+x$，检查八个角、相邻切片和带 padding 的非立方 extent，从数值中直接识别哪个坐标被写错。只验证最后一个紧凑元素不足以证明 pitch 正确，因为首行与末尾有时恰好避开填充。再配合内存边界工具检查字节地址，才能同时证明坐标映射、物理跨距和分配范围三份契约一致。
+\variantheading 对同一张量的 $(x,y,z)=(399,499,299)$，索引为 $399+499\times400+299\times400\times500=59{,}999{,}999$。
+\practiceheading 使用 \code{cudaMalloc3D} 时应按返回的 pitch 和 slice pitch 寻址，并以端点坐标单元测试及 Compute Sanitizer memcheck 验证字节偏移。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{CUDA 多维数据的线性寻址示例；高置信度}
+\end{solutionexercise}

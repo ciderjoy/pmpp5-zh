@@ -1,0 +1,322 @@
+\chapter{排序}
+
+\begin{solutionexercise}{1}
+\problemheading 扩展原书图 14.7 的内核，使用共享内存改进内存合并。该内核的一位稳定
+基数迭代为每个输入键分配一个线程，以
+\[
+  b_i=(\code{key}_i\mathbin{\texttt{>>}}\code{iter})\mathbin{\texttt{\&}}1
+\]
+提取目标位。对位数组执行网格范围排他扫描后，令 $o_i$ 为键 $i$ 之前的 1 键数、$O$
+为 1 键总数，并按
+\[
+  \code{dst}_i=\begin{cases}i-o_i,&b_i=0,\\N-O+o_i,&b_i=1\end{cases}
+\]
+求稳定目标下标。
+扩展后的实现应先在块内共享内存中形成连续的局部 0 桶和 1 桶，再确定各局部桶的全局
+起点并以合并访问写回。
+
+\approachheading 每块先用局部排他扫描把键稳定地排入共享内存的 0、1 两个桶，再合并
+写入块级暂存数组。对“桶优先、块次序”的计数表做全局排他扫描，最后把各连续局部桶搬到
+全局目的区间。
+
+\answerheading 以下三个阶段可直接与 CUB DeviceScan 组合；\code{counts/offsets} 长度
+为 $2G$，\code{packed} 长度为 $N$。
+\begin{lstlisting}[language=C++]
+#include <cub/block/block_scan.cuh>
+#include <cub/device/device_scan.cuh>
+
+template<int B>
+__global__ void pack_one_bit(const unsigned* in,unsigned* packed,
+    unsigned* counts,size_t n,unsigned shift) {
+  using Scan=cub::BlockScan<int,B>;
+  __shared__ typename Scan::TempStorage temp;
+  __shared__ unsigned local[B];
+  size_t base=size_t(blockIdx.x)*B, i=base+threadIdx.x;
+  int valid=i<n, bit=valid?((in[i]>>shift)&1u):0;
+  int onesBefore,totalOnes;
+  Scan(temp).ExclusiveSum(valid?bit:0,onesBefore,totalOnes);
+  int validCount=int(min(size_t(B),n>base?n-base:0));
+  int zeros=validCount-totalOnes;
+  if(valid) {
+    int pos=bit ? zeros+onesBefore : int(threadIdx.x)-onesBefore;
+    local[pos]=in[i];
+  }
+  __syncthreads();
+  if(threadIdx.x<validCount) packed[base+threadIdx.x]=local[threadIdx.x];
+  if(threadIdx.x==0) {
+    counts[blockIdx.x]=zeros;
+    counts[gridDim.x+blockIdx.x]=totalOnes;
+  }
+}
+
+__global__ void scatter_one_bit(const unsigned* packed,unsigned* out,
+    const unsigned* counts,const unsigned* offsets,size_t n,unsigned G) {
+  size_t i=size_t(blockIdx.x)*blockDim.x+threadIdx.x;
+  if(i>=n)return;
+  unsigned t=threadIdx.x, zeros=counts[blockIdx.x];
+  unsigned bucket=t<zeros?0:1, rank=t<zeros?t:t-zeros;
+  out[offsets[bucket*G+blockIdx.x]+rank]=packed[i];
+}
+
+// G=(n+B-1)/B:
+// pack_one_bit<B><<<G,B>>>(in,packed,counts,n,shift);
+// cub::DeviceScan::ExclusiveSum(temp,tempBytes,counts,offsets,2*G);
+// scatter_one_bit<<<G,B>>>(packed,out,counts,offsets,n,G);
+\end{lstlisting}
+块扫描保持每个局部桶的原相对顺序；计数表先列全部 0 桶、再列全部 1 桶，且每列按块号
+排列，所以全局 offset 同时保证桶顺序、块顺序和稳定性。每个输出区间互不重叠，无竞态。
+
+\complexity{$O(N+G)$ 工作（不含扫描常数）}{$N+4G$ 个显式辅助整数、CUB 扫描查询得到的 \code{tempBytes} 工作区及 $B$ 个共享键/块}{$G$ 块；桶搬运为连续访问}
+\conclusionheading 共享内存吸收不规则局部散射，全局读写均按连续桶区间进行。
+\discussionheading
+\discussionpoint{一位稳定分区是 LSD 基数排序的归纳基石。}当前位为 0 或 1 可视为两个谓词桶，排他秩让同桶元素保持原次序，桶起点再把 0 桶整体放在 1 桶之前。最低位 pass 结束后序列按这一位有序；假设前 $p$ 位已经有序，第 $p+1$ 位稳定分桶会重排不同新位的组，却保留同组内旧的低位顺序，因此归纳得到前 $p+1$ 位有序。任一轮若不稳定，后续高位无法恢复被打乱的低位。例如两个高位相同而低位不同的键一旦在高位 pass 内换序，后续已经没有更高优先级的处理来纠正它们。这个证明也解释了为什么 MSD 排序的递归结构不同，不能把两者的 pass 顺序随意交换。
+
+\discussionpoint{桶地址由局部计数和全局前缀共同组成。}块内先把 0、1 项分别压成连续区段，并记录两个桶计数；设备范围按桶扫描各块计数，得到该块在相应全局桶中的起点；最后局部 rank 加全局起点形成唯一地址。对桶 $b$ 的块 $g$，可写成 $pos=base_b+\sum_{h<g}count_{h,b}+rank_{local}$，三项分别隔离桶、前块和块内记录。这个结构可以推广到 $R$ 个桶，写成“局部直方图、桶主序全局前缀、局部稳定散射”。数据库 hash partition、并行 allocator 和稀疏结构组装也用同一两层地址分配方式。正确性关键不是某段 CUDA 代码，而是每个地址可唯一分解为桶起点、前块数量和块内秩。
+
+\discussionpoint{写合并收益需要用临时空间和额外遍历购买。}块级打包通常要保存 $N$ 项临时键、每块桶计数和扫描工作区，还可能多出计数、扫描、散射多个 launch；对很小输入，这些固定成本会超过合并写节省的事务。工作区大小应先查询并由内存池跨 pass 复用，不能每轮重新分配，否则分配同步会淹没内核差异。一个 32 位键数组每增加一次完整读写就至少搬运约 $8N$ 字节，这给优化回本所需减少的事务提供了量级下界。评估时应累计整次排序的读写字节和时间，而非只看最后 scatter 的 store efficiency。这个原则也适用于任何“先重排以改善后续访问”的优化：布局转换本身必须进入成本账本。
+
+\discussionpoint{按位次序必须先定义键的语义编码。}无符号整数的位字典序与数值序一致，可直接从低位处理；二进制补码有符号数需要翻转符号位，IEEE 浮点还要根据符号对位型作条件变换，并明确 NaN、正负零如何排序。若把有符号的 $-1$ 直接当无符号位型，它会成为接近最大值的全 1 模式，数值顺序立即反转，这就是规范化不可省的反例。复合键可能按字段优先级串接，也可能需要稳定地分多阶段处理。验证时应让重复键携带原始下标，以观察稳定性，并覆盖已排序、逆序、单值、NaN 和高度偏斜数据。与成熟 DeviceRadixSort 在同一位范围和同一语义下比较，才能避免把编码差异误判为算法错误。
+\variantheading 若当前位的输入键为 $[3,2,1,4]$，0 桶稳定得到 $[2,4]$、1 桶得到
+$[3,1]$，本轮输出为 $[2,4,3,1]$；桶内不能按键值再次排序。
+\practiceheading 用 CUB \code{DeviceRadixSort} 作稳定性和吞吐基线，并用重复键携带原始下标
+验证桶内次序；Nsight Compute 可检查 Scatter 阶段的 Global Store Efficiency 和共享容量
+对占用率的影响。
+\sourcecheck{https://github.com/NVIDIA/cccl/tree/main/cub}{NVIDIA CCCL/CUB 官方仓库中的 BlockScan 与 DeviceRadixSort 实现；高置信度}
+边界审查：末块的无效 lane 不能计入 0 桶；代码用 \code{validCount} 单独处理。单个合作
+内核若没有合法网格级同步，不能在产生 counts 后立即读取 offsets。
+\end{solutionexercise}
+
+\begin{solutionexercise}{2}
+\problemheading 扩展原书图 14.7 的内核，使其支持多位基数。原内核每轮只提取 1 位并
+形成两个稳定桶；扩展后每轮应提取 $r$ 位、形成 $2^r$ 个稳定桶，给出块内局部排序、各块
+桶计数的全局定位和写回方法，并保持相等高位键在本轮之前已有的相对次序。
+
+\approachheading 每次取 $r$ 位形成 $R=2^r$ 个桶。块内按桶号依次执行稳定扫描并打包；
+全局计数表按“桶主序、块次序”展开后做一次排他扫描。
+
+\answerheading 下列清晰版本以 $R$ 次块扫描换取简单、可验证的实现；实际程序可用 CUB
+BlockRadixSort 融合这些扫描。
+\begin{lstlisting}[language=C++]
+template<int B,int RBITS>
+__global__ void pack_multibit(const unsigned* in,unsigned* packed,
+    unsigned char* packedDigit,unsigned* counts,size_t n,unsigned shift) {
+  static_assert(RBITS>=1 && RBITS<=8,
+                "unsigned char digit requires 1 <= RBITS <= 8");
+  constexpr int R=1<<RBITS;
+  using Scan=cub::BlockScan<int,B>;
+  __shared__ typename Scan::TempStorage temp;
+  __shared__ unsigned keys[B];
+  __shared__ unsigned char digs[B];
+  size_t base=size_t(blockIdx.x)*B, i=base+threadIdx.x;
+  int valid=i<n; unsigned key=valid?in[i]:0;
+  unsigned digit=(key>>shift)&(R-1); int running=0;
+  for(int b=0;b<R;++b) {
+    int rank,total,flag=valid && digit==unsigned(b);
+    Scan(temp).ExclusiveSum(flag,rank,total);
+    if(flag){keys[running+rank]=key;digs[running+rank]=digit;}
+    if(threadIdx.x==0) counts[b*gridDim.x+blockIdx.x]=total;
+    running+=total;
+    __syncthreads(); // required before reusing TempStorage
+  }
+  int validCount=int(min(size_t(B),n>base?n-base:0));
+  if(threadIdx.x<validCount){
+    packed[base+threadIdx.x]=keys[threadIdx.x];
+    packedDigit[base+threadIdx.x]=digs[threadIdx.x];
+  }
+}
+
+template<int RBITS>
+__global__ void scatter_multibit(const unsigned* packed,
+    const unsigned char* digit,unsigned* out,const unsigned* counts,
+    const unsigned* offsets,size_t n,unsigned G) {
+  size_t i=size_t(blockIdx.x)*blockDim.x+threadIdx.x;
+  if(i>=n)return;
+  unsigned d=digit[i], start=0;
+  for(unsigned b=0;b<d;++b) start+=counts[b*G+blockIdx.x];
+  unsigned rank=threadIdx.x-start;
+  out[offsets[d*G+blockIdx.x]+rank]=packed[i];
+}
+// Scan R*G bucket-major counts, scatter, then ping-pong input/output.
+// Repeat ceil(key_bits/RBITS) passes; optionally shrink the final bucket set.
+\end{lstlisting}
+每个桶内按输入下标稳定；桶按数值升序串接。LSD 基数排序归纳地保持先前低位的次序，故
+完成全部 digit 后按完整键排序。
+
+\complexity{本教学实现 $O(RN)$，优化实现可达每遍 $O(N+RG)$}{$O(N+RG)$ 辅助空间，$B$ 个共享键/块}{$G$ 块与 $R$ 个桶并行层次}
+\conclusionheading $r$ 位把遍数缩为原来的约 $1/r$，但桶表、共享资源和局部扫描成本增大。
+\discussionheading
+\discussionpoint{多位 digit 没有改变稳定归纳，只是扩大了桶数。}每轮提取 $r$ 位得到 $R=2^r$ 个桶，并按 digit 数值升序稳定连接；同一 digit 内仍保持此前所有低位建立的顺序。假设进入本轮时已按低 $p$ 位有序，稳定分桶后，不同 digit 由新位决定先后，同 digit 则沿用旧序，所以得到低 $p+r$ 位有序。以 $r=2$ 为例，一轮有 0--3 四桶，但桶内仍必须按进入本轮的次序排列，不能用四个无序原子追加队列替代。局部打包和跨块桶前缀任一处换序都会破坏这条链，错误可能只在重复高 digit 时出现。逐 pass 保存键--原始下标结果，比只检查最终随机键更容易定位是哪一层失去稳定性。
+
+\discussionpoint{radix 宽度以指数资源换取线性减少 pass。}32 位键取 $r=4$ 需要 8 轮和 16 桶，取 $r=8$ 只需 4 轮却有 256 桶；桶计数、清零、全局扫描和共享布局都按 $2^r$ 增长。宽 digit 还会提高寄存器需求并让局部直方图出现 bank 冲突，而窄 digit 则重复读写完整键数组。粗略成本可写成 $\lceil w/r\rceil(C_{stream}+2^rC_{bucket})$，它说明减少 pass 与增加桶工作并非同一比例。最佳点通常位于中等位宽，但会随架构、每线程键数和键范围改变。这个指数--线性交换与查表算法、分支因子和缓存分块相似，必须用总字节和资源占用共同评估。
+
+\discussionpoint{最后一轮的完整掩码在规范化无符号键上仍然正确。}对 32 位 \code{unsigned} 且 \code{shift<32}，右移会在高位补 0；若最后只剩 2 个有效位而仍用 8 位掩码，digit 仍落在 0--3，只是其余 252 个桶永远为空。例如在 \code{shift=30} 时，\code{(key >> 30) \& 0xff} 与掩码 3 得到同一 0--3 值，不会凭空读取第 32 位之外的信息。因此缩小掩码和桶数是减少清零、扫描工作的优化，不是该前提下的正确性补丁。只有逻辑键宽小于存储宽且未清掉高位，或键是有符号、浮点、复合字段时，才要先做顺序保持规范化并明确有效位。把这两个场景分开，可避免把无害空桶误写成越界位错误。
+
+\discussionpoint{桶分布改变冲突位置而不改变总键数。}均匀 digit 会使用全部桶，局部计数较分散，但全局前缀要处理大量非零项；单一 digit 让同一局部计数器高度竞争，散射结果却是一个连续区段。无论分布如何，所有桶计数之和都应严格等于 $N$，这条守恒式可把性能差异与丢键、重键的正确性错误分开。重复模式、已排序键和随机键因此可能有完全不同瓶颈。比较 $r$ 时应报告 pass 数、临时字节、共享占用、直方图冲突与端到端键/秒，并保持键范围和稳定语义一致。将这些结果与 BlockRadixSort、DeviceRadixSort 对照后，才能判断教学实现受限于算法选择、局部实现还是工作区管理。
+\variantheading 若排序 32 位键且 $r=8$，共有 256 个桶、需要 4 个 pass，\code{digit} 范围
+为 0--255，恰好可由 \code{unsigned char} 表示；$r=9$ 则必须换更宽类型且不被本实现允许。
+\practiceheading 比较 CUB \code{BlockRadixSort} 的 4 位与 8 位配置，记录寄存器、共享内存和
+吞吐；用全 0、全 1、重复高位及最高位设置的键验证每个 pass，运行前校验
+\code{shift < 32}。
+\sourcecheck{https://github.com/NVIDIA/cccl/tree/main/cub}{NVIDIA CUB BlockRadixSort/DeviceRadixSort 的官方源代码；高置信度}
+反例审查：若局部桶不是稳定的，LSD 多遍排序会破坏已经排好的低位。$r$ 过大还会使
+$R=2^r$ 的计数空间和扫描成本失控；有符号数与浮点数需采用 CUB 所定义的位变换语义。
+\end{solutionexercise}
+
+\begin{solutionexercise}{3}
+\problemheading 扩展原书图 14.7 的内核，应用线程粗化改进内存合并。原内核每线程处理
+一个键并直接写目标位置；粗化版本应让每线程处理多个连续键，说明如何合并读取、在块内
+保持稳定顺序、计算局部桶与全局桶偏移，并以连续区段写回。
+
+\approachheading 每线程处理四个连续键并用 \code{uint4} 向量加载。先扫描“每线程 0
+键数”，再按线程次序与线程内次序写入共享桶；全局桶定位沿用第 1 题的计数扫描。
+
+\answerheading
+\begin{lstlisting}[language=C++]
+template<int B>
+__global__ void pack_one_bit_x4(const unsigned* in,unsigned* packed,
+    unsigned* counts,size_t n,unsigned shift) {
+  constexpr int C=4;
+  using Scan=cub::BlockScan<int,B>;
+  __shared__ typename Scan::TempStorage temp;
+  __shared__ unsigned local[B*C];
+  size_t blockBase=size_t(blockIdx.x)*B*C;
+  size_t first=blockBase+size_t(threadIdx.x)*C;
+  unsigned v[C]={0,0,0,0}; int valid=0;
+  if(first+3<n && ((reinterpret_cast<size_t>(in+first)&15)==0)) {
+    uint4 z=*reinterpret_cast<const uint4*>(in+first);
+    v[0]=z.x;v[1]=z.y;v[2]=z.z;v[3]=z.w;valid=4;
+  } else for(int c=0;c<C;++c) if(first+c<n){v[c]=in[first+c];++valid;}
+  int zerosLocal=0;
+  for(int c=0;c<valid;++c) zerosLocal+=(((v[c]>>shift)&1u)==0);
+  int zeroBase,totalZeros;
+  Scan(temp).ExclusiveSum(zerosLocal,zeroBase,totalZeros);
+  int validTotal=int(min(size_t(B*C),n>blockBase?n-blockBase:0));
+  int validBefore=min(int(threadIdx.x)*C,validTotal);
+  int oneBase=validBefore-zeroBase, z=0,o=0;
+  for(int c=0;c<valid;++c) {
+    if(((v[c]>>shift)&1u)==0) local[zeroBase+z++]=v[c];
+    else local[totalZeros+oneBase+o++]=v[c];
+  }
+  __syncthreads();
+  for(int p=threadIdx.x;p<validTotal;p+=B) packed[blockBase+p]=local[p];
+  if(threadIdx.x==0){
+    counts[blockIdx.x]=totalZeros;
+    counts[gridDim.x+blockIdx.x]=validTotal-totalZeros;
+  }
+}
+
+template<int B>
+__global__ void scatter_one_bit_x4(const unsigned* packed,unsigned* out,
+    const unsigned* counts,const unsigned* offsets,size_t n,unsigned G) {
+  size_t base=size_t(blockIdx.x)*B*4;
+  unsigned valid=unsigned(min(size_t(B*4),n>base?n-base:0));
+  unsigned zeros=counts[blockIdx.x];
+  for(unsigned p=threadIdx.x;p<valid;p+=B) {
+    unsigned bucket=p<zeros?0:1, rank=p<zeros?p:p-zeros;
+    out[offsets[bucket*G+blockIdx.x]+rank]=packed[base+p];
+  }
+}
+// Scan 2*G counts, then launch scatter_one_bit_x4<B><<<G,B>>>.
+\end{lstlisting}
+线程 $t$ 之前的有效项数为 \code{validBefore}；减去此前 0 数就是此前 1 数，故两个桶的
+目的位置都唯一且稳定。向量路径只在完整且 16 字节对齐时使用。
+
+\complexity{$O(N)$ 工作，每线程 4 项串行段}{$4B$ 个共享键/块和 $O(G)$ 计数}{$N/4$ 个线程，块数约降为四分之一}
+\conclusionheading 粗化减少扫描参与线程和块计数，并用 16 字节访问保持连续输入传输。
+\discussionheading
+\discussionpoint{粗化后的线程所有权必须与稳定次序一致。}若线程 $t$ 按输入顺序处理连续四键，线程内局部 rank 保持这四项次序，线程保留数的排他扫描又按 $t$ 递增分配区段，因此块内整体稳定。若为了全局合并改成 striped 读取 $t,t+B,t+2B,t+3B$，却仍按线程号串接，原序会被改成条带分组，相等键的载荷顺序随之改变。以 $B=2,C=2$ 为例，所有权次序会从 $0,1,2,3$ 变成 $0,2,1,3$，即使四个键相等，载荷标签也能揭示换序。解决方法是在共享内存中真正做线程间转置以恢复 blocked 所有权，或按原始下标计算 rank。这个所有权证明与粗化过滤完全相同，展示了稳定原语之间可复用的核心不变量。
+
+\discussionpoint{十六字节指令只解决单线程指令数。}\code{uint4} 加载要求实际地址满足 16 字节对齐，四个键都属于合法对象；子数组从奇数键偏移开始或尾部不足四项时，应回退为标量受保护访问。即使每个线程都成功执行一条向量加载，warp 中线程起点若相隔十六字节以上，覆盖的 DRAM 扇区仍可能多于 striped 访问，因此指令减少不等于事务减少。可将 load instruction 与 global sectors 同时比较，并用对齐、错位和各尾宽输入分别验证。类似区分也适用于 SIMD 向量化、结构体读取和二维 pitch 子视图。
+
+\discussionpoint{四键粗化减少元数据却延长每线程生命期。}每线程处理四项后，参与扫描的线程数和块计数大致降为四分之一，固定同步与全局桶状态被更多键摊薄；线程却要保存四个键、digit、标志和局部 rank，串行循环也更长。寄存器不足会触发 local memory，输入较小又可能只剩少量块，二者都会削弱延迟隐藏。因而粗化不是无条件四倍优化，应把 $C=1,2,4,8$ 当作策略空间，并在 ptxas 资源报告和实际 occupancy 下找拐点。尾部还需单独测试 $N\bmod C=1,2,3$，否则向量加载掩盖的越界只会在真实长度出现。这个规律也适用于每线程多输出的 GEMM 与卷积。
+
+\discussionpoint{生产排序把多个局部优化放进一条多 pass 流水。}真实实现常融合加载、局部重排、直方图和散射，并让输入输出缓冲 ping-pong 交替，避免每轮拷回固定位置；工作区也跨轮复用。评估 x4 版本不能只计一个 pack kernel，应覆盖对齐与未对齐首址、$N\bmod4$ 的所有尾宽、重复键和不同 digit 偏斜，再观察完整排序的字节与时间。若 pass 数为奇数，最终结果所在缓冲与偶数时相反，API 必须返回实际所有权而非悄悄多拷一遍。若加载指令下降而总吞吐不变，瓶颈可能在桶扫描或写回；若 occupancy 大降，则寄存器是主因。这种逐阶段证据链能避免把局部汇编改善误当成端到端收益。
+\variantheading 若 $N=1025,B=256$，首块处理 1024 项，第二块只处理 1 项；尾块不能执行
+越界 \code{uint4} 加载，其标量回退只令 \code{valid=1}。
+\practiceheading 用 Nsight Compute 比较标量版与 x4 版的加载指令、DRAM sectors 和占用率，
+并用 Compute Sanitizer memcheck 覆盖未对齐子数组指针与 $N\bmod4=1,2,3$。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}{NVIDIA 对合并全局内存访问的官方建议；高置信度}
+边界审查：若用条带式下标却按线程次序打包，会破坏稳定性；若无对齐检查强制解引用
+\code{uint4}，行为不受保证。粗化也降低并行度并提高寄存器用量。
+\end{solutionexercise}
+
+\begin{solutionexercise}{4}
+\problemheading 使用第 13 章的并行归并实现并行归并排序。实现应从长度为 1 的有序
+run 开始逐轮两两归并，直到只剩一个有序 run；同时处理数组长度不是 2 的幂、末尾 run
+不完整以及键值相等时的稳定次序。
+
+\approachheading 自底向上把有序 run 宽度从 1 倍增到 2、4、8。每一遍的每对 run 再
+切成固定输出片；线程用两个输出边界的协同秩确定输入子区间，并顺序归并少量元素。
+
+\answerheading 下面的核心代码支持任意非 2 的幂 $N$、末尾不完整 run 和稳定的相等键处理；
+长度与秩统一使用 \code{size_t}，适用范围还受设备内存和单次启动网格上限约束：
+\begin{lstlisting}[language=C++]
+__device__ size_t co_rank(size_t k,const int* A,size_t m,
+                          const int* B,size_t n){
+  size_t lo=k>n?k-n:0,hi=k<m?k:m;
+  while(lo<hi){
+    size_t i=lo+(hi-lo)/2,j=k-i;
+    if(j>0 && i<m && B[j-1]>=A[i]) lo=i+1; else hi=i;
+  }
+  return lo; // ties from A precede ties from B
+}
+__device__ void serial_merge(const int* A,size_t m,const int* B,
+                             size_t n,int* C){
+  size_t i=0,j=0,k=0;
+  while(i<m&&j<n) C[k++]=(A[i]<=B[j])?A[i++]:B[j++];
+  while(i<m)C[k++]=A[i++]; while(j<n)C[k++]=B[j++];
+}
+
+template<int ITEMS>
+__global__ void merge_pass(const int* src,int* dst,size_t N,size_t width,
+                           size_t pairSpan,size_t tilesPerPair){
+  size_t task=blockIdx.x,pair=task/tilesPerPair,tile=task%tilesPerPair;
+  size_t base=pair*pairSpan; if(base>=N)return;
+  size_t m=width<N-base?width:N-base;
+  size_t remain=N-base-m, n=width<remain?width:remain;
+  size_t total=m+n;
+  size_t k0=tile*blockDim.x*ITEMS+threadIdx.x*ITEMS;
+  size_t k1=min(k0+ITEMS,total); if(k0>=total)return;
+  const int* A=src+base; const int* B=A+m;
+  size_t i0=co_rank(k0,A,m,B,n),j0=k0-i0;
+  size_t i1=co_rank(k1,A,m,B,n),j1=k1-i1;
+  serial_merge(A+i0,i1-i0,B+j0,j1-j0,dst+base+k0);
+}
+
+// Host, with two N-element buffers src/dst and B=256:
+// for (size_t w=1; w<N; w*=2) {
+//   size_t span=(w>N-w)?N:2*w;
+//   size_t pairs=(N-1)/span+1;
+//   size_t tileItems=size_t(B)*ITEMS;
+//   size_t tpp=(span-1)/tileItems+1;
+//   // Split launches if pairs*tpp exceeds the device grid.x limit.
+//   merge_pass<8><<<pairs*tpp,B>>>(src,dst,N,w,span,tpp);
+//   std::swap(src,dst);
+//   if(w>N/2) break; // result is now in src; avoids size_t overflow
+// }
+// After the loop, src points to the sorted buffer.  If the API requires the
+// original allocation to own the result and src differs, copy N items back.
+\end{lstlisting}
+每遍开始时各 run 已有序；协同秩把一对 run 的输出划成不重叠且完整的片，每片稳定归并，
+因此整对 run 有序。归纳到宽度不小于 $N$ 时，全数组有序。不同线程只写各自输出片。
+
+\complexity{$O(N\log N)$ 工作，约 $\log_2N$ 次 launch 层}{$O(N)$ 辅助数组}{$O(N/\text{ITEMS})$ 个线程/遍}
+\conclusionheading 该实现是稳定、支持任意非 2 的幂长度的并行自底向上归并排序；
+\code{size_t} 消除了原代码的 32 位秩窄化，超大任务还须由主机拆分启动。
+\discussionheading
+\discussionpoint{自底向上归并把有序 run 逐轮翻倍。}初始每个元素是长度 1 的有序段，第 $p$ 轮把相邻长度 $2^p$ 的 run 归并为长度至多 $2^{p+1}$ 的 run，经过 $\lceil\log_2N\rceil$ 轮便覆盖全数组。每轮读取和写入 $O(N)$ 项，总工作为 $O(N\log N)$。例如 $N=10$ 时，宽度依次为 1、2、4、8，最后一轮的右 run 只有两项，截断端点仍保持证明成立。相等键时始终选择左 run 的记录，可由归纳证明每轮都保持原相对次序；若某轮改成右侧优先，后续轮无法恢复。这个层次同时对应外部排序把小文件段合成大段的过程，只是存储介质不同。
+
+\discussionpoint{ping-pong 缓冲用空间换取简单的数据所有权。}每轮只从缓冲 A 读、向缓冲 B 写，下一轮交换角色，读写集合完全分离，因此不需要证明原地覆盖是否会毁掉尚未消费的键；代价是额外 $O(N)$ 存储。最终结果在哪个缓冲由 pass 奇偶决定，API 可以返回实际指针、只在必要时拷回，或安排初始角色使常见轮数落到目标位置。若无条件拷回，一个 1 GiB 数组就会额外产生约 2 GiB 的读写流量，而交换句柄几乎没有数据成本；容量规划还必须同时容纳两份峰值数据。双缓冲思想也用于迭代 stencil、图前沿和神经网络激活，所有权契约应与数据本身一起返回。
+
+\discussionpoint{不同 run 尺度需要不同并行粒度。}早期 run 很短且数量多，为每个小归并执行二分切分会让控制开销占主导，可先在单块共享内存中排序出较大的初始 run；后期 run 很长，单线程顺序归并又会负载不足，应使用 merge path 或 co-rank 按输出对角线均匀分给线程块。最后一个右 run 可能为空或不完整，只需把端点截到 $N$，算法不应假定长度为 2 的幂。切换阈值应由共享容量、每次搜索成本和可用块数共同决定，并在阈值两侧测量，避免分派抖动。按 run 尺寸切换 kernel family，与 BLAS 按矩阵形状分派实现具有同样的分段优化思想。
+
+\discussionpoint{归并排序的优势常来自比较器与外部有序段。}固定宽整数键通常适合吞吐更高的基数排序，但字符串、复合比较器或必须稳定搬运记录时，比较归并更自然；已有有序 run 时更无需从头基数分桶。若比较器只查看变长字符串到首个差异字节，其成本随数据共同前缀变化，固定“每次比较一次操作”的模型就会失真。数据库 merge join、LSM compaction 和外部排序的瓶颈还可能是 payload 搬运、压缩或存储带宽，而不是键比较。基准应改变重复键、非幂长度、记录宽度和超大索引，并与合适语义的 CUB/Thrust 基线比较端到端时间。这样才能从算法复杂度走向真实存储系统的选择依据。
+\variantheading 若 $N=8$，宽度依次为 1、2、4，共 3 个 pass；交换三次后结果位于初始
+辅助缓冲。若 $N=4$，只有 2 个 pass，结果回到初始输入缓冲。
+\practiceheading 用 CUB \code{DeviceMergeSort} 或 Thrust \code{stable_sort} 作为基线，测试
+$N=0,1$、非 2 的幂和重复键；主机封装应返回最终指针或按 pass 奇偶明确拷回，并检查
+\code{width*=2} 的 \code{size_t} 溢出。
+\sourcecheck{https://davidbader.net/publication/2012-gm-ba/2012-gm-ba.pdf}{GPU Merge Path 作者公开版的并行归并分区；并以 DOI 10.1145/2304576.2304621 核对正式出版信息；高置信度}
+反例审查：每遍不能原地覆盖尚未读取的 run，必须 ping-pong。\code{width*=2} 在极大
+\code{size_t} 上还应加入溢出保护；相等比较若改成 \code{<} 会改变跨 run 稳定次序。
+\end{solutionexercise}

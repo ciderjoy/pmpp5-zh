@@ -1,0 +1,650 @@
+\chapter{卷积}
+
+\begin{solutionexercise}{1}
+\problemheading 计算图 7.3 中的 $P[0]$ 值。
+
+为使题意独立可读，图 7.3 给出输入
+$N=\{8,2,5,4,1,7,3\}$ 和五点滤波器 $F=\{1,3,5,3,1\}$；滤波器中心与当前
+输出位置对齐，数组外的 ghost cell 取 0，并沿用本章不反转滤波器的相关运算约定。
+底本使用 $N,F,P$，译稿图中对应写作 $x,f,y$。
+
+\approachheading 原书示例采用零填充，输入为
+$\{8,2,5,4,1,7,3\}$，滤波器为 $\{1,3,5,3,1\}$；$P[0]$ 左侧缺两个输入。
+
+\editorialnote 练习沿用底本符号 $N,F,P$；中文译稿图 7.3 改用 $x,f,y$。二者逐项对应，
+所以本题的 $P[0]$ 就是译稿图中的 $y[0]$。
+
+\answerheading
+\[
+P[0]=1\times0+3\times0+5\times8+3\times2+1\times5=51.
+\]
+这里沿用本章代码的相关运算约定（滤波器不反转）。
+
+\conclusionheading $P[0]=51$。
+\discussionheading
+\discussionpoint{卷积与互相关的名称必须落实到索引公式。}
+看到“卷积”二字，为什么还不能立即决定核的方向？数学卷积通常写成 $P[i]=\sum_j F[j]N[i-j]$，滑动前会相对相关运算反转核；本章代码却按 $N[i-r+j]F[j]$ 读取，因此严格说是离散互相关，对非对称核会给出不同答案。深度学习库常把名为 convolution 的前向算子实现为相关，因为可学习权重能在训练中吸收方向，但预训练权重、手工滤波器和信号处理公式并不能自动互换。接口与测试应保存完整索引定义，而非只记算子名称；本题的 51 正是确认方向契约的一个小型见证。
+
+\discussionpoint{边界规则是算子定义的一部分。}
+为什么内部公式完全相同，首个输出仍可能不是 51？零填充把左侧两个缺失样本解释为 0；边缘复制会使用 8，镜像会取域内对称位置，循环边界则从数组末端取值，valid 模式甚至不产生这个位置的输出。每种规则都隐含了对观测域外信号的假设：周期谱分析适合循环延拓，图像边缘可能选镜像，PDE 则由物理边界条件决定。因而端点不是需要“修补”的性能例外，而是模型语义；跨库复现必须一起记录 padding、输出长度和偶数核 anchor，不能只比较内部样本。
+
+\discussionpoint{核的矩把局部内积连接到物理作用。}
+一串系数除了产生 51，还说明滤波器在做什么？核系数和 $\sum_jF[j]$ 是对常量输入的直流增益；一阶矩 $\sum_j(j-r)F[j]$ 描述对斜坡的响应，正负相消的核常用来近似导数或突出边缘。对称平滑核通常没有方向偏置，非对称核则可能表达时间因果性、运动方向或空间偏移，因此核反转会改变可解释含义，而不仅是数组顺序。工程上可在部署前检查增益、对称性和矩条件，再把这些性质同归一化、单位和允许的边界伪影对应起来，这比只对一个随机输入验数更能发现模型层错误。
+
+\discussionpoint{结构化测试比随机抽查更能定位卷积错误。}
+若 GPU 输出只在首尾错几个元素，怎样最快区分核方向、边界和索引问题？单位脉冲会把核的方向与 anchor 直接显露出来；全常量输入可检查内部直流增益，线性斜坡能暴露一阶矩和一格偏移，非对称短数组则专门区分相关与卷积。随后再用独立 CPU 循环逐元素比较，并把首尾 $r$ 个位置单独列出，便能把边界错误同主体循环错误隔离。随机测试适合扩大覆盖，但不应替代这些具有诊断性的基例；CUDA 版本还需配合越界检查工具，确认“数值碰巧正确”不是由非法读取造成。
+\variantheading 若左侧采用边缘复制，则 $P[0]=1(8)+3(8)+5(8)+3(2)+1(5)=83$。
+\practiceheading 用独立 CPU 参考实现固定边界与核方向，再逐元素比较 CUDA 输出，并以 Compute Sanitizer memcheck 排除端点越界。
+\sourcecheck{https://github.com/NVIDIA/cuda-samples/tree/master/cpp/2_Concepts_and_Techniques/convolutionSeparable}{NVIDIA convolutionSeparable 示例直接展示 halo 越界位置写零；该示例会反转卷积核，和本章相关运算约定不同，因此 51 只由底本数据按本章公式独立代入核验}
+\end{solutionexercise}
+
+\begin{solutionexercise}{2}
+\problemheading 对数组
+\[
+  N=\{4,1,3,2,3\}
+\]
+执行一维卷积，滤波器为
+\[
+  F=\{2,1,4\}.
+\]
+求得到的输出数组。沿用本章约定：输出与输入等长，数组外 ghost cell 取 0，
+滤波器中心与当前输出对齐且系数不反转。
+
+\approachheading 半径为 1，数组两端按 0 延拓，并沿用本章不翻转滤波器的定义
+$P[i]=2N[i-1]+N[i]+4N[i+1]$。
+
+\answerheading
+\[
+\begin{aligned}
+P[0]&=2(0)+1(4)+4(1)=8,\\
+P[1]&=2(4)+1(1)+4(3)=21,\\
+P[2]&=2(1)+1(3)+4(2)=13,\\
+P[3]&=2(3)+1(2)+4(3)=20,\\
+P[4]&=2(2)+1(3)+4(0)=7.
+\end{aligned}
+\]
+
+\complexity{$O(NM)$，本题 15 个候选乘法}{$O(N)$ 输出空间}{$N$ 个输出彼此独立}
+\conclusionheading 输出数组为 $\{8,21,13,20,7\}$。
+\discussionheading
+\discussionpoint{滑动窗口可以看成带结构的矩阵乘法。}
+五个输出为何能由同一小段代码计算？把输入写成列向量后，每个输出对应矩阵的一行，核系数沿对角线重复，内部呈 Toeplitz 结构；零填充只是在首尾行删去越界列，因此线性和局部性都清楚可见。这个表示还能直接导出伴随算子：反向传播对输入的梯度相当于用转置矩阵聚合相邻输出梯度，边界行同样不能忽略。实际实现不会真的构造这个大矩阵，但矩阵视角有助于证明线性、检查维度，并把卷积同稀疏矩阵、有限冲激响应系统和自动微分连接起来。对非对称核，转置还会再次改变方向。
+
+\discussionpoint{same、valid、full 与 circular 描述不同的问题。}
+输出数组究竟应该有多长，并非由核系数单独决定。valid 只保留核完全落在输入内的位置，长度通常为 $N-M+1$；full 保留一切非空重叠，长度为 $N+M-1$；same 通过选择填充维持输入长度，而 circular 则按 $N$ 取模并假定信号周期延拓。奇数核有自然中心，本题因而较少歧义；偶数核的 anchor 偏左或偏右会带来一格相位差，不同框架还可能采用不对称 padding。跨系统交换模型时应记录左右填充量、stride、dilation 与 anchor，这些参数共同定义输出坐标系。
+
+\discussionpoint{直接卷积与 FFT 卷积服务于不同尺度。}
+既然卷积可在频域相乘，为什么小核实现仍普遍使用直接循环？直接法做 $O(NM)$ 工作，控制简单、启动延迟低且边界易处理；线性 FFT 卷积需先零填充到至少 $N+M-1$，进行正逆变换和逐点乘法，复杂度为 $O((N+M)\log(N+M))$。只有在 $M=O(N)$ 等可把总变换长度按 $N$ 表示的条件下，才可简写成 $O(N\log N)$；短核时常数、额外缓冲和变换成本可能更差。流式长信号可用 overlap-add 或 overlap-save 分块，把有限工作区、延迟预算与 FFT 长度一并纳入选择。
+
+\discussionpoint{累加类型和测试域共同决定工程准确度。}
+本题整数很小，为什么生产接口仍要说明累加精度？若输入与系数为 8 位或 16 位整数，$M$ 项乘积之和可能超出原类型；浮点长核虽然不发生整数回绕，却会因加法次序、FMA 和混合精度累加得到不同末位。实现应根据最坏幅值推导累加范围，规定饱和或回绕语义，并用更高精度参考评估误差。测试除了固定样例，还要覆盖核长于输入、全零、单位脉冲、极值和随机数组，并确保 CPU 与 GPU 使用完全相同的核方向和边界；否则差异可能来自契约而非并行代码。参考值也应避免使用同一低精度累加路径。
+\variantheading 滤波器改为 $\{1,1,1\}$ 时，零填充 same 输出为 $\{5,8,6,8,5\}$。
+\practiceheading 与 cuDNN 或 CPU reference 对照时显式设置 padding 和核方向。
+\sourcecheck{https://github.com/NVIDIA/cuda-samples/tree/master/cpp/2_Concepts_and_Techniques/convolutionSeparable}{NVIDIA convolutionSeparable 示例核验显式零 halo 的边界策略；系数方向按本章定义，五个输出由独立手算核验}
+\end{solutionexercise}
+
+\begin{solutionexercise}{3}
+\problemheading 你认为下面的一维卷积滤波器分别在做什么？
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item $[0,1,0]$
+  \item $[0,0,1]$
+  \item $[1,0,0]$
+  \item $\left[-\frac12,0,\frac12\right]$
+  \item $\left[\frac13,\frac13,\frac13\right]$
+\end{enumerate}
+沿用本章的 same、零填充和不反转滤波器约定。
+
+\approachheading 把滤波器直接代入
+$P[i]=F[0]N[i-1]+F[1]N[i]+F[2]N[i+1]$。
+
+\answerheading
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+\item $[0,1,0]$：恒等滤波，输出当前样本。
+\item $[0,0,1]$：输出 $N[i+1]$，把信号向较小下标方向平移一格（提前一格）。
+\item $[1,0,0]$：输出 $N[i-1]$，把信号向较大下标方向平移一格（延迟一格）。
+\item $[-\tfrac12,0,\tfrac12]$：单位采样间隔下的中心一阶差分
+$(N[i+1]-N[i-1])/2$，可检测斜率或边缘。
+\item $[\tfrac13,\tfrac13,\tfrac13]$：三点移动平均，抑制高频变化并平滑信号。
+\end{enumerate}
+零填充会使平移和平均滤波在端点出现边界效应。
+
+\complexity{$O(N)$（滤波器长度固定为 3）}{$O(N)$ 输出空间}{$N$ 个输出可并行}
+\conclusionheading 五者依次为恒等、左移/提前、右移/延迟、中心差分和三点平均。
+\discussionheading
+\discussionpoint{核的矩与频率响应给出互补解释。}
+怎样把“平滑”或“检测变化”的直觉变成可计算性质？系数和等于零频增益，因此恒等核和三点平均保留常量，而中心差分的系数和为零，会消除直流分量；系数相对中心的一阶矩则决定对线性斜坡的响应。进一步令 $H(\omega)=\sum_jF[j]e^{\mathrm{i}\omega j}$，其幅值描述各频率被放大或衰减多少，相位描述波形如何平移。矩适合检查低频局部行为，频率响应展示全谱，两者共同把手工核连接到数字信号处理中的低通、高通和相位设计。若响应零点或相位方向不符，往往意味着系数顺序、anchor 或采样间隔有误。
+
+\discussionpoint{平移结论依赖索引方向与相关约定。}
+核 $[0,0,1]$ 为什么在本题中表示提前，而在另一份资料里可能写成延迟？这里输出位置 $i$ 读取 $N[i+1]$，所以原来位于较大下标的样本出现在较小输出下标；若采用数学卷积，核先反转，结论便互换。对实时信号，读取未来样本的提前算子不可因果实现，除非系统允许缓存或离线处理；对数组图像，它可能只是一次坐标重排。非对称滤波器还会引入频率相关相位，因此文档应同时给出索引正方向、时间含义和 anchor，不能用“左移”一个词承担全部语义。单位脉冲可直接检验这一方向。
+
+\discussionpoint{差分核还需要网格尺度才能成为导数。}
+为什么 $[-\tfrac12,0,\tfrac12]$ 只在单位采样间隔下近似一阶导数？泰勒展开给出 $f(x+h)-f(x-h)=2hf'(x)+O(h^3)$，所以一般公式要除以 $2h$，截断误差为 $O(h^2)$；二阶核 $[1,-2,1]$ 则还要除以 $h^2$。若忘记尺度，网格加密后数值会改变物理单位，无法讨论收敛性，即使边缘图看起来仍然合理。PDE 离散、图像梯度和传感器采样都依赖这一区别，实际代码应把 spacing 作为接口参数或把它明确吸收到核系数中。收敛测试还应让 $h$ 系统缩小并核对误差阶。
+
+\discussionpoint{平滑与求导之间存在噪声和分辨率取舍。}
+中心差分能突出边缘，为何常不直接作用于原始测量？求导的频率响应随频率增大，会同时放大高频噪声；三点平均能抑制噪声，却会削弱窄峰并模糊真实边缘，所以二者的先后和尺度决定最终分辨率。Sobel 或 Gaussian derivative 把局部平滑与方向导数组合起来，代价是更宽支持域、更多边界影响及位置偏差。验证时可依次使用脉冲、常量、斜坡和不同频率正弦波，分别检查方向、直流增益、导数尺度与截止特性，并按任务的信噪比和空间分辨率选择核宽度。
+\variantheading $[1,-2,1]$ 给出二阶中心差分 $N[i-1]-2N[i]+N[i+1]$。
+\practiceheading 用脉冲和线性斜坡作为 CUDA 单元测试输入，验证方向、增益和边界，并用 Compute Sanitizer memcheck 覆盖两个端点。
+\sourcecheck{https://github.com/NVIDIA/cuda-samples/tree/master/cpp/2_Concepts_and_Techniques/convolutionSeparable}{NVIDIA convolutionSeparable 示例用于核验卷积的邻域访问结构；五个滤波器的方向与作用由本章相关运算公式逐项代入，不借用示例的核反转约定}
+\end{solutionexercise}
+
+\begin{solutionexercise}{4}
+\problemheading 对大小为 $N$ 的数组执行一维卷积，滤波器大小为 $M$：
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item 总共有多少个 ghost cell？
+  \item 如果把 ghost cell 视为乘法（乘以 0），会执行多少次乘法？
+  \item 如果不把 ghost cell 视为乘法，会执行多少次乘法？
+\end{enumerate}
+沿用本章居中、零填充、输出与输入同尺寸的约定，因此 $M$ 为奇数；闭式计数还假设
+$N\ge (M-1)/2$。
+
+\approachheading 令半径 $r=(M-1)/2$，假设 $N\ge r$ 且两端零填充。区分填充数组中
+“唯一 ghost cell 数”和所有边界输出累计引用 ghost 的次数。
+
+\answerheading
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+\item 左右各需 $r$ 个唯一 ghost cell，总数 $2r=M-1$。
+\item 若乘零也执行，每个 $N$ 个输出均做 $M$ 次乘法，共 $NM$ 次。
+\item 左边各输出跳过的 ghost 引用数为 $r+(r-1)+\cdots+1=r(r+1)/2$，右边相同，
+总共跳过 $r(r+1)$ 次。因此实际乘法数为
+\[
+ NM-r(r+1)=NM-\frac{M^2-1}{4}.
+\]
+\end{enumerate}
+若题目把“ghost cell”理解为计算过程中的累计 ghost 引用，则该数是 $r(r+1)$，
+而非 (a) 的唯一填充位置数。
+
+\complexity{$O(NM)$}{$O(N)$ 输出；显式填充时另需 $M-1$ 个元素}{$N$ 个输出可并行}
+\conclusionheading (a) $M-1$；(b) $NM$；(c) $NM-(M^2-1)/4$。
+\discussionheading
+\discussionpoint{边界缺口形成两个可以精确求和的三角形。}
+为什么不执行 ghost 乘法时，要从 $NM$ 中减去 $r(r+1)$？最左输出缺 $r$ 项，下一个缺 $r-1$ 项，直到第 $r$ 个边界输出只缺 1 项，单侧缺口是 $1+\cdots+r=r(r+1)/2$；右侧对称，故总缺口恰为 $r(r+1)$。这里 $M-1$ 统计的是填充数组中不同的 ghost 位置，而三角数统计它们被各输出累计引用的次数，两者回答不同问题。把完整工作矩形减去边界缺口的思路也用于 stencil 有效点、带状稀疏矩阵非零元和 halo 流量分析，关键是先说明统计对象是否去重。
+
+\discussionpoint{闭式公式必须连同 anchor 与尺寸假设使用。}
+若核比输入还宽，原公式能否照抄？推导假定 $M$ 为奇数、anchor 位于中心且 $N\ge r=(M-1)/2$，这样左右边界的缺口序列具有上述三角形结构；若 $N<r$，同一输出可能同时越过两侧，应逐位置求输入区间与核支持的交集长度。偶数核不存在唯一中心，anchor 偏左或偏右会让两侧缺口不对称；valid、full 或 dilation 又会改变输出坐标集合。可靠实现可以把通用交集公式作为参考，再把闭式仅用于满足前提的快速路径，这也是防止边界优化悄悄扩大适用域的常见做法。
+
+\discussionpoint{跳过乘零不必然缩短运行时间。}
+少执行 $r(r+1)$ 次乘法，为什么 GPU 仍可能更慢？逐项边界判断会增加整数索引、谓词或分支；同一 warp 中内部线程和端点线程走不同路径时，节省的算术可能被控制流和低利用率抵消。显式预填充可让主体内核无分支且访问规则，却要支付额外存储、初始化和读流量；另一个选择是拆成大规模内部内核与小型边界内核。对固定小核且 $N$ 很大，边界比例约按 $M/N$ 消失，专门优化端点价值有限；对大量很短序列则相反，所以应测端到端时间而非只比较源代码乘法数。
+
+\discussionpoint{改变核结构能比省去边界乘法带来更大收益。}
+若性能瓶颈在全部 $NM$ 项，继续雕琢端点是否抓住主要矛盾？稀疏核可存储非零系数和偏移，只遍历有效支持；可分离核把二维外积拆成两次一维运算；长而稠密的一维核可转向 FFT，其工作结构与直接卷积完全不同。每种变化同时影响数据布局、中间缓冲、舍入路径和适用尺寸，例如稀疏访问可能损害合并，FFT 对短核有较大固定成本。性能报告应区分数学有效乘加、实际发射指令、DRAM 字节和预处理时间，并以同一数值契约验证，这样才不会把“少算了零”误当成整体算法已经最优。
+\variantheading $N=5,M=3$ 时 ghost 为 2、计零乘法 15 次、不计零乘法 13 次。
+\practiceheading 枚举不同 $N,M$ 的边界索引并与 CPU 计数对照，再用 Compute Sanitizer memcheck 覆盖 $N<M$ 的小数组边界。
+\sourcecheck{https://github.com/NVIDIA/cuda-samples/tree/master/cpp/2_Concepts_and_Techniques/convolutionSeparable}{NVIDIA convolutionSeparable 示例核验零边界与 halo 加载；$M-1$ 和左右三角数完全由独立代数推导核验}
+\end{solutionexercise}
+
+\begin{solutionexercise}{5}
+\problemheading 对大小为 $N\times N$ 的方阵执行二维卷积，方形滤波器大小为 $M\times M$：
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item 总共有多少个 ghost cell？
+  \item 如果把 ghost cell 视为乘法（乘以 0），会执行多少次乘法？
+  \item 如果不把 ghost cell 视为乘法，会执行多少次乘法？
+\end{enumerate}
+沿用本章居中、零填充、输出与输入同尺寸的约定，因此 $M$ 为奇数；闭式计数还假设
+$N\ge (M-1)/2$。
+
+\approachheading 令 $r=(M-1)/2$。唯一 ghost cell 是外扩后方阵与原方阵的面积差；
+不乘 ghost 时，二维有效配对数可分解成两个相同的一维有效配对数之积。
+
+\answerheading
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+\item 填充后边长为 $N+2r=N+M-1$，唯一 ghost cell 数为
+\[
+ (N+M-1)^2-N^2.
+\]
+\item 若 ghost 也乘以 0，共有 $N^2$ 个输出，每个做 $M^2$ 次乘法，总数
+$N^2M^2$。
+\item 一维所有输出的有效输入配对数为
+$S=NM-r(r+1)=NM-(M^2-1)/4$。二维行列选择独立，故有效乘法总数为
+\[
+ S^2=\left(NM-\frac{M^2-1}{4}\right)^2.
+\]
+\end{enumerate}
+上述闭式假设 $N\ge r$；极小输入应直接用截断区间求和。
+
+\complexity{$O(N^2M^2)$}{$O(N^2)$ 输出空间}{$N^2$ 个输出可并行}
+\conclusionheading 三项依次为 $(N+M-1)^2-N^2$、$N^2M^2$ 和
+$[NM-(M^2-1)/4]^2$。
+\discussionheading
+\discussionpoint{支持域计数可分解并不意味着滤波器可分离。}
+二维有效乘法数为什么能写成一维数量 $S^2$？矩形输入与方形支持使行方向和列方向的合法索引选择相互独立，每一个合法行配对都能同每一个合法列配对组合，因此笛卡尔积的大小等于两者乘积。这个论证只依赖“哪些偏移存在”，并未约束每个位置的系数；一般 $M\times M$ 核仍有 $M^2$ 个独立权重。只有系数矩阵满足低秩条件、特别是能写成列向量与行向量外积时，计算本身才能拆为两次一维卷积。区分组合可分解与代数可分离，可避免从计数公式错误推出算法复杂度已经降低。秩检验才能回答后一个问题。
+
+\discussionpoint{ghost 面积需要用容斥避免重复计算角点。}
+若沿四条边各加一条宽 $r$ 的带，角落应算几次？直接相加边带会重复覆盖四个角，最简洁的办法是用扩展方阵面积 $(N+2r)^2$ 减去原面积 $N^2$，等价展开后再用容斥校正交集。三维 halo 更明显：六个面相交成十二条棱，棱又相交于八个角，若按消息或存储区域逐块统计，很容易重复或漏项。多 GPU stencil 中还要区分“存储的唯一 halo 单元”和“按邻居分别发送的元素”，后者可能有意重复角数据；因此几何公式必须与通信策略和所有权定义配套。
+
+\discussionpoint{非矩形支持域需要回到偏移集合。}
+圆盘、十字或膨胀卷积为何不能直接套用 $S^2$？这些支持不再是行偏移集合与列偏移集合的完整笛卡尔积，某个行偏移是否合法还取决于列偏移，应对每个核偏移 $(\delta_y,\delta_x)$ 统计它与输入域重叠的输出位置。稀疏支持可只存非零系数及偏移，显著减少算术和系数流量，但不规则地址可能破坏连续访问，并增加索引开销。规则十字核、结构元素和图邻域各有更专用的遍历方式，工程选择应同时比较支持稀疏度、地址规律和分支一致性，而不是只看非零项个数。偏移排序还会改变缓存局部性。
+
+\discussionpoint{全 1 测试只有输入与支持核都为 1 才能计数邻点。}
+把输入全设为 1，输出是否自动等于有效邻居数量？若核系数任意，边界位置得到的是仍落在域内的那些系数之和，而不是系数个数；只有输入为全 1，且核或支持掩码也在每个有效位置取 1，输出才恰好是邻点计数图。内部应为 $M^2$，边上减去一条缺失带，角上同时缺两维，这个模式能快速暴露填充、anchor 与二维索引错误。随后再换回真实系数，可用单位脉冲检查方向；把结构测试与随机 CPU 对照结合，诊断能力远强于只核对总乘法数。这一区分防止把加权和误报成拓扑度数。
+\variantheading $N=5,M=3$ 时 ghost 为 24，含零乘法 225 次，不含零乘法 169 次。
+\practiceheading 用全 1 输入和全 1 支持核生成有效邻点计数图，并以 Compute Sanitizer 检查 halo 边界。
+\sourcecheck{https://github.com/NVIDIA/cuda-samples/tree/master/cpp/2_Concepts_and_Techniques/convolutionSeparable}{NVIDIA convolutionSeparable 示例核验二维可分离实现的零 halo；面积差和有效配对平方由独立代数推导核验}
+\end{solutionexercise}
+
+\begin{solutionexercise}{6}
+\problemheading 对大小为 $N_1\times N_2$ 的矩形矩阵执行二维卷积，矩形滤波器大小为
+$M_1\times M_2$：
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item 总共有多少个 ghost cell？
+  \item 如果把 ghost cell 视为乘法（乘以 0），会执行多少次乘法？
+  \item 如果不把 ghost cell 视为乘法，会执行多少次乘法？
+\end{enumerate}
+沿用本章居中、零填充、输出与输入同尺寸的约定，$M_1,M_2$ 为奇数；闭式计数还假设
+$N_i\ge (M_i-1)/2$。
+
+\approachheading 令 $r_i=(M_i-1)/2$，分别沿两维计数，再利用笛卡尔积相乘。
+
+\answerheading
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+\item 唯一 ghost cell 数为
+\[
+(N_1+M_1-1)(N_2+M_2-1)-N_1N_2.
+\]
+\item 把 ghost 乘零也计入时，共执行 $N_1N_2M_1M_2$ 次乘法。
+\item 令
+\[
+S_i=N_iM_i-r_i(r_i+1)
+   =N_iM_i-\frac{M_i^2-1}{4},\qquad i=1,2.
+\]
+不执行 ghost 乘法时总数为
+\[
+S_1S_2=\left(N_1M_1-\frac{M_1^2-1}{4}\right)
+        \left(N_2M_2-\frac{M_2^2-1}{4}\right).
+\]
+\end{enumerate}
+闭式同样假设 $N_i\ge r_i$；否则用每个输出处的有效交集长度求和。
+
+\complexity{$O(N_1N_2M_1M_2)$}{$O(N_1N_2)$ 输出空间}{$N_1N_2$ 个输出可并行}
+\conclusionheading 结果由两维的一维计数相乘得到，见上述三个公式。
+\discussionheading
+\discussionpoint{各向异性几何必须逐维保留。}
+为什么不能先把矩形问题近似成一个边长为 $N$ 的方形再计数？高度方向的半径 $r_1$ 与宽度方向的半径 $r_2$ 独立决定边界缺口，一维有效配对分别为 $S_1$ 和 $S_2$，二维总数才是 $S_1S_2$；长条输入中某一方向可能几乎全是边界，另一方向却以内部点为主。时频谱、扫描线和批量短序列都具有这种不对称。保留逐维公式不仅使乘法数正确，还能预测哪一侧 halo、分支和缓存浪费更严重，从而指导矩形 tile、分区方向与专用边界内核的选择。这一预测还可用于选择分区方向。
+
+\discussionpoint{各向异性核把数组尺寸连接到物理尺度。}
+矩形核较长的一边是否必然表示更强平滑？只有在两个数组轴的采样间隔相同且系数按同一单位设计时才成立；运动模糊、时空卷积和医学体数据常在不同轴上拥有不同物理 spacing，$M_1$ 与 $M_2$ 不能脱离单位解释。若系数矩阵可写成 $uv^{\mathsf T}$，两次一维卷积可把每输出工作从 $M_1M_2$ 降到 $M_1+M_2$，但会引入中间舍入和缓冲。近似低秩分解还可用少数可分离项换取误差，因此需要把秩、任务误差与内存流量一起选择。标定数据应覆盖各轴的典型频率与极端幅值。
+
+\discussionpoint{数学对称并不保证内存访问对称。}
+把长和宽互换后公式形式不变，GPU 时间为何可能明显不同？行主序数组中，连续线程沿宽度读取可形成合并访问，沿高度读取则跨越 leading dimension；即使有效乘法数量相同，缓存行和事务数也不同。两阶段可分离卷积常在竖向阶段使用共享内存转置，或选取宽而矮的 tile 让全局加载保持连续，但这又影响 halo 比例与占用率。长宽互换是发现索引写反的好测试，却不能作为性能等价证明；分析时应分别报告逻辑工作、地址步长和实际内存事务。跨步大小必须纳入性能记录。
+
+\discussionpoint{高维卷积还需要说明哪些维度参与求和。}
+把二维公式推广到视频或深度学习张量，只增加一个空间下标就够了吗？矩形支持域在独立空间维上仍可逐维计数，但 batch 通常只是并行样本，channel 往往参与求和并产生多个输出通道，group 又限制通道连接；布局可能是 NCHW、NHWC 或带阻塞的物理格式。分布式体数据还会让某些空间维跨设备，halo 通信量由分区轴和半径共同决定。因而接口必须区分逻辑维度、卷积维度、存储顺序和分区方式，单给 $N_1,N_2,M_1,M_2$ 只能定义本题的单通道二维情形。
+\variantheading $N_1=5,N_2=4,M_1=M_2=3$ 时不计 ghost 的乘法数为 $13\times10=130$。
+\practiceheading 将长宽互换各运行一次，并与 cuDNN 非方形张量结果比较，可发现 width/height 或 leading dimension 写反。
+\sourcecheck{https://github.com/NVIDIA/cuda-samples/tree/master/cpp/2_Concepts_and_Techniques/convolutionSeparable}{NVIDIA convolutionSeparable 示例核验二维零边界加载；矩形闭式以两维相等和一维退化为 1 的回代独立审查}
+\end{solutionexercise}
+
+\begin{solutionexercise}{7}
+\problemheading 对大小为 $N\times N$ 的数组执行二维分块卷积，使用图 7.12 所示内核，
+滤波器大小为 $M\times M$，输出瓦片大小为 $T\times T$：
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item 需要多少个线程块？
+  \item 每个块需要多少个线程？
+  \item 每个块需要多少共享内存？
+  \item 如果使用图 7.15 中的内核，重复回答上述问题。
+\end{enumerate}
+图 7.12 的块与完整输入瓦片同尺寸，输入瓦片含半径 halo，边长为 $T+M-1$；每个线程
+加载一个输入元素，只有中央 $T\times T$ 个线程计算输出。图 7.15 的块、共享瓦片与
+输出瓦片均为 $T\times T$，halo 从原输入经缓存路径读取。元素为单精度浮点数，
+滤波器位于常量内存，不计入每块共享内存。
+
+\approachheading 图 7.12 把完整 halo 放入共享内存，输入瓦片边长为 $T+M-1$；
+图 7.15 依赖缓存读取 halo，共享瓦片与输出瓦片同为 $T$。
+
+\answerheading 两种内核都需要
+\[
+B=\left\lceil\frac NT\right\rceil^2
+\]
+个线程块。
+
+图 7.12 每块线程数为 $(T+M-1)^2$，共享内存为
+$4(T+M-1)^2$ B（单精度）。图 7.15 每块线程数为 $T^2$，共享内存为 $4T^2$ B。
+常量内存中的 $M^2$ 个滤波器系数是设备级资源，不重复计入每块共享内存。
+
+必须另行验证每块线程数不超过设备上限；图 7.12 的输入瓦片更大，较容易超过上限。
+
+\complexity{$O(N^2M^2)$ 总工作}{分别为 $O((T+M)^2)$ 与 $O(T^2)$ 共享空间/块}{$\lceil N/T\rceil^2$ 个块}
+\conclusionheading 图 7.12：$B$ 块、$(T+M-1)^2$ 线程/块、
+$4(T+M-1)^2$ B；图 7.15：$B$ 块、$T^2$ 线程/块、$4T^2$ B。
+\discussionheading
+\discussionpoint{完整输入瓦片与缓存 halo 选择不同的复用责任。}
+两个内核为何生成相同输出，却需要不同线程数和共享内存？图 7.12 让块协作装入中央区及全部 halo，随后每个邻域读取都来自片上瓦片，复用位置和同步点明确；图 7.15 只把 $T\times T$ 中央区放入共享内存，halo 仍从原数组读取，并希望相邻块访问曾被缓存。前者用 $(T+M-1)^2$ 个装载位置换取可预测复用，后者用 $T^2$ 个线程和较小共享状态换取更高驻留可能性。正确性都不应依赖缓存命中，但性能责任落在不同存储层，因此选型必须结合资源限制和实测命中行为。
+
+\discussionpoint{halo 的表面积成本随瓦片尺寸和半径变化。}
+为什么增大 $T$ 往往提高理想复用，却不能无限增大？完整输入边长为 $T+M-1$，相对输出的装载比为 $((T+M-1)/T)^2$；$T$ 增大时该比值趋近 1，邻块重复的边界占比下降。与此同时，线程数、共享内存、寄存器活跃状态和边界块浪费都会增加，甚至先碰到每块线程上限。大半径或小图像中 halo 可能占瓦片大部分，此时每线程循环载入多个元素、分阶段搬运或使用矩形 tile 更合适；这与域分解中的表面积/体积权衡属于同一几何规律。最优点必须用合法配置实测。
+
+\discussionpoint{缓存 halo 是性能假设而非语义前提。}
+若 L1 或 L2 完全没有命中，图 7.15 是否还应算对？每次 halo 读取仍访问合法的全局地址，所以数值必须正确；变化的是同一边界数据会不会被多个块反复从 DRAM 取回。命中率受缓存容量、替换策略、只读路径、块调度顺序和其他流量干扰，源代码中“刚被邻块读取过”并不等于当前块一定命中。评估时要区分加载请求、L1/L2 命中、DRAM sector 和实际字节，并在目标问题尺寸与并发负载上测量。这样才能避免把某一架构或空闲机器上的偶然局部性写成普遍硬件结论。
+
+\discussionpoint{生产卷积选择跨越多个算法层级。}
+把两种 tile 中较快的一种固定下来，是否就得到通用卷积库？它们都属于直接卷积的局部实现；可分离核能拆成一维阶段，某些小核与通道形状适合 Winograd，长核可能适合 FFT，隐式 GEMM 又能复用成熟矩阵乘路径。不同方案需要不同 workspace、预处理、布局变换和数值路径，首次调用延迟也可能与稳态吞吐相反。生产库通常按形状、数据类型、确定性和内存预算调优并缓存选择；评价本题方案时也应同时观察 occupancy、共享吞吐、缓存命中和端到端时间，而不是用单一计数器决定胜负。
+\variantheading $N=1024,M=5,T=16$ 时有 4096 块；两方案分别为 400/256 线程和 1600/1024 B 共享内存。
+\practiceheading 用 Nsight Compute 比较 L2 hit rate、shared throughput 和 occupancy 后选型。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{NVIDIA CUDA C++ Programming Guide 的二维网格和共享内存资源规则；halo 尺寸按原书两内核独立复核}
+\end{solutionexercise}
+
+\begin{solutionexercise}{8}
+\problemheading 修改图 7.7 中的二维内核，使其执行三维卷积。图 7.7 的完整基线为：
+\begin{lstlisting}[language=C++,firstnumber=1]
+__global__ void convolution_2D_basic_kernel(float *N, float *F, float *P,
+                                            int r, int width, int height) {
+    int outCol = blockIdx.x*blockDim.x + threadIdx.x;
+    int outRow = blockIdx.y*blockDim.y + threadIdx.y;
+    float Pvalue = 0.0f;
+    for (int fRow = 0; fRow < 2*r+1; fRow++) {
+        for (int fCol = 0; fCol < 2*r+1; fCol++) {
+            int inRow = outRow - r + fRow;
+            int inCol = outCol - r + fCol;
+            if (inRow >= 0 && inRow < height &&
+                inCol >= 0 && inCol < width) {
+                Pvalue += F[fRow*(2*r+1) + fCol]*
+                    N[inRow*width + inCol];
+            }
+        }
+    }
+    if (outRow < height && outCol < width) {
+        P[outRow*width + outCol] = Pvalue;
+    }
+}
+\end{lstlisting}
+二维数组均按行主序线性化，ghost cell 取 0；三维版本也应明确三维线性索引、
+输出边界和输入邻域边界。
+
+\approachheading 将线程映射扩展到 $(x,y,z)$，把滤波器和输入按行主序三维线性化，
+并在每次乘加前同时检查三维边界。
+
+\editorialnote 英文底本图 7.7 把一维指针误写成二维下标且缺少输出边界保护；中文译稿
+已经改为线性索引并补上保护。以下代码以译稿的显式修正版为基线，再扩展到三维。
+
+\answerheading
+\begin{lstlisting}[language=C++]
+__global__ void convolution_3D_basic(const float* N, const float* F,
+                                     float* P, int r,
+                                     int width, int height, int depth) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int z = blockIdx.z * blockDim.z + threadIdx.z;
+    if (x >= width || y >= height || z >= depth) return;
+    int K = 2 * r + 1;
+    float sum = 0.0f;
+    for (int fz = 0; fz < K; ++fz)
+      for (int fy = 0; fy < K; ++fy)
+        for (int fx = 0; fx < K; ++fx) {
+          int ix = x - r + fx, iy = y - r + fy, iz = z - r + fz;
+          if (ix >= 0 && ix < width && iy >= 0 && iy < height &&
+              iz >= 0 && iz < depth) {
+            int ni = (iz * height + iy) * width + ix;
+            int fi = (fz * K + fy) * K + fx;
+            sum += F[fi] * N[ni];
+          }
+        }
+    P[(z * height + y) * width + x] = sum;
+}
+\end{lstlisting}
+可用如 \code{dim3 block(8,8,4)}，网格三维分别向上取整。无跨线程共享数据，故无需
+屏障且没有写写竞态；主机负责在内核结束前保持三个设备数组有效，并检查启动/同步错误。
+
+\complexity{$O(WHD(2r+1)^3)$}{$O(1)$ 每线程额外空间}{$WHD$ 个输出体素可并行}
+\conclusionheading 三重滤波循环、三维边界检查和线性索引共同构成完整三维基本内核。
+\discussionheading
+\discussionpoint{三维推广同时放大工作量和索引风险。}
+二维循环多加一层是否只是机械改写？半径为 $r$ 时，每个体素要访问 $(2r+1)^3$ 个邻点，核边长翻倍会使算术和系数容量近似增长八倍；输出并行度则由体积 $WHD$ 决定，两种增长并不相同。行主序线性地址应为 $(zH+y)W+x$，若把 $H$、$W$ 或 slice stride 写反，访问仍可能落在已分配范围内，产生形状平滑却轴向错置的隐蔽结果。推广高维代码时应先写明每轴含义、跨度与边界，再用非立方尺寸测试，避免方形或立方样例掩盖置换错误。非对称脉冲核最适合发现此类轴置换。
+
+\discussionpoint{三维复用受面、棱和角共同约束。}
+相邻体素的邻域高度重叠，为什么基本内核仍可能消耗大量带宽？每个线程独立加载整个立方邻域时，只能寄希望于缓存捕获跨线程重复；共享瓦片可显式只装一次，但输入边长比输出多 $2r$，halo 不仅有六个面，还包含棱和角，其相对体积在小 tile 中很大。立方块的线程数又按边长三次方增长，常在共享内存耗尽前就碰到线程上限。实际实现常用非立方 tile、每线程多载或分平面滑动窗口，以连续 x 访问为核心控制工作集；选择应由字节模型和目标设备资源共同验证。
+
+\discussionpoint{核结构决定直接法之外的算法空间。}
+面对 $M^3$ 个系数，是否只能继续扩大三重循环？若三维核是三个一维核的外积，可按 x、y、z 做三次一维卷积，把每输出算术从 $O(M^3)$ 降为 $O(3M)$，代价是中间缓冲和额外读写；低秩近似还能用若干可分离项交换误差。大而稠密的周期或零填充问题可考虑 3D FFT，稀疏十字或模板核则更适合偏移列表。算法选择会改变边界处理、舍入次序、启动次数和工作区，因此应在相同输出语义与误差容限下比较，而不能只用渐近 FLOP 判断。转换成本也要计入小体积问题。
+
+\discussionpoint{领域验证必须把体素间距和轴方向纳入参考。}
+医学体数据或流体网格中的三个数组下标，是否代表相同物理距离？CT、MRI 和地震体常具有各向异性 spacing，同样的三格半径在不同轴上覆盖不同长度，导数或平滑核必须按物理单位缩放；方向元数据若丢失，数值可能正确却对应错误解剖或坐标轴。验证可先令 $D=1$ 退化为已验证的二维算子，再用单位脉冲检查三轴核方向，用非对称尺寸和 CPU 双精度参考逐体素比较。性能上再结合 Roofline 判断主要受邻域字节还是乘加限制，把物理正确性与硬件调优分成两条证据链。
+\variantheading 半径 $r=2$ 时每个内部输出访问 $5^3=125$ 个系数和输入，执行 125 次乘加。
+\practiceheading 以 cuDNN 三维卷积或 CPU reference 验证，并用 Nsight Compute Roofline 定位瓶颈。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{NVIDIA CUDA C++ Programming Guide 的三维线程索引与全局内存规则；以 $D=1$ 退化回二维内核作对抗审查}
+\end{solutionexercise}
+
+\begin{solutionexercise}{9}
+\problemheading 修改图 7.9 中的二维内核，使其执行三维卷积。图 7.9 假设半径为编译期
+常量 \code{FILTER_RADIUS}，并把滤波器放在设备常量内存；完整二维基线为：
+\begin{lstlisting}[language=C++,firstnumber=1]
+__constant__ float F[2*FILTER_RADIUS+1][2*FILTER_RADIUS+1];
+__global__ void convolution_2D_const_mem_kernel(float *N, float *P, int r,
+                                                int width, int height) {
+    int outCol = blockIdx.x*blockDim.x + threadIdx.x;
+    int outRow = blockIdx.y*blockDim.y + threadIdx.y;
+    float Pvalue = 0.0f;
+    for (int fRow = 0; fRow < 2*r+1; fRow++) {
+        for (int fCol = 0; fCol < 2*r+1; fCol++) {
+            int inRow = outRow - r + fRow;
+            int inCol = outCol - r + fCol;
+            if (inRow >= 0 && inRow < height &&
+                inCol >= 0 && inCol < width) {
+                Pvalue += F[fRow][fCol]*N[inRow*width + inCol];
+            }
+        }
+    }
+    if (outRow < height && outCol < width) {
+        P[outRow*width + outCol] = Pvalue;
+    }
+}
+\end{lstlisting}
+三维版本应相应扩展常量滤波器、网格映射和行主序线性索引，并保持零 ghost cell 约定。
+
+\approachheading 半径在编译期固定，把 $K^3$ 个系数存入设备常量符号；线程和边界逻辑
+沿用上一题，但不再传入滤波器指针。
+
+\editorialnote 英文底本图 7.9 同样含一维指针的二维下标与缺失输出边界问题；中文译稿
+已经修正。以下三维版本保留这些必要修正，不把底本错误静默带入答案。
+
+\answerheading 以下示例取半径 1；修改 \code{R} 后重新编译即可改变滤波器尺寸。
+\begin{lstlisting}[language=C++]
+constexpr int R = 1;
+constexpr int K = 2 * R + 1;
+__constant__ float F3[K * K * K];
+
+__global__ void convolution_3D_const(const float* N, float* P,
+                                     int width, int height, int depth) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int z = blockIdx.z * blockDim.z + threadIdx.z;
+    if (x >= width || y >= height || z >= depth) return;
+    float sum = 0.0f;
+    for (int fz = 0; fz < K; ++fz)
+      for (int fy = 0; fy < K; ++fy)
+        for (int fx = 0; fx < K; ++fx) {
+          int ix = x - R + fx, iy = y - R + fy, iz = z - R + fz;
+          if (ix >= 0 && ix < width && iy >= 0 && iy < height &&
+              iz >= 0 && iz < depth)
+            sum += F3[(fz * K + fy) * K + fx] *
+                   N[(iz * height + iy) * width + ix];
+        }
+    P[(z * height + y) * width + x] = sum;
+}
+// Before launch:
+// cudaMemcpyToSymbol(F3, host_filter, K*K*K*sizeof(float));
+\end{lstlisting}
+同一 warp 在固定循环迭代读取同一系数，适合常量缓存广播。覆盖 \code{F3} 前必须确保
+仍使用旧系数的内核已经完成，尤其是跨 stream 使用同一符号时。
+
+\complexity{$O(WHDK^3)$}{$K^3$ 个设备级常量元素，$O(1)$ 每线程私有空间}{$WHD$ 个输出可并行}
+\conclusionheading 三维常量内核减少滤波器参数流量，并完整处理输出/输入边界和符号
+生命周期。
+\discussionheading
+\discussionpoint{常量缓存擅长 warp 内同地址广播。}
+把滤波器放进常量内存，为何卷积比随机查表更容易受益？循环的某次迭代中，同一 warp 的线程通常都读取同一个 $F[f_z,f_y,f_x]$，常量路径可把一个缓存值广播给所有 lane，系数又被许多块反复复用。若线程使用不同半径、控制流失步，或每个样本读取不同核，同一 warp 会请求多个地址，这些不同地址可能需要分批服务，广播优势随之减弱。优化前应确认实际访问的一致性，并结合常量请求和序列化指标测量；“只读且很小”是必要背景，却不自动等于常量内存最佳。
+
+\discussionpoint{常量符号的容量和版本具有设备级生命周期。}
+两个 stream 能否同时把不同滤波器写入同一个 \code{F3} 再各自启动内核？常量符号是设备上的共享状态，不是每个 stream 或每次调用的私有副本；若更新与读取没有事件或 stream 顺序，内核可能看到错误版本，问题属于数据竞争而非缓存失效。符号尺寸通常在编译期确定，复制量和核大小还必须受容量约束，旧版本在最后一个使用者完成前不能覆盖。服务多个并发请求时，可为版本分配不同符号，或改用每次启动传入的只读缓冲，从而以指针和缓存行为换取清晰所有权。
+
+\discussionpoint{系数存储与输入复用是两个独立优化维度。}
+常量内存让核系数很便宜后，内核是否就不再受访存限制？每个输出仍需读取大量重叠的输入邻域，系数流量下降并不会自动消除这些输入字节；共享瓦片、只读缓存和滑动窗口解决的是另一条数据流。小核还可作为内核参数传递，或由块协作载入共享内存，再由编译器把热点值保存在寄存器中，选择取决于大小、地址一致性、更新频率和资源占用。建立模型时应分别计算系数与输入的请求、复用范围和生命周期，再用计数器判断真正瓶颈，避免一个成功优化掩盖另一侧流量。两类流量的最优存储层往往不同。
+
+\discussionpoint{复用周期决定常量上传是否值得。}
+同一个小核连续处理上千帧时，一次符号上传可被大量内核摊薄，常量广播通常很合适；若每个样本都有动态权重，频繁 \code{cudaMemcpyToSymbol} 可能串行化流水，并使共享符号难以支持并发请求。生产系统还要处理模型热更新：新权重必须在旧请求完成后发布，或者采用双缓冲和事件建立版本切换。测量应把上传、内核和同步时间一并纳入，而不只看稳态 kernel duration，并用多 stream 压力测试核对结果版本。这个问题与配置缓存和只读快照相似，性能建立在明确的发布与回收协议之上。
+\variantheading 半径改为 2 后常量数组含 125 个 float，即 500 B。
+\practiceheading 跨 stream 更新 \code{F3} 时用事件建立依赖，并观察 constant-memory 请求效率。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{NVIDIA CUDA C++ Programming Guide 的常量内存、常量符号复制 API 与三维网格语义；置信度高}
+\end{solutionexercise}
+
+\begin{solutionexercise}{10}
+\problemheading 修改图 7.12 中的二维分块内核，使其执行三维卷积。图 7.12 使用与完整
+输入瓦片同尺寸的线程块，完整二维基线为：
+\begin{lstlisting}[language=C++,firstnumber=1]
+#define IN_TILE_DIM 32
+#define OUT_TILE_DIM ((IN_TILE_DIM) - 2*(FILTER_RADIUS))
+__constant__ float F[2*FILTER_RADIUS+1][2*FILTER_RADIUS+1];
+__global__ void convolution_tiled_2D_const_mem_kernel(float *N, float *P,
+                                                       int width, int height) {
+    int col = blockIdx.x*OUT_TILE_DIM + threadIdx.x - FILTER_RADIUS;
+    int row = blockIdx.y*OUT_TILE_DIM + threadIdx.y - FILTER_RADIUS;
+    __shared__ float N_s[IN_TILE_DIM][IN_TILE_DIM];
+    if(row>=0 && row<height && col>=0 && col<width)
+        N_s[threadIdx.y][threadIdx.x] = N[row*width + col];
+    else
+        N_s[threadIdx.y][threadIdx.x] = 0.0f;
+    __syncthreads();
+    int tileCol = threadIdx.x - FILTER_RADIUS;
+    int tileRow = threadIdx.y - FILTER_RADIUS;
+    if (col >= 0 && col < width && row >= 0 && row < height &&
+        tileCol >= 0 && tileCol < OUT_TILE_DIM &&
+        tileRow >= 0 && tileRow < OUT_TILE_DIM) {
+        float Pvalue = 0.0f;
+        for (int fRow = 0; fRow < 2*FILTER_RADIUS+1; fRow++)
+          for (int fCol = 0; fCol < 2*FILTER_RADIUS+1; fCol++)
+            Pvalue += F[fRow][fCol]*N_s[tileRow+fRow][tileCol+fCol];
+        P[row*width+col] = Pvalue;
+    }
+}
+\end{lstlisting}
+三维版本应扩展输入/输出瓦片、常量滤波器、行主序索引、边界和同步。
+
+\approachheading 使用输入立方瓦片大小 \code{IN3} 和输出边长
+\code{OUT3=IN3-2*R3}；每线程加载一个输入/ghost 元素，块内同步后仅内部线程计算。
+
+\editorialnote 英文底本图 7.12 的共享数组声明缺少元素类型，中文译稿已补为
+\code{float}。以下实现沿用该最小修正，并同时显式处理三维边界。
+
+\answerheading 下面给出半径 1、$8^3=512$ 线程块的关键完整实现。
+\begin{lstlisting}[language=C++]
+constexpr int R3 = 1, IN3 = 8, OUT3 = IN3 - 2 * R3;
+__constant__ float F3_t[(2*R3+1)*(2*R3+1)*(2*R3+1)];
+
+__global__ void convolution_3D_tiled(const float* N, float* P,
+                                     int width, int height, int depth) {
+    int tx=threadIdx.x, ty=threadIdx.y, tz=threadIdx.z;
+    int x=blockIdx.x*OUT3 + tx-R3;
+    int y=blockIdx.y*OUT3 + ty-R3;
+    int z=blockIdx.z*OUT3 + tz-R3;
+    __shared__ float tile[IN3][IN3][IN3];
+    tile[tz][ty][tx] = (x>=0 && x<width && y>=0 && y<height &&
+                         z>=0 && z<depth)
+                       ? N[(z*height+y)*width+x] : 0.0f;
+    __syncthreads();
+
+    int lx=tx-R3, ly=ty-R3, lz=tz-R3;
+    if (lx>=0 && lx<OUT3 && ly>=0 && ly<OUT3 && lz>=0 && lz<OUT3 &&
+        x>=0 && x<width && y>=0 && y<height && z>=0 && z<depth) {
+      constexpr int K3 = 2*R3+1;
+      float sum=0.0f;
+      for (int fz=0; fz<K3; ++fz)
+        for (int fy=0; fy<K3; ++fy)
+          for (int fx=0; fx<K3; ++fx)
+            sum += F3_t[(fz*K3+fy)*K3+fx] *
+                   tile[lz+fz][ly+fy][lx+fx];
+      P[(z*height+y)*width+x]=sum;
+    }
+}
+// block = dim3(IN3,IN3,IN3); grid dimensions use ceil(size/OUT3).
+\end{lstlisting}
+所有线程先加载（越界者写 0）并无条件到达屏障，避免死锁；每个活跃线程写唯一输出。
+一般配置必须满足 $\code{IN3}^3$ 不超过每块线程上限，并核对共享内存容量。
+
+\complexity{$O(WHD(2R3+1)^3)$}{$4\,IN3^3$ B 共享内存/块}{$OUT3^3$ 个输出/块}
+\conclusionheading 这是三维的“输入瓦片大小等于块大小”实现，边界、同步和资源限制均
+已显式处理。
+\discussionheading
+\discussionpoint{共享输入瓦片只有内部体积能够产生输出。}
+为什么 $IN3^3$ 个线程中只有 $OUT3^3$ 个负责写结果？半径为 $R3$ 的输出需要左右各一层厚度 $R3$ 的邻域，故共享输入边长 $IN3$ 只能支撑 $OUT3=IN3-2R3$ 的无 halo 内部，活跃计算比例为 $(OUT3/IN3)^3$。三次方会放大薄边界的代价，例如 $IN3=8,R3=1$ 时只有 $6^3/8^3\approx42.2\%$ 的线程产生输出，其余线程仍对装载有贡献。这个比例不是单纯“浪费率”，而是显式复用的成本指标，应同每个输入被多少输出复用、块驻留和全局字节一起评价。
+
+\discussionpoint{每块线程上限在三维中比共享容量更早成为约束。}
+把瓦片边长从 8 增至 10 看似只增加两格，为什么配置已接近极限？一个线程对应一个输入位置时，线程数按 $IN3^3$ 增长，$10^3=1000$ 已逼近常见的每块 1024 线程上限；此时单精度共享数组只有 4000 B，可能远未耗尽共享容量。继续增大复用范围不能靠扩大立方块，而应让较少线程用循环载入多个元素，或让每线程计算多个输出。所有具体上限仍需查询目标设备属性；这一例子说明多维 tile 的首要资源可能随映射方式改变，不能只按共享字节选尺寸。
+
+\discussionpoint{边界线程也必须参加屏障前的协作装载。}
+体数据边缘的线程最终不写输出，能否一进入内核就返回？它们仍对应共享瓦片中的输入或零填充位置，且块级 \code{__syncthreads()} 要求参与块的线程以一致控制流到达；提前返回会让其余线程等待，或者让共享位置未初始化。正确顺序是所有线程先写入域内值或 0，共同同步，再仅让内部且对应合法全局坐标的线程计算。若使用双缓冲或多阶段流水，还需在覆盖共享区前确认上一批消费者完成。三维边界有面、棱和角，使用非立方尺寸及极小深度测试能更容易暴露遗漏条件。
+
+\discussionpoint{非立方 tile 可以匹配布局、核形状与子域几何。}
+物理问题是三维的，线程块是否也必须是立方体？行主序数据让 x 方向连续，扩大 x、适度保留 y 并缩短 z，常能控制 slice 工作集和线程总数；各向异性核或扁平子域也可能在某一轴需要更宽 halo。形状变化会同时影响合并访问、共享 bank 行为、halo 比、寄存器和边界块利用率，不存在只按体积排序的通用最优解。可先用设备属性与 Occupancy API 排除非法配置，再以有效输出/启动线程、DRAM 字节和实际吞吐搜索；医学体卷积与模板 PDE 即使尺寸相同，也可能因核和精度目标选择不同形状。
+\variantheading 对 $R3=1,IN3=10$，OUT3=8、线程数 1000、输出数 512、共享内存 4000 B。
+\practiceheading 用 Occupancy API 筛除非法配置，并以 Compute Sanitizer synccheck 验证屏障。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{NVIDIA CUDA C++ Programming Guide 的三维线程块、共享内存与块级屏障规则；边界块全线程到达屏障复核}
+\end{solutionexercise}
+
+\begin{solutionexercise}{11}
+\problemheading 修改图 7.12 中的分块二维内核，使每个线程块使用与输出瓦片
+大小相同数量的线程，并让每个线程在把输入瓦片加载到共享内存时加载多个元素。
+
+基线中输入瓦片边长为 \code{IN_TILE_DIM}，输出瓦片边长满足
+\code{OUT_TILE_DIM} $=$ \code{IN_TILE_DIM} $-2\times$ \code{FILTER_RADIUS}；原实现启动
+\code{IN_TILE_DIM}$^2$ 个线程、每线程加载一个输入元素，再只让中央
+\code{OUT_TILE_DIM}$^2$ 个线程计算。本题要求改为只启动
+\code{OUT_TILE_DIM}$^2$ 个线程，以循环协作加载全部 \code{IN_TILE_DIM}$^2$ 个
+共享元素；必须覆盖零填充边界、装载后的块级屏障及输出写回边界。
+
+\approachheading 用 $T^2$ 个线程线性遍历 $(T+2R)^2$ 个共享元素，步长为块内线程
+总数；同步后，每线程直接计算一个输出。
+
+\editorialnote 本题继续以译稿已修正的图 7.12 为基线；底本共享数组缺少元素类型，
+不能按原样通过 CUDA C++ 编译。
+
+\answerheading
+\begin{lstlisting}[language=C++]
+constexpr int R2 = 2, OUT2 = 16, IN2 = OUT2 + 2*R2;
+__constant__ float F2[(2*R2+1)*(2*R2+1)];
+
+__global__ void convolution_2D_output_threads(const float* N, float* P,
+                                               int width, int height) {
+    __shared__ float tile[IN2][IN2];
+    int tx=threadIdx.x, ty=threadIdx.y;
+    int lane=ty*OUT2+tx, workers=OUT2*OUT2;
+    for (int q=lane; q<IN2*IN2; q+=workers) {
+        int sy=q/IN2, sx=q%IN2;
+        int x=blockIdx.x*OUT2 + sx-R2;
+        int y=blockIdx.y*OUT2 + sy-R2;
+        tile[sy][sx]=(x>=0 && x<width && y>=0 && y<height)
+                    ? N[y*width+x] : 0.0f;
+    }
+    __syncthreads();
+
+    int x=blockIdx.x*OUT2+tx, y=blockIdx.y*OUT2+ty;
+    if (x<width && y<height) {
+      constexpr int K2=2*R2+1;
+      float sum=0.0f;
+      for (int fy=0; fy<K2; ++fy)
+        for (int fx=0; fx<K2; ++fx)
+          sum += F2[fy*K2+fx]*tile[ty+fy][tx+fx];
+      P[y*width+x]=sum;
+    }
+}
+// block = dim3(OUT2,OUT2); grid = ceil(width/OUT2) x ceil(height/OUT2).
+\end{lstlisting}
+循环覆盖每个共享位置恰好一次；越界输入显式写 0。边界输出线程也先参与加载和屏障，
+之后才被条件屏蔽，因此不会造成条件屏障死锁或未初始化共享元素。
+
+\complexity{$O(W H(2R2+1)^2)$}{$4\,IN2^2$ B 共享内存/块}{$OUT2^2$ 个输出线程/块}
+\conclusionheading 线程块恰有 $T^2$ 个线程，并通过步长循环完整加载
+$(T+2R)^2$ 个输入瓦片元素。
+\discussionheading
+\discussionpoint{协作载入把线程所有权与数据数量解耦。}
+共享瓦片比线程块大时，是否必须再创建一圈只负责 halo 的线程？把块内二维坐标压成线性编号 $lane$，令每个线程访问 $q=lane+kT^2$，便能用恰好 $T^2$ 个输出线程覆盖 $(T+2R)^2$ 个输入位置，域外位置照常写 0。线程数由输出并行度决定，待载数据量则由循环次数承担，这种解耦使较大 halo 不必直接推高块线程数。GEMM、注意力和 stencil 也常用同一模式协作搬运 tile；真正的共同前提是所有生产者完成后再同步，消费者才可读取共享状态。
+
+\discussionpoint{模与整除关系给出无遗漏、无重复的覆盖证明。}
+循环步长取 $T^2$，为何每个共享位置恰好由一个线程写？任意 $0\le q<(T+2R)^2$ 都有唯一分解 $q=(q\bmod T^2)+\lfloor q/T^2\rfloor T^2$，前一项指定线程，后一项指定迭代轮次，因此两个线程不可能得到同一 $q$，也没有索引被跳过。再用 $sy=\lfloor q/IN2\rfloor$、$sx=q\bmod IN2$ 还原坐标并做全局边界检查。这个证明只保证覆盖，不保证访问连续或高效；屏障仍须放在整个循环之后并由全块到达，才能把所有写入发布给输出计算。覆盖证明与同步可见性契约缺一不可，二者应分别测试。
+
+\discussionpoint{尾轮负载与向量载入需要单独处理。}
+当 $(T+2R)^2$ 不能整除 $T^2$ 时，一部分线程会不会长期落后？静态步长分配使任意两线程的载入数相差至多一项，通常负载很均衡，但最后一轮只有部分 lane 活动，且线性 tile 跨行处可能破坏理想向量对齐。可以按 warp 分配整行、使用自然对齐的宽加载，或在支持的架构上采用异步复制和双缓冲；每种方案都必须处理行尾、域边界与等待组完成。宽指令减少指令数不等于减少逻辑字节，优化应以实际事务和流水重叠证明，而不能从类型名推断收益。对齐契约应贯穿基址与每一行。
+
+\discussionpoint{正确覆盖之后还要验证同步成本与真实复用。}
+输出线程比例提高，为什么新内核仍可能输给“一个线程装一个输入”的版本？每线程多轮载入增加地址计算，尾轮部分活动造成 lane 空闲，块级屏障和共享访问也可能成为瓶颈；另一方面，更少线程可能改善驻留或减少无输出线程，收益取决于 $T$、$R$ 和缓存层次。调试时可先把共享数组填入哨兵，或在测试构建中为每格维护写入计数，证明恰写一次且消费前已同步。性能阶段再检查 barrier stall、global sector、shared throughput 与 occupancy，并把边界块纳入数据集，避免内部样例掩盖不规则成本。
+\variantheading $T=8,R=1$ 时 64 个线程加载 100 个元素，其中前 36 个线程各多加载一次。
+\practiceheading 用共享内存哨兵或 Compute Sanitizer 验证每个 tile 位置恰写一次，并测量 barrier stall。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{NVIDIA CUDA C++ Programming Guide 的协作式共享内存加载和屏障规则；线性循环覆盖性与边界控制流独立复核}
+\end{solutionexercise}

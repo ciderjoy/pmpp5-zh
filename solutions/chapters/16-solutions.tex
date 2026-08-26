@@ -1,0 +1,408 @@
+\chapter{动态规划与波前并行}
+
+\begin{solutionexercise}{1}
+\problemheading 实现使用正方形线程块的 Floyd--Warshall 内核，而不是原书第 16.4 节
+的一维线程块实现。把距离表划分成正方形数据片并分配给各线程块；块内线程把第 $k$ 列和
+第 $k$ 行的相关部分存入共享内存以供复用。比较两种实现的内存访问、数据复用和性能。
+两种实现都应按
+$d(i,j,k)=\min\{d(i,j,k-1),d(i,k,k-1)+d(k,j,k-1)\}$ 更新，并正确处理不可达距离
+的哨兵值和距离相加的溢出边界。
+
+\approachheading 一个 $B\times B$ 块覆盖距离表的方形 tile。tile 只需从第 $k$ 列
+加载 $B$ 项、从第 $k$ 行加载 $B$ 项，供 $B^2$ 个输出复用。每个 $k$ 仍是一次独立内核
+启动，形成全局波前屏障。
+
+\answerheading 使用 64 位距离表。取 \code{INF=LLONG_MAX/4}，假定输入无负环、对角线为 0，
+且算法过程中每个有限距离的绝对值始终小于 \code{INF/2}；于是两个有限距离相加既不会碰到
+哨兵，也不会发生 64 位有符号溢出：
+\begin{lstlisting}[language=C++]
+template<int B>
+__global__ void fw_square(long long* d,int n,int k,long long INF) {
+  __shared__ long long dik[B], dkj[B];
+  int i=blockIdx.y*B+threadIdx.y;
+  int j=blockIdx.x*B+threadIdx.x;
+  if(threadIdx.x==0)
+    dik[threadIdx.y]=(i<n)?d[size_t(i)*n+k]:INF;
+  if(threadIdx.y==0)
+    dkj[threadIdx.x]=(j<n)?d[size_t(k)*n+j]:INF;
+  __syncthreads();
+  if(i<n && j<n && i!=k && j!=k && dik[threadIdx.y]!=INF &&
+     dkj[threadIdx.x]!=INF) {
+    long long via=dik[threadIdx.y]+dkj[threadIdx.x];
+    long long old=d[size_t(i)*n+j];
+    if(via<old) d[size_t(i)*n+j]=via;
+  }
+}
+// dim3 block(B,B), grid((n+B-1)/B,(n+B-1)/B);
+// for(int k=0;k<n;++k) fw_square<16><<<grid,block>>>(d,n,k,INF);
+\end{lstlisting}
+第 $k$ 轮开始时 \code{d[i,k]} 与 \code{d[k,j]} 是递推式的两个输入。无负环且
+\code{d[k,k]=0} 时第 $k$ 行、列本轮不变；代码显式跳过对它们的写入，从而让共享加载
+与全局访问也不存在读写竞态。不同 $(i,j)$ 各有唯一写者。距离表与中间和都采用
+\code{long long}，因此不存在把 64 位结果无范围检查地窄化回 \code{int}；上述输入契约
+同时排除了 64 位加法溢出。
+
+一维版本每块复用一个 \code{d[i,k]}，但每个线程仍读自己的 \code{d[k,j]}；方块版本
+用约 $2B$ 次全局加载服务 $B^2$ 个输出，把两条输入边都复用。输出读写量不变，且二维块
+多一次共享加载/屏障；实际收益取决于缓存、$B$、占用率和图规模，应计时比较。
+
+\complexity{$O(n^3)$ 工作、$n$ 个全局波前}{$O(n^2)$ 距离表，$2B$ 个共享整数/块}{$O(n^2)$ 线程任务/轮}
+\conclusionheading 正方形 tile 同时复用第 $k$ 行和列，理论全局输入流量较一维版本更低。
+\discussionheading
+\discussionpoint{Floyd--Warshall 是 min-plus 代数上的闭包。}普通矩阵乘法用乘法连接路径、用加法汇总候选；最短路把“连接”换成距离相加，把“汇总”换成取最小，形成 min-plus 运算。第 $k$ 阶段只允许顶点 $0\ldots k$ 作为中间点，递推 $D^{(k)}_{ij}=\min(D^{(k-1)}_{ij},D^{(k-1)}_{ik}+D^{(k-1)}_{kj})$ 在旧距离与经 $k$ 的两段距离之间取小者，因此 $k$ 必须按顺序推进。固定 $k$ 时所有 $(i,j)$ 更新相互独立，才是 GPU 可以展开的二维并行面。这个代数视角还连接到传递闭包、Viterbi 和热带代数，说明替换底层运算就能复用矩阵式依赖结构。
+
+\discussionpoint{二维 tile 只是复用起点，完整分块还要处理阶段依赖。}固定 $k$ 时，一个块内多项 $(i,j)$ 会反复读取第 $k$ 行和第 $k$ 列，把它们放入共享内存可减少全局访问。更深的 blocked Floyd--Warshall 一次处理一组 $k$：先更新包含该组的对角 tile，再更新同排和同列 tile，最后更新其余 tile；后三类所需数据由前一阶段产生，不能任意并行。这样能跨多个 $k$ 复用片上数据，却增加全局阶段同步和共享容量。它与块 LU 分解的面板、行列、尾部更新结构相似，分块优化必须尊重数据依赖而非只追求大 tile。
+
+\discussionpoint{不可达、溢出和负环是三种不同语义边界。}若 $d_{ik}$ 或 $d_{kj}$ 为不可达哨兵，就不能直接相加，否则有限整数哨兵可能溢出成负数；两个有限距离相加也应在足够宽类型中检查范围。例如以 \code{INT_MAX} 表示不可达时，再加正权会发生有符号溢出，错误的负数反而会被 \code{min} 选中。负边本身允许存在，负环则只影响能够先到达该环、又能从环到达目标的点对，这些点对可无限绕环降低代价；图中其他点对仍可能有有限最短路或不可达。对角线负值可发现负环，但还需结合前后可达性传播受影响范围。这个精细分类比笼统说“有负环就全图无解”更适合实际路由与约束系统。
+
+\discussionpoint{图密度决定全源最短路的算法家族。}Floyd--Warshall 固定做 $O(n^3)$ 更新，控制规则且适合稠密邻接矩阵；稀疏大图若只有 $m\ll n^2$ 条边，重复 Dijkstra、Johnson 或专用稀疏 GPU 算法通常少做许多工作。比较时应报告真正执行的 min-plus 更新率、全局字节、tile 复用与时间，而不仅是理论 FLOP；负边又会限制 Dijkstra 的适用性。测试需包含不可达点、负边、局部负环和无负环图，并与宽整数 CPU 参考比对。这样算法选择由密度、权值语义和硬件访问共同决定。
+\variantheading 若 $B=16,n=1000$，网格为 $63\times63$，每轮启动 3969 个块；最右和最下
+tile 只有 8 个有效行或列，越界线程仍需参加共享加载后的屏障。
+\practiceheading 与 cuGraph 或 CPU Floyd--Warshall 结果对照含不可达点和负边但无负环的图，
+用 Compute Sanitizer 检查边缘 tile；启动前验证 $B^2$ 不超过每块线程上限并以 Nsight
+Compute 比较 $B=8,16,32$ 的占用率与全局流量。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{NVIDIA 对共享内存协作加载与块级同步的官方说明；高置信度}
+反例审查：存在负环或 \code{d[k,k]<0} 时第 $k$ 行列可能改变，原地并行更新不再符合该
+证明，应双缓冲。\code{B*B} 不得超过设备每块线程上限，通常取 16 或 32。
+\end{solutionexercise}
+
+\begin{solutionexercise}{2}
+\problemheading 修改采用线程块级分块的 Smith--Waterman 内核，使其使用矩形数据片。
+设数据片高、宽分别为 $R,C$，片内仍须沿 $R+C-1$ 条反对角线推进；每个单元依赖北、
+西和西北单元，并按
+$H_{r,q}=\max(0,H_{r-1,q-1}+s,H_{r,q-1}+g,H_{r-1,q}+g)$ 更新。实现须处理矩阵边界、
+片内同步和相邻数据片的依赖。
+
+\approachheading 对 $R\times C$ tile 使用带一行、一列 halo 的共享数组。块内按
+$R+C-1$ 条反对角线推进；令一个线程对应局部列，局部行为 $d-q$。主机仍按 tile 反对角线
+依次启动内核。
+
+\answerheading 以下设备例程还会被后续同步版本复用；\code{rows/cols} 包含得分矩阵的
+全 0 第 0 行/列。
+\begin{lstlisting}[language=C++]
+template<int R,int C>
+__device__ void swTile(int* H,const char* rea,const char* ref,
+    int rows,int cols,int tr,int tc,int MATCH,int MISMATCH,int GAP,int* s) {
+  constexpr int LD=C+1;
+  int row0=1+tr*R,col0=1+tc*C;
+  for(int q=threadIdx.x;q<C;q+=blockDim.x)
+    s[q+1]=(col0+q<cols)?H[size_t(row0-1)*cols+col0+q]:0;
+  for(int r=threadIdx.x;r<R;r+=blockDim.x)
+    s[(r+1)*LD]=(row0+r<rows)?H[size_t(row0+r)*cols+col0-1]:0;
+  if(threadIdx.x==0)s[0]=H[size_t(row0-1)*cols+col0-1];
+  __syncthreads();
+  for(int wave=0;wave<R+C-1;++wave) {
+    int q=threadIdx.x,r=wave-q,gr=row0+r,gc=col0+q;
+    if(q<C && r>=0 && r<R && gr<rows && gc<cols) {
+      int nw=s[r*LD+q],n=s[r*LD+q+1],w=s[(r+1)*LD+q];
+      int sub=(rea[gr-1]==ref[gc-1])?MATCH:MISMATCH;
+      int v=max(0,max(nw+sub,max(w+GAP,n+GAP)));
+      s[(r+1)*LD+q+1]=v;
+    }
+    __syncthreads();
+  }
+  for(int p=threadIdx.x;p<R*C;p+=blockDim.x) {
+    int r=p/C,q=p%C,gr=row0+r,gc=col0+q;
+    if(gr<rows&&gc<cols)H[size_t(gr)*cols+gc]=s[(r+1)*LD+q+1];
+  }
+  __syncthreads();
+}
+
+template<int R,int C>
+__global__ void sw_rect_wave(int* H,const char* rea,const char* ref,
+    int rows,int cols,int tileWave,int MATCH,int MISMATCH,int GAP) {
+  static_assert(C>0 && C<=1024,"one thread is required per tile column");
+  __shared__ int s[(R+1)*(C+1)];
+  int tr=blockIdx.x,tc=tileWave-tr;
+  int ntr=(rows-1+R-1)/R,ntc=(cols-1+C-1)/C;
+  if(tr<ntr && tc>=0 && tc<ntc)
+    swTile<R,C>(H,rea,ref,rows,cols,tr,tc,MATCH,MISMATCH,GAP,s);
+}
+// If ntr==0 or ntc==0, return on the host without launching.
+// Otherwise, after checking C<=maxThreadsPerBlock and shared-memory use:
+// for wave=0..ntr+ntc-2: sw_rect_wave<R,C><<<ntr,C>>>(...) in one stream.
+\end{lstlisting}
+halo 提供 tile 外依赖，内部每个单元只读取前两条已经完成的反对角线。主机的相邻 launch
+在同一 stream 中有序，故上方、左方 tile 已写回。每单元唯一写者，无原子操作。
+
+\complexity{$O((rows-1)(cols-1))$ 工作；每 tile $R+C-1$ 轮}{$(R+1)(C+1)$ 个共享整数/块}{每条 tile 波前多个块，每块 $C$ 线程}
+\conclusionheading 矩形 $R,C$ 可分别适配序列形状与硬件资源，正确性不依赖 $R=C$。
+\discussionheading
+\discussionpoint{二维动态规划暴露出反对角线波前。}Smith--Waterman 单元 $(r,q)$ 只依赖北 $(r-1,q)$、西 $(r,q-1)$ 和西北 $(r-1,q-1)$，这些前驱的坐标和都小于当前点；具有相同 $r+q$ 的单元彼此没有依赖，可以同时计算。矩形 $R\times C$ tile 不改变这个偏序，只让片内波前先增长到 $\min(R,C)$，再保持或缩短，并改变相邻 tile 的边界形状。正确实现应先画依赖 DAG，再安排线程与屏障，而不是从二维线程坐标直接猜并行性。编辑距离、动态时间规整和许多 stencil 都共享这种波前结构。
+
+\discussionpoint{矩形 tile 用形状适配序列与硬件资源。}片内共有 $R+C-1$ 条反对角线，共享表若保存边界通常按 $(R+1)(C+1)$ 增长；增大 $C$ 能提高中段同波前宽度，却可能需要更多线程或让每线程处理多列。增大 $R$ 会让一个块经历更多串行波前，并减少可并行 tile 行数。例如从 $16\times16$ 改为 $8\times32$ 保持 256 个单元，却把波前数从 31 增至 39，并改变峰值活动宽度与边界形状。长短序列高度不对称时，方形 tile 未必有效，矩形可以沿长维提供吞吐、沿短维节约无效槽。最优 $R,C$ 因线程上限、共享容量和序列长宽比分段变化，与矩阵乘法按形状选择 tile 的原因相同。
+
+\discussionpoint{最高分与完整回溯对应不同的存储问题。}局部比对用零截断使表值非负，却不防止长序列在持续匹配奖励下超过 16 位甚至 32 位范围；可用最大可能匹配数乘奖励上界选择类型。若只求最高分，每轮只需保存有限边界或滚动行；要恢复对齐路径，则需记录每格来源方向、周期检查点，或在选定区域重新计算。即使每格方向只占 2 位，$m\times n$ 表的存储仍随面积增长，而滚动分数仅随较短边增长。方向可压缩成少量位，但仍会改变内存带宽和 tile 设计。因而一个“更快的分数 kernel”不一定是完整比对器的最佳核心，API 应先明确是否需要位置和 traceback。
+
+\discussionpoint{生产比对通过约束搜索区域而非总填满矩阵。}已知序列大致对齐时可用带状限制只计算主对角附近，X-drop 在分数落后当前最佳过多时提前剪枝，批处理又把相近长度序列放在一起减少尾部浪费。若长度约为 $n$、半带宽为 $w\ll n$，候选单元可从 $O(n^2)$ 降到约 $O(nw)$，但前提是最优路径确实没有离开该带。多 GPU 系统还需切分批次或波前并交换边界，支持 DPX 的设备则可压缩单元整数指令。验证应覆盖空序列、全失配、多个同分最优位置和不完整 tile，并区分只核对最高分还是连路径也一致。性能报告用 GCUPS 时还应说明实际计算单元数，不能把被剪枝单元也计入有效工作。
+\variantheading 若 $R=32,C=16$，每 tile 有 $47$ 条反对角线、需 561 个共享整数并以
+16 个线程启动；相比 $16\times16$，行方向复用增加而单线程承担更多行波次。
+\practiceheading 用 NCBI 风格已知比对样例和 CPU Smith--Waterman 作黄金结果，覆盖空序列、
+末尾部分 tile 和不同 gap 分数；启动前查询每块线程与共享内存上限，再用 Nsight Compute
+调优 $R,C$。
+\sourcecheck{https://doi.org/10.1016/0022-2836(81)90087-5}{Smith 与 Waterman 的局部序列比对原始论文；高置信度}
+边界审查：若 $C>1024$ 就不能一列一线程；应让线程跨步处理列。所有线程必须执行每轮
+屏障，故不能在 tile 内因全局越界而提前返回。
+\end{solutionexercise}
+
+\begin{solutionexercise}{3}
+\problemheading 实现采用线程块级分块、并用协作组进行跨块同步的 Smith--Waterman
+内核。每个数据片内部沿反对角线计算，数据片之间也按反对角波前推进；合作启动的网格必须
+保证所有驻留块都能到达每次网格范围同步，并正确处理不完整的边缘数据片。
+
+\approachheading 把主机的 tile 波前循环移入合作内核。每个物理块固定对应一个 tile 行；
+每轮选择相应 tile 列，活动块调用完整 tile 例程，随后全体块无条件执行 \code{grid.sync()}。
+
+\answerheading
+\begin{lstlisting}[language=C++]
+#include <cooperative_groups.h>
+namespace cg=cooperative_groups;
+
+template<int T>
+__global__ void sw_cooperative(int* H,const char* rea,const char* ref,
+    int rows,int cols,int MATCH,int MISMATCH,int GAP) {
+  static_assert(T>0 && T<=1024,"one thread is required per tile column");
+  cg::grid_group grid=cg::this_grid();
+  __shared__ int s[(T+1)*(T+1)];
+  int ntr=(rows-1+T-1)/T,ntc=(cols-1+T-1)/T;
+  int tr=blockIdx.x;
+  for(int wave=0;wave<ntr+ntc-1;++wave) {
+    int tc=wave-tr;
+    if(tr<ntr && tc>=0 && tc<ntc)
+      swTile<T,T>(H,rea,ref,rows,cols,tr,tc,MATCH,MISMATCH,GAP,s);
+    grid.sync(); // every block, including idle blocks, must participate
+  }
+}
+
+// Host must reject ntr==0 or ntc==0, then query cooperative support,
+// maxThreadsPerBlock, shared-memory capacity, and occupancy first:
+// int perSM; cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+//   &perSM,sw_cooperative<32>,32,0);
+// require(ntr <= perSM * deviceProp.multiProcessorCount);
+// void* args[]={&H,&rea,&ref,&rows,&cols,&match,&mismatch,&gap};
+// cudaLaunchCooperativeKernel((void*)sw_cooperative<32>,ntr,32,args,0,stream);
+\end{lstlisting}
+第 $w$ 次网格同步之前只计算满足 $tr+tc=w$ 的 tile；其依赖 tile 位于更小波前，已在
+上一次或更早同步前写完。\code{grid.sync()} 同时提供执行与内存可见性屏障。
+
+\complexity{$O(RC)$ 得分工作，加 $ntr+ntc-1$ 次网格屏障}{$O(RC)$ 得分表，$(T+1)^2$ 共享整数/块}{$ntr$ 个常驻合作块}
+\conclusionheading 单个合作内核消除逐波前 launch，但网格必须整体可同时驻留。
+\discussionheading
+\discussionpoint{网格屏障是一项带启动前提的全设备契约。}\code{grid.sync()} 让合作网格中所有线程在同一点会合，并为屏障前后的内存通信提供所需可见性，因此一个 kernel 内相邻 DP 波前可以安全衔接。普通启动没有全网格屏障，块完成顺序也未定义，不能因为一次实验恰按编号运行就依赖该时序。使用合作组还要查询设备支持并通过 cooperative launch 调用，错误启动应在主机端立即检查。这个显式契约类似 MPI collective：所有参与者、调用顺序和上下文必须一致，少一个参与者都不能靠普通同步替代。
+
+\discussionpoint{合作网格必须整体可驻留才能保证所有参与者到达。}允许的块数由每 SM 活跃块数乘 SM 数决定，而活跃块数又受线程、寄存器、静态与动态共享内存共同限制；只按最大线程数估算会过量。若未驻留块等已驻留块越过 \code{grid.sync()} 才能获得资源，系统会形成死锁，所以 cooperative launch 会限制网格容量。问题逻辑 tile 更多时，可让有限持久块循环领取任务，或退回每个波前一个 kernel/图节点。这个约束说明“少 launch”并非免费，必须用常驻资源换取 kernel 内全局同步。
+
+\discussionpoint{全网格同步会让无工作块也支付等待成本。}在 tile 波前的开头和结尾，只有一两个对角线块有有效单元，其余合作块仍必须执行控制骨架并到达每个 \code{grid.sync()}；狭长矩阵的空闲比例尤其高。若合作网格有 64 块而首轮只有 1 块有效，其余 63 块仍需驻留并参与屏障，活动比例仅 $1/64$。持久任务队列可以让块领取当前可执行 tile，单向依赖则只唤醒真实后继，多 kernel 方法又能只启动当轮块数，但三者分别增加调度状态、内存序或 launch。应比较同步粒度带来的闲置与替代协议的管理成本。相同权衡出现在图层次遍历、全局迭代 stencil 和多阶段求解器中。
+
+\discussionpoint{部署环境会改变昨天可行的合作容量。}启动前应调用占用率 API 以实际 kernel 的寄存器、共享量和块形状计算容量，再检查合作启动返回值；MIG 分区、多进程共享或编译器资源变化都可能减少可用 SM 与驻留块。同一源码若编译器多分配几个寄存器，单 SM 驻留块数可能从 2 阶跃降到 1，使原本合法的合作网格超出容量。基准需要把省下的 launch 时间、网格屏障停顿和有效 DP 单元比例分开，否则总加速无法归因。正确性还应在矩阵不足一个 tile、最后行列不完整和极端长宽比下，与多 kernel 版本及 CPU 表逐项比较。这样才能把硬件配置假设纳入持续验证，而不是写死一次设备查询结果。
+\variantheading 若占用率查询给出每 SM 2 个常驻块、设备有 80 个 SM，则 $ntr\le160$ 才满足
+该启动的驻留必要条件；$ntr=161$ 必须改回多内核波前或分批设计。
+\practiceheading 在启动前查询设备属性和占用率，并检查合作启动 API 的返回值；用
+Nsight Systems 比较多次小内核 launch 与合作
+内核网格屏障的时间分布。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{NVIDIA Cooperative Groups 网格同步与合作启动要求；高置信度}
+对抗审查：普通 \code{<<<>>>} 启动不保证 \code{this_grid().sync()} 合法；网格超过并发
+驻留上限会启动失败。把无任务块提前 return 会让其余块永久停在网格屏障。
+\end{solutionexercise}
+
+\begin{solutionexercise}{4}
+\problemheading 实现采用线程块级分块、并使用单向同步的 Smith--Waterman 内核。可参考
+第 11 章的单次回看同步。每个块开始一个数据片前只等待其真实依赖的数据片完成标志，而不是
+执行全网格屏障；实现须说明完成标志的发布/获取语义，并避免持久块调度导致的死锁。
+
+\approachheading 为每个 tile 行使用一个持久块，块内从左到右处理。第 $r$ 行块计算列
+$c$ 前只等待上方 $(r-1,c)$ 的完成标志；自己的左 tile 已顺序完成，上左依赖也由上方块
+的顺序隐含保证。动态分配逻辑行号避免后继行块先占满设备造成死锁。
+
+\answerheading
+\begin{lstlisting}[language=C++]
+#include <cuda/atomic>
+template<int T>
+__global__ void sw_unidirectional(int* H,const char* rea,const char* ref,
+    int rows,int cols,int MATCH,int MISMATCH,int GAP,
+    unsigned* rowCounter,unsigned* done) {
+  static_assert(T>0 && T<=1024,"launch exactly T threads per block");
+  __shared__ int s[(T+1)*(T+1)]; __shared__ unsigned tr_s;
+  if(threadIdx.x==0) tr_s=atomicAdd(rowCounter,1u);
+  __syncthreads();
+  unsigned tr=tr_s,ntr=(rows-1+T-1)/T,ntc=(cols-1+T-1)/T;
+  if(tr>=ntr)return;
+  for(unsigned tc=0;tc<ntc;++tc) {
+    if(tr>0 && threadIdx.x==0) {
+      cuda::atomic_ref<unsigned,cuda::thread_scope_device> above(
+          done[(tr-1)*ntc+tc]);
+      while(above.load(cuda::memory_order_acquire)==0){}
+    }
+    __syncthreads();
+    swTile<T,T>(H,rea,ref,rows,cols,tr,tc,MATCH,MISMATCH,GAP,s);
+    if(threadIdx.x==0) {
+      cuda::atomic_ref<unsigned,cuda::thread_scope_device> mine(
+          done[tr*ntc+tc]);
+      mine.store(1,cuda::memory_order_release);
+    }
+    __syncthreads();
+  }
+}
+// If ntr==0 or ntc==0, return on the host.  Otherwise check T threads and
+// (T+1)^2*sizeof(int) shared bytes, zero state, then launch:
+// sw_unidirectional<T><<<ntr,T>>>(...);
+\end{lstlisting}
+release 发布发生在全块写回后；上方 acquire 成功后，其得分对当前块可见。逻辑行 0 最先
+被分配且不等待，必能推进并逐列唤醒后继行，因而不会形成“等待尚未调度前驱”的环。
+
+\complexity{$O(RC)$ 有效工作与 $O(ntr\,ntc)$ 发布；轮询加载次数取决于调度且无固定渐近上界}{$O(ntr\,ntc)$ 标志，$(T+1)^2$ 共享整数/块}{$ntr$ 个流水块，可沿反对角线重叠}
+\conclusionheading 单向标志只等待真正依赖的上方 tile，避免全网格屏障的无关等待。
+\discussionheading
+\discussionpoint{局部依赖事件可以替代过强的全局阶段。}Smith--Waterman tile 形成 DAG，每个 tile 只需等待提供北、西和西北边界的真实前驱；全网格 barrier 却强迫同一阶段所有无关块也一起等待。把完成标志放在 DAG 边上，前驱结束后只唤醒后继，多个相邻波前就能流水重叠。例如 tile $(r,c)$ 的就绪条件可明确写成 $(r-1,c)$、$(r,c-1)$ 与 $(r-1,c-1)$ 已发布，而不必等待同对角线远处的无关 tile。正确性证明应列出每个片外输入由哪个事件保护，并确认片内映射已经隐含满足的依赖无需重复等待。这个从 bulk-synchronous 到数据流调度的转变也适用于任务图、流水 stencil 和流式查询执行。
+
+\discussionpoint{完成标志必须发布它所保护的边界载荷。}前驱先写完矩阵边界或共享到全局的摘要，再用 device-scope release 原子存储完成状态；后继以 acquire 观察到该状态后，才可读取普通载荷。若先发布标志再写数据，另一个 SM 可能读到就绪和旧边界；\code{volatile} 不建立 happens-before，只对标志使用原子但采用 relaxed 顺序也未必满足协议。可把边界先填唯一哨兵并随机延迟载荷写入，主动放大“标志新、数据旧”的非法观察，但压力测试仍不能替代证明。竞争检查可发现部分冲突，内存序审查则解释为何所有合法执行都正确。该模式与无锁队列生产者写槽后发布尾标完全相同。
+
+\discussionpoint{等待协议还必须证明调度能够前进。}若静态后继块先占满驻留槽并自旋等待尚未调度的前驱，前驱拿不到资源便会死锁；即使前驱已经运行，长时间自旋也可能占据执行与内存带宽，造成近似活锁。设设备总共只能驻留 8 块，若调度器先放入 8 个都依赖未启动前驱的后继，它们共同占满资源，等待多久都不会让状态改变。可让有限持久块按依赖方向领取可执行任务、动态分配单调逻辑编号，或把网格限制在可驻留容量内；轮询还可加入退避以减少流量，但退避本身不能修复资源环。自旋读取次数由调度和前驱耗时决定，不能写成一次或固定渐近常数。并发算法的正确性因此包含安全性与前向进度两部分，缺一不可。
+
+\discussionpoint{更易证明的多 kernel 路线仍是重要基线。}主机逐波前 launch、CUDA Graphs 或库级任务图用 kernel 边界提供清晰全局同步，launch 更多但不需要自定义自旋和原子内存序；图执行还能摊薄重复启动开销。若同一矩阵形状反复执行，预先捕获上百个波前节点可把图构建成本摊到多次运行，而单次小问题未必回本。比较时应记录标志流量、自旋指令、前驱等待、有效单元率和总时间，而不能只数 kernel 个数。随机延迟注入、低 occupancy 和极端长宽比会主动放大隐藏死锁与等待不均。若局部协议只在理想调度下更快，它尚不足以替代可预测的阶段实现。
+\variantheading 若 $ntr=3,ntc=4$，逻辑行 0 无需等待并依次发布 4 个标志；行 1 在每列等
+行 0，同理唤醒行 2，共有 12 次发布，但轮询 load 次数不是 12 的常数倍保证。
+\practiceheading 用 Compute Sanitizer racecheck 验证 release/acquire 载荷，并在人为降低每
+SM 驻留块数时做前向进度压力测试；启动必须为 \code{<<<ntr,T>>>}，同时查询 $T$ 线程和
+$(T+1)^2$ 共享整数是否可用。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{NVIDIA 对设备作用域内存排序与跨块可见性的官方说明；高置信度}
+对抗审查：普通 \code{volatile} 标志不能替代 release/acquire。若用静态行号且调度器先让
+后继行常驻自旋，可能死锁；动态单调行号是前向进度证明的一部分。
+\end{solutionexercise}
+
+\begin{solutionexercise}{5}
+\problemheading 实现采用超数据片和单向同步的 Smith--Waterman 内核。可参考第 11 章
+的单次回看同步。超数据片采用原书的剪切变换
+$q=q_{\mathrm{tile}}-r_{\mathrm{tile}}$（剪切因子 $-1$），使片内每轮都有固定数量的
+活动线程；实现须据此推导相邻超数据片依赖、等待/发布标志和矩阵边界。
+
+\approachheading 超数据片 $(r,c)$ 的全局列为 $cT+q_{tile}-r_{tile}+1$。它依赖本行
+前一片以及上一行的 $c$、$c+1$ 两片，所以持久行块在处理 $c$ 前等待上一行的 $c+1$
+标志（最右边界退化为 $c$）；这也隐含上一行的 $c$ 已完成。
+
+\answerheading
+\begin{lstlisting}[language=C++]
+template<int T>
+__global__ void sw_hyper_oneway(int* H,const char* rea,const char* ref,
+    int rows,int cols,int MATCH,int MISMATCH,int GAP,
+    unsigned* rowCounter,unsigned* done) {
+  static_assert(T>0 && T<=1024,"launch exactly T threads per block");
+  __shared__ int tile[T*T]; __shared__ unsigned tr_s;
+  if(threadIdx.x==0)tr_s=atomicAdd(rowCounter,1u);
+  __syncthreads();
+  unsigned tr=tr_s,ntr=(rows-1+T-1)/T,ntc=(cols-1+T-1)/T;
+  if(tr>=ntr)return;
+  unsigned pitch=ntc+1; // includes the right-edge partial hypertile
+  for(unsigned tc=0;tc<=ntc;++tc) {
+    if(tr>0 && threadIdx.x==0) {
+      unsigned need=(tc<ntc)?tc+1:tc;
+      cuda::atomic_ref<unsigned,cuda::thread_scope_device> above(
+          done[(tr-1)*pitch+need]);
+      while(above.load(cuda::memory_order_acquire)==0){}
+    }
+    __syncthreads();
+    for(int p=threadIdx.x;p<T*T;p+=T)tile[p]=0;
+    __syncthreads();
+    int rt=threadIdx.x,gr=1+int(tr)*T+rt;
+    for(int qt=0;qt<T;++qt) {
+      int gc=1+int(tc)*T+qt-rt;
+      if(gr<rows && gc>=1 && gc<cols) {
+        int n=(rt==0||qt==0)?H[size_t(gr-1)*cols+gc]
+                             :tile[(rt-1)*T+qt-1];
+        int w=(qt==0)?H[size_t(gr)*cols+gc-1]:tile[rt*T+qt-1];
+        int nw=(rt==0||qt<=1)?H[size_t(gr-1)*cols+gc-1]
+                              :tile[(rt-1)*T+qt-2];
+        int sub=(rea[gr-1]==ref[gc-1])?MATCH:MISMATCH;
+        tile[rt*T+qt]=max(0,max(nw+sub,max(w+GAP,n+GAP)));
+      }
+      __syncthreads();
+    }
+    for(int rr=0;rr<T;++rr) {
+      int r=1+int(tr)*T+rr,gc=1+int(tc)*T+threadIdx.x-rr;
+      if(r<rows&&gc>=1&&gc<cols)H[size_t(r)*cols+gc]=tile[rr*T+threadIdx.x];
+    }
+    __syncthreads();
+    if(threadIdx.x==0) {
+      cuda::atomic_ref<unsigned,cuda::thread_scope_device> mine(
+          done[tr*pitch+tc]);
+      mine.store(1,cuda::memory_order_release);
+    }
+    __syncthreads();
+  }
+}
+// If ntr==0 or ntc==0, return on the host.  Otherwise validate T threads and
+// T*T*sizeof(int) shared bytes, zero ntr*(ntc+1) flags, then launch:
+// sw_hyper_oneway<T><<<ntr,T>>>(...);
+\end{lstlisting}
+片内每轮所有 $T$ 个线程对应同一条剪切后的反对角线，故只需 $T$ 轮。上述北、西、西北
+下标分别按仿射映射逆推；标志依赖恰覆盖所有片外来源。每个合法得分单元属于唯一
+$(tr,tc,rt,qt)$，不会重复写。
+
+\complexity{$O(RC)$ 有效工作及边界掩蔽；发布为 $O(ntr\,ntc)$，轮询加载调度相关且无固定渐近上界}{$T^2$ 共享整数/块及 $ntr(ntc+1)$ 标志}{$ntr$ 个持久行块，片内恒定 $T$ 路并行}
+\conclusionheading 超数据片把片内轮数从 $2T-1$ 降为 $T$，单向两列领先协议形成跨行流水。
+\discussionheading
+\discussionpoint{剪切通过改变坐标轴而不是改变依赖来整形波前。}令新列坐标 $q_{tile}=q+r_{tile}$，原来在二维表上倾斜的反对角线会在新坐标中接近固定宽竖带，使每轮可安排 $T$ 个线程处理不同逻辑行。正确性不能靠“图看起来规整”证明，必须把北、西、西北三个原坐标前驱逐一代入逆变换，确认它们在新调度中都早于当前点，并推导越界条件。坐标变换只重排执行顺序，不改变每个 DP 单元公式。编译器 polyhedral 优化中的 loop skewing 正是同一数学动作，用于把跨迭代依赖变成可 tile 的方向。
+
+\discussionpoint{两列领先源于剪切后相邻行的横向错位。}后继逻辑行处理超片 $c$ 时，其顶部边界除首项外可能来自上一行的 $c+1$，所以只等待“上一行同列完成”会读取陈旧数据；协议必须等待足够领先的前驱标志。把 $T=2$ 的四个单元逐个代入剪切坐标，即可看见同列标志尚不足以覆盖右上来源，这比凭图估计等待距离可靠。最右侧额外超片承接剪切移出矩形边界的有效单元，大部分 lane 虽被掩蔽，仍需参加块内屏障。换来的收益是片内轮次从普通方形波前的 $2T-1$ 缩到 $T$，并让各行形成稳定流水。这个例子说明同步距离应由变换后的依赖推导，不能凭 tile 名称猜测。
+
+\discussionpoint{超片减少同步深度但不改变有效工作阶数。}矩阵中每个合法 DP 单元仍需计算一次，所以有效工作保持 $O(mn)$；剪切改善的是每轮活动线程比例和同步轮数，而不是把表格算法变成次二次复杂度。额外超片、边界谓词、完成标志和自旋都增加常数开销，短序列可能无法摊薄。若有效单元为 $mn$ 而变换额外执行 $E$ 个掩蔽槽，利用率应报告为 $mn/(mn+E)$，而不能把虚拟槽算入 GCUPS 分子。增大 $T$ 可扩大流水宽度，却让 $T^2$ 共享 tile 和寄存器状态迅速增长，并减少同时推进的行块。应把有效单元率、屏障数、标志流量与驻留量一起建模，避免只用理论轮数宣称加速。
+
+\discussionpoint{小尺寸依赖图是坐标优化最有力的回归工具。}可先用 $T=2$ 或 3 画出每个 $(r,q)$ 在超片中的位置、三个前驱和发布标志，再与 CPU 完整表逐点比较；这会迅速暴露一列偏移、右边界遗漏和等待距离错误。测试还应验证坐标变换在合法域内一一对应：每个原单元恰好映射一次，逆变换回去仍是原坐标，不能只看最终最高分碰巧相同。相同仿射剪切可用于 stencil、动态时间规整、编辑距离和其他波前 DP，但每种依赖向量不同，变换必须重新验证。性能分析还要观察活动 lane、同步等待和附加超片无效工作。只有依赖证明与实测利用率同时成立，坐标整形才真正开阔到可复用的优化方法。
+\variantheading 若 $T=32,ntc=10$，每行分配 pitch 11 并处理 $tc=0\ldots10$；处理
+$tc=9$ 前等待上一行标志 10，最右附加片 $tc=10$ 则等待上一行同号 10。
+\practiceheading 用 CPU 串行参考对照短序列穷举，并以竞争检查工具检查标志发布；启动固定为
+\code{<<<ntr,T>>>}，用 Nsight Systems 观察自旋热点，
+同时验证 $T^2$ 共享空间和标志乘法不溢出。
+\sourcecheck{https://www.cri.minesparis.psl.eu/classement/doc/A-179.pdf}{Irigoin 与 Triolet 的 Supernode Partitioning 机构公开版；并以 DOI 10.1145/73560.73588 核对 POPL'88 正式出版信息；高置信度}
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{NVIDIA CUDA C++ Programming Guide 对设备作用域原子引用及 release/acquire 内存序的官方说明；高置信度}
+对抗审查：只等待上一行同列 $c$ 不够，因为超片顶部除首项外来自上一行 $c+1$；这是一个
+可构造的陈旧读取反例。最右附加片多数 lane 越界，但仍必须参与全部屏障。
+\end{solutionexercise}
+
+\begin{solutionexercise}{6}
+\problemheading 用功能相同的 DPX 指令替换本章 Smith--Waterman 内核所用的
+\code{max4()} 设备函数。原函数计算
+$\max(0,H_{r-1,q-1}+s,H_{r,q-1}+g,H_{r-1,q}+g)$；实现须在支持 DPX 的 NVIDIA
+Hopper 或更新架构上使用等价指令，并为较早架构保留语义相同的回退路径。
+
+\approachheading 原表达式是 0 与三个 32 位有符号候选的最大值，恰对应 DPX intrinsic：
+\[
+\code{__vimax3_s32_relu(a,b,c)}.
+\]
+为非 Hopper 目标保留普通指令回退。
+
+\answerheading
+\begin{lstlisting}[language=C++]
+__device__ __forceinline__ int sw_max(int diagonal,int west,int north) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+  return __vimax3_s32_relu(diagonal,west,north);
+#else
+  return max(0,max(diagonal,max(west,north)));
+#endif
+}
+// Replacement at each cell:
+int value=sw_max(nw+substitution,w+DELETION,n+INSERTION);
+\end{lstlisting}
+DPX 的 ReLU 后缀表示再与 0 取最大值，故与
+\code{max4(0, diagonal, west, north)} 逐个 32 位整数等价。它只替换单元的最大值计算，
+不改变波前依赖、边界或同步。
+
+\complexity{每单元 $O(1)$；硬件 DPX 可用更少指令}{$O(1)$}{各波前单元照常并行}
+\conclusionheading Hopper（计算能力 9.0+）走 DPX，旧架构走语义相同的可移植回退。
+\discussionheading
+\discussionpoint{不同 DPX intrinsic 的融合边界不同。}本题调用 \code{__vimax3_s32_relu(a,b,c)}，其语义只是 $\max(a,b,c,0)$；对角、北、西三个候选中的 substitution 或 gap 加法已经在调用前分别完成。\code{__viaddmax_s32_relu(x,y,z)} 才计算 $\max(x+y,z,0)$，它融合一次加法、一次二选最大和零截断，也不能单条覆盖三个各带加法的候选。名称都含 max 与 ReLU 不代表可互换，替换时要逐个写出数学式、位宽和溢出行为。这个纪律同样适用于 Tensor Core 与 SIMD 复合指令。
+
+\discussionpoint{源码分支存在不等于目标二进制含有硬件路径。}设备代码要在 \code{__CUDA_ARCH__>=900} 时选择 Hopper DPX，并为旧目标保留普通 max 回退；构建还必须真正生成相应 SM 90 映像，否则运行时只能执行兼容代码。fat binary 可同时包含多个目标，驱动按设备选择，但编译宏是在各目标编译阶段决定而非主机运行时判断。应使用 \code{cuobjdump} 或 SASS 反汇编确认目标指令，并在旧设备验证回退。这个从源、编译目标到运行选择的三层审查也适用于架构专用异步拷贝和矩阵指令。
+
+\discussionpoint{Amdahl 定律限制单元算术优化的端到端收益。}DPX 能减少每个 DP 单元中的整数指令，但波前屏障、边界加载、完成标志、自旋和 traceback 流量不会按同一比例下降。若算术只占总时间的 30\%，即使理想地无限加速它，整体也最多提升到约 $1/(1-0.3)=1.43$ 倍。具体 intrinsic 的融合边界也必须准确：\code{__vimax3_s32_relu} 融合三路最大值与 ReLU，候选值的加法仍要先算；\code{__viaddmax_s32_relu} 只融合一次加法、两路最大值与 ReLU，不能声称整条多候选递推成为一条指令。使用 16 位 packed 指令可能增加吞吐，却必须证明最大可能得分不溢出，并确认指令采用普通、饱和还是其他算术语义。因而优化报告应先分解时间和数值范围，再解释 DPX 加速，而不是只展示内层指令数。
+
+\discussionpoint{行业验证必须覆盖性能分布、数值路径和构建矩阵。}基因组序列的长度、相似度、带宽限制与批大小都会改变有效 DP 单元和同步占比，所以应分组报告 GCUPS、能耗以及实际单元数。GPU 结果至少要与 CPU 参考核对最高分，支持 traceback 时还要处理多个同分最优路径的约定；DPX 与回退路径应使用同一黄金样例。还应加入恰好接近 16 位上限的合成长序列，验证 packed 路径的溢出策略与 32 位路径一致，而不只测短读段。持续集成可在无 Hopper 主机上仍编译 SM 90 对象、反汇编检查指令并运行 CPU/回退测试，在 Hopper 环境再执行硬件路径。这样专用指令不会成为无法验证的条件分支。
+\variantheading 若三个候选为 $-7,-2,-9$，\code{__vimax3_s32_relu} 返回 0；若为
+$4,-2,3$ 则返回 4，分别验证 ReLU 与三路最大值语义。
+\practiceheading 构建时同时生成 \code{sm_90} 与受支持的回退目标，用 \code{cuobjdump} 或
+Nsight Compute 核对 DPX 指令并与 CPU 参考逐单元比较；另测接近 \code{INT_MAX} 的分数，
+因为 intrinsic 不会修复候选加法溢出。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{NVIDIA CUDA C++ Programming Guide 的 DPX intrinsic 官方说明；高置信度}
+边界审查：DPX 不是新的同步机制，也不会解决加法溢出；候选分数若可能越过 32 位范围，
+应先采用饱和策略或更宽类型。编译还要求提供该 intrinsic 的 CUDA 12 代工具链。
+\end{solutionexercise}

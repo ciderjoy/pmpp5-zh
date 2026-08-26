@@ -1,0 +1,515 @@
+\chapter{内存架构与数据局部性}
+
+\begin{solutionexercise}{1}
+\problemheading 考虑矩阵加法。能否使用共享内存减少全局内存带宽消耗？提示：分析每个
+线程访问的元素，看看不同线程之间是否存在共同访问。
+
+\approachheading 统计每个输入元素在一个内核调用中被多少线程使用。
+
+\answerheading 对 $C_{ij}=A_{ij}+B_{ij}$，负责 $(i,j)$ 的线程各读取一个 $A_{ij}$、
+一个 $B_{ij}$ 并写一个 $C_{ij}$；其他线程不会复用这两个输入。把它们先搬到共享内存
+仍需同样的两次全局加载，反而增加共享内存读写和同步。因此，单纯分块不能降低必要的
+全局内存字节数。只有当后续算子融合后会多次使用同一元素，或数据布局转换等额外目标
+存在时，共享内存才可能有收益。
+
+\complexity{$O(N^2)$ 工作}{$O(1)$ 每线程额外空间}{$N^2$ 个独立元素任务}
+\conclusionheading 对纯矩阵加法，使用共享内存不能减少全局内存带宽消耗。
+\discussionheading
+\discussionpoint{先问共享副本能否被第二个消费者使用。}
+对 $C_{ij}=A_{ij}+B_{ij}$，负责 $C_{ij}$ 的线程各读取两个输入一次并写一个输出，别的线程并不需要这两个输入；因此每个元素的必要流量已经是两读一写。若先把 $A_{ij}$ 和 $B_{ij}$ 写进共享内存，同一线程随后再读回来，只增加共享指令和可能的同步，却没有消掉任何首次全局读取。分块的收益来自跨线程或跨阶段复用，而不是“共享内存比全局内存快”这一孤立事实。这个反例提供了通用判断法：先画生产者--消费者关系并计算复用次数，复用为一时通常没有搬运到显式缓存的经济基础。
+
+\discussionpoint{算子链会改变单个加法的流量下界。}
+若矩阵加法之后马上执行缩放与激活，把三个算子分别启动会写出并重新读取两个中间矩阵；融合后，同一线程可让中间标量留在寄存器中，通常比把它绕经共享内存更直接。可是后续若是转置、邻域滤波或同一输入产生多个输出，消费者可能换成其他线程，此时共享内存就成为块内交换和复用的介质。由此可见“矩阵加法不适合共享分块”只针对孤立逐元素表达式，并不禁止围绕更大计算图设计瓦片。编译器与框架中的算子融合，正是把优化单位从一条公式提升到完整数据流。融合边界还受数值语义和中间结果是否被其他消费者复用约束，不能只按内核数量决定。
+
+\discussionpoint{硬件缓存也不能消除必经的首次流量。}
+连续的矩阵访问通常能被 warp 合并，L1 或 L2 也可能保留某些 cache line，但只读一次的输入至少要从更低层进入芯片一次；缓存命中不会凭空删除这次 compulsory traffic。主动复制到共享内存还占用片上容量，可能减少驻留块，并增加地址、存储、读取甚至屏障指令，所以“小矩阵能放下”并不构成优化证据。若数据已因另一个算子留在缓存，实测 DRAM 流量可能低于孤立模型，但这属于跨内核时间局部性而非共享分块的贡献。分析时应明确所讨论的是源码请求、L2 流量还是 DRAM 字节，避免把不同层次的“带宽减少”混为一谈。
+
+\discussionpoint{用端到端字节而非单个内核外观评价融合。}
+图像预处理或深度学习推理常把加法、偏置和激活合为一个 elementwise 内核，目标是省掉中间数组的写回、再次读取和额外启动，而不是让每一步都占一块共享瓦片。实验可分别运行三内核版本与融合版本，记录完整流水线时间、DRAM 读写字节、启动次数和输出误差；若只看融合内核的占用率，寄存器增加可能让数字变低却仍取得更高吞吐。再把实测 FLOP/s 与算术强度放到 Roofline 上，可判断节省字节是否让瓶颈向计算侧移动。这样的测量把本题的“无复用”结论扩展成可验证的编译和框架决策。
+\variantheading 若每个 $A_{ij}$ 同时参与两次后续计算，协作加载一次可把该输入的两次全局读取降为一次。
+\practiceheading 用 Nsight Compute 的 DRAM Bytes、L1/L2 命中率和 Barrier Stall 比较直接内核与融合内核。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}{NVIDIA CUDA Best Practices Guide 关于共享内存消除重复全局读取的条件；复用计数为 1，置信度高}
+\end{solutionexercise}
+
+\begin{solutionexercise}{2}
+\problemheading 分别为使用 $2\times2$ 瓦片和 $4\times4$ 瓦片的 $8\times8$ 矩阵乘法，
+画出图 5.7 的等价图。验证全局内存带宽的减少量确实与瓦片的维度成正比。
+
+为使题意独立可读，图 5.7 描述的是一个 $4\times4$ 矩阵乘法的 $2\times2$ 输出瓦片：
+线程 $(r,c)$ 在 $k=0,1,2,3$ 四个时刻依次读取 $M_{r,k}$ 与 $N_{k,c}$；同一输出行的
+两个线程重复读取相同的 $M$ 行元素，同一输出列的两个线程重复读取相同的 $N$ 列元素。
+本题要求对 $8\times8$ 情形分别画出同类“线程--时间--输入元素”访问关系，而不是复制
+原书插图。
+
+\approachheading 用“输出块数 $\times$ 阶段数 $\times$ 每阶段输入瓦片元素数”计数，
+并把访问过程画成阶段表。
+
+\editorialnote 本题所称英文底本图 5.7，在中文译稿中因新增示意图而重编号为图 5.8；
+译稿练习中的“图 5.7”没有随正文图号更新。下文按底本图号叙述，并同时给出这一对应关系。
+
+\answerheading 下表是原书图 5.7 的等价阶段图；$M_{p,q}$、$N_{q,r}$ 表示相应输入
+瓦片，每个方格只从全局内存协作加载一次。
+
+\begin{center}
+\begin{tabular}{c@{\quad}c@{\quad}c@{\quad}c}
+\toprule
+输出瓦片 & 阶段 & $M$ 输入瓦片 & $N$ 输入瓦片\\
+\midrule
+$P_{p,r}$，$T=2$ & $q=0,1,2,3$ & $M_{p,q}$（$2\times2$） & $N_{q,r}$（$2\times2$）\\
+$P_{p,r}$，$T=4$ & $q=0,1$ & $M_{p,q}$（$4\times4$） & $N_{q,r}$（$4\times4$）\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+不分块时，64 个输出各读取 8 个 $M$ 和 8 个 $N$ 元素，总请求数为
+$64\times16=1024$（每个输入矩阵 512 次）。$T=2$ 时有 $(8/2)^2=16$ 个输出块、
+4 个阶段，每阶段每块加载 $2\times2\times2=8$ 个输入元素，总请求数
+$16\times4\times8=512$（每个矩阵 256 次），正好减少 2 倍。$T=4$ 时有 4 个块、
+2 个阶段，每阶段加载 $2\times4^2=32$ 个元素，总请求数 $4\times2\times32=256$
+（每个矩阵 128 次），正好减少 4 倍。
+
+\complexity{$O(8^3)$ 工作；一般为 $O(N^3)$}{$2T^2$ 个共享元素/块}{$(N/T)^2$ 个输出瓦片可并行}
+\conclusionheading $2\times2$ 与 $4\times4$ 瓦片分别把输入全局请求减少 2 倍和
+4 倍，减少因子等于瓦片边长 $T$。
+\discussionheading
+\discussionpoint{理想的 $T$ 倍节省来自消费者分组。}
+在某个 $k$ 阶段，$T\times T$ 输出瓦片的同一行需要相同的 $T$ 个 $M$ 元素，同一列需要相同的 $T$ 个 $N$ 元素；若每个输出线程自行加载，每个输入会被同块的 $T$ 个消费者重复请求。协作装载只需把两个 $T\times T$ 输入瓦片各取一次，于是每阶段输入请求从 $2T^3$ 降为 $2T^2$，比值正好是 $T$。对本题，$T=2$ 与 $T=4$ 因而分别给出理想的 2 倍和 4 倍。这个推导的核心不是矩阵形状本身，而是把共享同一数据的消费者放进一个通信域，因此也能迁移到卷积 halo、模板更新和块式注意力。
+
+\discussionpoint{扩大瓦片同时扩大了哪些片上承诺。}
+从 $2\times2$ 换成 $4\times4$，朴素实现的输出线程数由 4 增到 16，两块共享输入的元素数也由 8 增到 32；在更实际的尺寸上，这些量按面积增长，而每线程累加器与循环展开还会增加寄存器压力。大瓦片能提高复用，却可能跨过每块线程、每 SM 共享内存或寄存器的装箱边界，并让边界块出现更多无效线程。屏障等待也取决于所有装载者到达，而不是只取决于字节数。因此 $T$ 不是越大越好的连续旋钮，它是一项把复用、片上容量、并行度与尾部浪费绑在一起的离散设计选择。
+
+\discussionpoint{请求数降低不等于 DRAM 事务严格降低同倍数。}
+教学图统计的是线程发出的逻辑输入请求，真实硬件会把一个 warp 的相邻地址合并成内存事务，并可能让重复请求在 L1 或 L2 命中；所以未分块版本从 DRAM 取得的数据未必真比瓦片版多 $T$ 倍。反过来，地址未对齐、边界部分瓦片和 cache line 过取也会使物理字节偏离元素计数，输出写回又不随输入复用一起减少。应分别报告 load instruction、全局扇区、L2 字节和 DRAM 字节，才能知道收益来自共享复用、合并访问还是缓存。理论 $T$ 倍仍有价值，但它是理想输入请求模型和算术强度上界，不是端到端加速承诺。
+
+\discussionpoint{高性能 GEMM 把一个瓦片继续分成多级数据运动。}
+教学内核让一个线程产生一个输出，真实 GEMM 常先从全局内存搬大瓦片到共享内存，再由 warp 取子瓦片到寄存器或矩阵指令 fragment，并让每线程累加多个结果。这样同一全局元素在共享层复用，同一共享元素又服务多个寄存器累加器；双缓冲或异步复制还能让下一瓦片装载与当前计算重叠。每一级都引入自己的形状、对齐、容量和同步约束，因此不能用单一 $T$ 描述整个内核。可复现的性能报告应列出块/warp/线程瓦片、每线程输出数、共享字节、寄存器数、数据类型和目标架构，才能解释不同设备为何选择不同形状。
+\variantheading 对 $8\times8$ 乘法使用 $T=8$，仅 1 块、1 阶段，输入请求为 $2\times64=128$，比 1024 减少 8 倍。
+\practiceheading 以 cuBLAS SGEMM 为基线，并用 Nsight Compute 的 Global Load Efficiency 与 Occupancy 选择瓦片。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}{NVIDIA CUDA Best Practices Guide 的共享内存矩阵乘法复用分析；访问总数独立枚举，置信度高}
+\end{solutionexercise}
+
+\begin{solutionexercise}{3}
+\problemheading 如果忘记在图 5.9 的内核中使用一个或两个
+\code{__syncthreads()}，可能发生什么类型的错误执行行为？
+
+图 5.9 的每个阶段先由线程协作把当前 $M$、$N$ 输入瓦片写入共享数组
+\code{Mds}/\code{Nds}，经第一个块级屏障后用这些共享值计算；第二个块级屏障
+位于本阶段计算结束与下一阶段覆盖共享数组之间。
+
+\approachheading 分别检查“加载当前瓦片后”和“覆盖为下一瓦片前”的跨线程数据依赖。
+
+\editorialnote 本题所称英文底本图 5.9，对应中文译稿图 5.10；译稿练习中的旧图号
+没有随正文新增插图而更新。这里分析的是含两个块级屏障的分块矩阵乘法内核。
+
+\answerheading 若遗漏第一个屏障，较快线程可能在其他线程尚未完成加载时读取
+\code{Mds} 和 \code{Nds}，得到未初始化值或上一阶段残留值，这是读后写竞态。若遗漏
+第二个屏障，较快线程可能开始加载下一阶段并覆盖共享数组，而较慢线程仍在使用当前
+阶段数据，这是写后读竞态。两个都遗漏时两类竞态同时存在，结果随 warp/块调度变化，
+可能偶尔看似正确但没有正确性保证。屏障还必须由块内所有线程在一致控制流中到达。
+
+\conclusionheading 两个屏障分别保护“加载完成再读取”和“读取完成再覆盖”，都不能
+随意删除。
+\discussionheading
+\discussionpoint{第一道屏障关闭当前瓦片的生产窗口。}
+设线程 $(0,0)$ 已把一个 $M$ 元素写入 \code{Mds}，便开始沿共享行做乘加，而负责同一行另一元素的线程尚在等待全局内存；没有装载后的屏障，前者就可能读到旧阶段数据或未初始化值。每个线程只生产瓦片的一小部分，却会消费其他线程生产的整行或整列，所以依赖跨越线程边界。第一道 \code{__syncthreads()} 要求整个块到达，并使此前相关共享写入对块内线程可见，恰好闭合这组生产--消费边。错误取决于调度与内存延迟，小尺寸偶然正确只说明竞态未被触发，不能把结果稳定性当成同步证明。
+
+\discussionpoint{第二道屏障保护的是旧瓦片不被过早复用。}
+当前阶段计算结束的线程可能立刻进入下一轮，把新 $M$、$N$ 元素写到相同 \code{Mds}/\code{Nds} 槽位；若另一个线程仍在读取旧值完成最后几次乘加，新写会破坏尚未结束的消费。这是一条从“旧读”到“下一轮写”的反依赖，位置跨越循环迭代，所以比第一道屏障更容易被遗漏。第二道屏障把共享缓冲区的生命周期划成装载、完整消费、允许覆盖三个阶段。它与环形缓冲区或双缓冲中的 ownership 转移是同一原则：重用存储前必须证明所有旧消费者已经释放，而不是只确认新生产者准备好了。
+
+\discussionpoint{边界谓词不能改变屏障参与集合。}
+当矩阵尺寸不是瓦片整数倍时，尾块中的部分线程没有有效输入或输出；若这些线程在第一道屏障前直接返回，块内其余线程执行集体屏障时便缺少参与者，可能挂起或出现未定义行为。可靠写法让每个线程都计算地址，以谓词把有效值或零写入共享槽，随后全块无条件同步，再仅在最终写回阶段屏蔽越界输出。这样既保证每个共享位置已定义，也保持所有循环阶段的参与集合一致。审查分块内核时应把“数据是否有效”和“线程是否参加集体操作”分开，前者可用谓词处理，后者必须满足原语的收敛要求。
+
+\discussionpoint{流水化改变同步形式，却不会消除依赖。}
+异步全局到共享复制、双缓冲或 producer/consumer warp 能让下一瓦片搬运与当前乘加重叠，看起来不再在每一步执行相同的两个全块屏障；实际上它们用阶段计数、pipeline 或更细粒度 barrier 表达相同的“数据已到达”和“缓冲可复用”条件。若等待了错误阶段，或生产者覆盖一个仍被消费者使用的槽，竞态只会变得更难复现。验证可先为每个共享槽画出生产、提交、等待、消费和再次写入的状态机，再用 racecheck、synccheck、非整除尺寸与延迟扰动测试。正确的流水化是把等待与独立工作重叠，而不是把 happens-before 从程序中省略。
+\variantheading 若只有一个阶段，第二个屏障可删除，因为不存在下一瓦片覆盖；第一个屏障仍不可缺。
+\practiceheading 用 Compute Sanitizer racecheck 与 synccheck 检测共享内存竞态和不一致屏障。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{NVIDIA CUDA C++ Programming Guide 的块级同步与内存可见性说明；高置信度}
+\end{solutionexercise}
+
+\begin{solutionexercise}{4}
+\problemheading 假设寄存器和共享内存容量都不是问题，使用共享内存而不是寄存器保存
+从全局内存取出的值，一个重要原因是什么？请解释。
+
+\approachheading 比较两种存储空间的线程可见范围。
+
+\answerheading 寄存器是线程私有的：线程 A 载入寄存器的值不能由线程 B 直接读取。
+若多个线程需要同一个输入，全部使用寄存器会迫使它们各自重复执行全局加载。共享内存
+由整个线程块可见，线程可协作把值加载一次，再让块内多个消费者复用。代价是需要正确
+同步并避免 bank 冲突。
+
+\conclusionheading 共享内存的关键价值是块内通信和跨线程复用，而不只是容量。
+\discussionheading
+\discussionpoint{首要差别是“谁能命名这个值”。}
+线程从全局内存取得一个值后，若只有本线程反复使用，寄存器最自然：它属于线程私有状态，适合累加器、地址和局部中间量。可是转置中线程 A 装载的元素要由线程 B 读取，寄存器变量没有让块内任意线程按共享索引访问的地址语义；共享内存则提供块级可见的命名空间，并能配合屏障建立交换顺序。即使假定两种容量都充足，这个通信需求仍足以选择共享内存。因而“用共享而不用寄存器”的重要原因不是一张延迟表，而是算法的生产者和消费者是否跨越线程边界。若消费者只在同一 warp，shuffle 才提供另一种显式且受作用域限制的交换路径。
+
+\discussionpoint{warp shuffle 是一个作用域受限的第三条路。}
+若所有生产者和消费者都在同一 warp，shuffle 指令可以让 lane 直接读取另一 lane 的寄存器值，常用于小归约、扫描和矩阵微瓦片，省去共享数组与全块屏障。它要求正确的活动掩码，来源 lane 必须是参与者，数据宽度和交换模式也受指令形式约束；分支后盲用完整掩码会把正确性问题重新带回来。一旦通信跨越 warp，普通 shuffle 就无法触达对方寄存器，仍需共享内存、块级同步或更高层机制。它不是证明“寄存器可共享”，而是硬件为一个明确通信域提供的特殊寄存器交换原语。
+
+\discussionpoint{两种片上资源会以不同方式限制并发。}
+增加每线程寄存器可能使 SM 少驻留一个 warp 或线程块，压力更高时编译器还可能把值放入 local address space；增加每块共享内存则直接减少可同时驻留的块数。共享访问还可能因 bank 映射发生冲突，并需要同步来保护跨线程依赖，而寄存器交换一般不承担这些成本。高性能内核因此常混合使用：共享内存保存能被多个线程交换的块瓦片，寄存器保存线程微瓦片和部分和。选择的关键是用哪种资源表达复用关系后，总数据移动、同步和驻留并行度的组合最好，而不是单独最小化某一个资源数字。
+
+\discussionpoint{应用结构决定共享内存扮演的角色。}
+GEMM 用共享内存重排并复用输入瓦片，FFT 用它交换蝶形阶段的数据，直方图可用块内私有桶减少全局原子竞争，模板计算则缓存重叠邻域；这些场景都含明确的块内共享或布局变换。编译器通常自动决定标量寄存器分配，程序员则显式设计共享数组、bank 布局和屏障，所以两者的调优证据也不同。实验应把 \code{ptxas} 的寄存器、stack/local 和共享报告，与占用率、bank conflict、同步停顿及真实时间一起检查。只有这样才能判断瓶颈来自通信结构、资源装箱还是编译器放置，而不是凭“片上都很快”得出笼统结论。
+\variantheading 若值只由加载它的线程使用，则寄存器更合适，既不需要共享写读也不需要屏障。
+\practiceheading 结合 ptxas 寄存器报告与 Nsight Compute 的 Shared Bank Conflicts、Occupancy 决定存储位置。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}{NVIDIA CUDA Best Practices Guide 关于共享内存支持块内协作及消除重复传输的说明；置信度高}
+\end{solutionexercise}
+
+\begin{solutionexercise}{5}
+\problemheading 对分块矩阵乘法内核，如果使用 $32\times32$ 瓦片，输入矩阵 $M$ 和 $N$
+的内存带宽使用量减少多少？
+
+\approachheading 一个输入瓦片元素由同一输出瓦片中的 32 个线程复用。
+
+\answerheading 与不分块实现相比，每个 $M$ 或 $N$ 元素的全局请求次数降为原来的
+$1/32$，即带宽减少 32 倍。若用百分比表示，减少量为
+\[
+ 1-\frac1{32}=\frac{31}{32}=96.875\%.
+\]
+这是假设维度整除、忽略边界和缓存效应的理论请求流量。
+
+\conclusionheading $M$ 和 $N$ 的输入全局内存带宽各理论减少 32 倍（减少
+$96.875\%$）。
+\discussionheading
+\discussionpoint{32 倍是完整输出瓦片中的消费者数量。}
+对一个 $32\times32$ 输出瓦片，装入共享内存的某个 $M_{ik}$ 会被同一输出行的 32 个线程使用，某个 $N_{kj}$ 会被同一输出列的 32 个线程使用；不分块时，这 32 个消费者各自发出请求。协作装载把这组请求合成一次块级装载，所以理想输入请求降为原来的 $1/32$，即减少 $31/32=96.875\%$。这个比例只针对输入流量，输出仍须写回，地址计算、乘加与屏障也没有按 32 倍消失。因而它提高的是理想算术强度，而不是宣称整个内核时间必然缩短到三十二分之一。
+
+\discussionpoint{尾瓦片与缓存会把理想比例向两边修正。}
+若矩阵维度不是 32 的倍数，最后一个输出瓦片只有部分有效消费者，但实现仍可能启动 1024 个线程并为越界位置装零；有效复用低于完整瓦片，谓词和 cache line 过取也要付出成本。另一方面，不分块版本的重复读取可能在 L1 或 L2 命中，物理 DRAM 字节本来就少于源码请求数，因此分块后的 DRAM 降幅可能小于 96.875\%。对齐和合并访问改善又可能提供额外收益。最稳妥的表述是：32 倍是完整瓦片、无缓存基线下的输入请求上界，再用全局扇区、L2 与 DRAM 字节逐层验证实际发生了什么。
+
+\discussionpoint{逻辑 $32\times32$ 瓦片不必绑定 1024 个线程。}
+朴素教材实现让每个输出对应一个线程，于是 $32^2=1024$ 已达到许多设备的每块线程上限；再叠加寄存器与分配粒度，SM 可能只能驻留一个这样的块，延迟隐藏和末波调度都受影响。高性能实现可让 256 个线程各计算 $2\times2$ 个输出，仍覆盖同一逻辑瓦片并保留输入复用，只是每线程需要更多累加器和更复杂的共享读取。块规模、逻辑瓦片与每线程微瓦片因此是三个独立参数。把它们分开后，设计者才能在复用、寄存器压力和可驻留块数之间调节，而不是被“瓦片边长等于线程块边长”限制。
+
+\discussionpoint{32 倍复用只是多级 GEMM 数据运动的第一站。}
+共享瓦片把全局元素带入块内后，如果每个线程只读一次共享值，片上带宽仍可能成为瓶颈；寄存器微瓦片让一次共享读取服务多个累加器，warp 级矩阵指令又按规定的 fragment 组织更细粒度复用。生产 GEMM 还会用双缓冲或异步复制，使下一块数据传输与当前乘加重叠，并针对 FP32、FP16 或整数选择不同瓦片形状。于是完整模型要分别计算 DRAM--共享、共享--寄存器和寄存器--执行单元的字节与 FLOP。教材中的 32 倍推导提供了第一层直觉，多级模型则解释为何库内核不会只靠扩大一个方形块达到峰值。
+\variantheading 使用 $16\times16$ 瓦片时理论减少 16 倍，即减少 $93.75\%$。
+\practiceheading 用 Nsight Compute 的 Requested/Actual Global Throughput 与 Occupancy 验证理论带宽收益。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}{NVIDIA CUDA Best Practices Guide 的分块矩阵乘法全局读取复用原则；比例独立复核，置信度高}
+\end{solutionexercise}
+
+\begin{solutionexercise}{6}
+\problemheading 假设启动一个 CUDA 内核，网格有 1000 个线程块，每块有 512 个线程。
+如果在内核中声明一个局部变量，在该内核的整个执行生命周期中会创建多少个
+该变量的版本？
+
+\approachheading 自动局部变量按线程私有，每个逻辑线程在其生命周期中拥有一份。
+
+\answerheading
+\[
+1000\ \text{块}\times512\ \text{线程/块}=512{,}000\ \text{个版本}.
+\]
+即使硬件分多批调度这些块，逻辑变量实例总数也不变。
+
+\conclusionheading 整个内核执行生命周期中创建 512,000 个局部变量版本。
+\discussionheading
+\discussionpoint{“一份变量”首先是语言层的线程私有状态。}
+网格含 $1000\times512=512{,}000$ 个逻辑线程，自动局部变量在每个线程执行该作用域时都有独立的语义值，因此答案按整个内核生命周期计为 512,000 个版本。某个值若从未影响可观察结果，编译器可以把它完全删掉；若仍需要，它可能留在寄存器，也可能进入 local address space，但程序行为都必须像每个线程拥有自己的版本。这里数的是抽象机器中的实例，不是询问芯片同时焊接了多少存储单元。区分语义实例与物理实现，也是理解编译优化不改变并发程序可观察行为的基础。
+
+\discussionpoint{逻辑线程总量并不等于峰值物理并发。}
+设备不可能一次让 1000 个 512 线程块全部驻留，SM 只接纳线程、寄存器、共享内存和块数约束允许的若干块；一个块结束后，其寄存器和调度状态便可复用于后续块。于是生命周期内共有 512,000 个局部版本，不代表必须为 512,000 个值同时预留物理位置，峰值需求只由同时驻留线程及各自活跃状态决定。这个区别类似线程池处理百万任务：每个任务有自己的局部上下文，但工作线程和栈槽可按批次复用。容量规划若把逻辑总数直接乘每线程寄存器数，会严重高估某一时刻的 SM 资源，却可能仍低估 spill 的总传输次数。
+
+\discussionpoint{变量名数量与寄存器压力之间没有一一对应。}
+编译器按值的活跃区间分配寄存器：若变量 $u$ 在 $v$ 产生前已经最后一次使用，两者可以占用同一物理寄存器，即使源码写了两个名字。相反，循环展开让多轮中间值同时活跃，线程粗化保留多个累加器，或函数内联延长数据依赖，都可能在名字不变时增加压力。压力跨过资源装箱边界会降低驻留 warp，再高时还可能产生 spill。因此优化寄存器不能靠机械删除局部声明，而应检查编译器资源报告和生成代码，缩短真正的活跃区间或重新安排计算，并用性能测量确认没有以额外重算换取更差吞吐。
+
+\discussionpoint{线程私有数组的实际放置需要多层证据。}
+像 \code{float x[4]} 这样的局部数组若索引可静态解析，编译器常把元素标量化到寄存器；动态索引、取地址或较高压力则可能让它位于 local address space，该空间语义上仍线程私有，物理上经过缓存并由设备内存支持。不能只看到 profiler 中的 spill 指标就涵盖所有 local 用量，因为显式局部数组、栈帧与寄存器溢出是不同成因。应联合查看 \code{ptxas -v} 的 \code{lmem}/stack 与 spill 报告、PTX 的 \code{.local} 声明以及最终 cubin/SASS 访问。这样才能把“有多少逻辑版本”与“同时分配多少字节、产生多少流量”分别回答清楚。
+\variantheading 若改为 750 块、每块 256 线程，则生命周期内共有 192,000 个局部变量版本。
+\practiceheading 用 ptxas 和 Nsight Compute 检查局部变量是否发生 local-memory spill，而非只数源码变量。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{NVIDIA CUDA C++ Programming Guide 的线程私有自动变量语义；乘法独立复核，置信度高}
+\end{solutionexercise}
+
+\begin{solutionexercise}{7}
+\problemheading 对上一题，如果声明一个共享内存变量，在该内核的整个执行生命周期中会
+创建多少个该变量的版本？
+
+\approachheading 静态共享变量按线程块实例化，同一块线程共享一份，不同块互不共享。
+
+\answerheading 1000 个逻辑线程块各有一份，因此整个执行生命周期中创建 1000 个版本。
+块分批驻留或复用物理 SM 不会把不同逻辑块的共享变量合并成同一实例。
+
+\conclusionheading 共享内存变量共有 1000 个版本。
+\discussionheading
+\discussionpoint{共享变量按块实例化，但现代集群带来受限例外。}
+普通执行模型中，每个逻辑线程块都有一份静态共享变量，块内 512 个线程共同看到它，而 1000 个块在整个网格生命周期中对应 1000 份逻辑实例。一个块不能用普通共享地址直接访问任意另一块的实例。计算能力 9.0 起，显式线程块集群可通过 Distributed Shared Memory 映射并访问同一集群内其他块的共享段，但每块仍拥有自己的段，访问范围也没有扩大到整个网格。把这项例外写清，既保留教材经典模型，也避免把“共享内存永远严格块内不可访问”误当成所有新架构的绝对命题。
+
+\discussionpoint{生命周期实例数与同时分配份数必须分开。}
+1000 个块不会同时驻留：每个 SM 只为当前活动块分配共享内存，块完成后同一物理容量可交给后续块。若每块共享数组从 4 KB 增到 48 KB，可同时驻留的块数可能阶梯式下降，但网格语义上仍会依次创建 1000 个独立版本；减少并发不等于让不同块共用同一逻辑变量。峰值片上容量由每块用量乘活动块数决定，总生命周期中的装载和计算次数则由网格规模决定。这个区分说明共享内存为何既是程序通信对象，又是决定 occupancy 的可复用硬件资源。容量复用由运行时管理，程序不能据此让先后执行的块通过旧共享内容传递状态。
+
+\discussionpoint{块级通信边界决定跨块算法的结构。}
+在非 cluster 模型中，同一块可用共享数组与 \code{__syncthreads()} 做归约，两个普通块却不能凭各自共享变量形成生产--消费；通常要写全局内存，再用原子、第二个内核边界或满足条件的协作网格同步建立顺序。DSM 允许显式 cluster 内的块访问彼此共享段，但要求目标块仍处于集群生命周期中，并使用相应映射与同步，超出 cluster 仍需更高层通信。于是共享内存的“快”始终附带一个作用域契约。算法若先确定通信跨度，再选择块、集群或网格机制，会比先选存储类型再勉强拼接同步更可靠。
+
+\discussionpoint{不要用共享指针数值证明块间隔离。}
+共享地址处在每块的地址语义中，不同块打印或比较出的指针数值即使相同，也不能推出它们指向同一物理对象；数值不同也不是隔离性的正式证明。隔离性来自 CUDA 语言与体系结构规定的作用域契约：普通线程块不能构造指向另一普通块共享段的可解引用地址，因而也没有一个合法的跨块 shared 读取实验可用来“证明”该契约。让块 $b$ 在自己的共享段写入由 \code{blockIdx.x} 派生的哨兵、同步后再写入全局数组，只能演示当前实现确实得到各自的值，适合作为回归样例，不能从有限观察推出所有执行都隔离。cluster DSM 应另用规定的地址映射和集群同步构造跨块访问正例；静态与动态共享内存的资源后果则用函数属性和 Occupancy API 独立核对。
+\variantheading 若网格为 240 块，则共有 240 个逻辑版本，但任一时刻只驻留设备资源允许的子集。
+\practiceheading 通过 \code{cudaFuncGetAttributes} 和 Occupancy API 核对每块共享内存及最大活动块数。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/\#distributed-shared-memory}{NVIDIA CUDA C++ Programming Guide 的块级共享实例及计算能力 9.0 thread-block cluster 的 Distributed Shared Memory；对抗检查：DSM 扩大可访问范围但不把每块实例合并为网格全局变量}
+\end{solutionexercise}
+
+\begin{solutionexercise}{8}
+\problemheading 考虑把两个 $N\times N$ 输入矩阵相乘。输入矩阵中的每个元素从全局内存
+请求多少次？
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item 不使用分块时；
+  \item 使用大小为 $T\times T$ 的瓦片时。
+\end{enumerate}
+
+\approachheading 固定一个 $M$ 元素，数有多少输出列使用它；分块后，一次加载可供
+同一输出瓦片的 $T$ 个线程复用。$N$ 矩阵同理。
+
+\answerheading
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+\item 不分块时，一个 $M_{ik}$ 被第 $i$ 行的 $N$ 个输出使用，一个 $N_{kj}$ 被第
+$j$ 列的 $N$ 个输出使用，故每个输入元素请求 $N$ 次。
+\item 使用 $T\times T$ 瓦片且 $T\mid N$ 时，一次加载服务一个含 $T$ 个消费者的
+输出瓦片；每个元素只在另一输出维的 $N/T$ 个瓦片中各加载一次，故请求 $N/T$ 次。
+若不能整除，边界瓦片使上界写为 $\lceil N/T\rceil$ 次。
+\end{enumerate}
+
+\complexity{总算术工作仍为 $O(N^3)$}{每块 $O(T^2)$ 共享空间}{$O((N/T)^2)$ 个输出瓦片并行}
+\conclusionheading (a) $N$ 次；(b) 整除时 $N/T$ 次，理论减少 $T$ 倍。
+\discussionheading
+\discussionpoint{请求次数由一个输入元素服务的输出集合决定。}
+固定 $M_{ik}$ 会参与输出行 $i$ 的全部 $N$ 个 $C_{ij}$，不分块时每个输出线程独立读取它，所以逻辑请求为 $N$ 次；$N_{kj}$ 对输出列也完全对称。$T\times T$ 分块把相邻 $T$ 个消费者放在同一块，一次协作装载服务这一组，因此沿另一输出维只需经过 $N/T$ 个完整瓦片。请求次数由此从 $N$ 降为 $N/T$，复用因子为 $T$。这个推导把单个元素的扇出与块划分联系起来，也揭示了瓦片增大时矩阵乘法算术强度提高的来源。若两个输入采用不同瓦片形状，应分别按各自在输出方向覆盖的消费者数计算。
+
+\discussionpoint{非整除尺寸要把除法改成瓦片覆盖数。}
+若 $N=70,T=32$，输出行或列会被三个瓦片覆盖，而不是 $70/32$ 个；一个有效输入元素因此至多由对应方向的 $\lceil70/32\rceil=3$ 个块各装载一次。实现可能让第三块对越界位置装零或用谓词跳过请求，但有效元素仍需要服务该块中剩余消费者。对规则方阵和标准分块，统一请求计数可写成 $\lceil N/T\rceil$；若算法裁剪部分瓦片或采用不规则分区，精确总量则应按每块有效范围求和。这个例子说明性能公式中的整除假设必须显式写出，尾部不是把连续商数简单四舍五入。
+
+\discussionpoint{逻辑 load、内存事务与 DRAM 字节是三种计量。}
+一个 warp 的 32 条源码 load 可以被合并为若干扇区事务，同一 cache line 的后续请求又可能在 L1 或 L2 命中，所以“某元素被请求 $N$ 次”不等于 DRAM 真传输 $N$ 份。相反，未对齐地址、扇区过取和写策略会让物理字节大于有效元素字节，边界谓词也可能使事务利用率下降。比较模型与 profiler 时应先声明分母在源码、L2 还是 DRAM 层，再选相应指标。只有口径一致，$N/T$ 才能解释复用，而不会被误用成精确的总线访问次数或运行时间比例。缓存预热状态也要固定，否则两次基准可能比较了不同的首次访问成本。
+
+\discussionpoint{共享瓦片之上还存在寄存器与批次复用。}
+若每线程只算一个 $C_{ij}$，从共享内存读取的 $M$、$N$ 值仍会被多个线程分别取走；寄存器 blocking 让一个线程持有多个累加器，一次共享读取便可更新若干输出。warp 级矩阵指令把这种微瓦片组织成固定 fragment，而批量 GEMM 在某些工作负载中还能跨多个输入矩阵重用权重或元数据。于是现代内核需要分别核算 DRAM 到共享、共享到寄存器以及寄存器到执行单元的数据运动，每层都有自己的 $T$ 或形状。题目的 $N/T$ 是全局请求层的清晰结论，但不能替代对后续片上带宽和寄存器容量的分析。
+\variantheading 若 $N=1000,T=32$，每个输入元素最多由 32 个输出瓦片请求，而不是 $31.25$ 次。
+\practiceheading 用 Nsight Compute 的 DRAM sectors 和 L2 hit rate 区分算法请求复用与缓存复用。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}{NVIDIA CUDA Best Practices Guide 的分块矩阵乘法数据复用；逐元素消费者计数复核，置信度高}
+\end{solutionexercise}
+
+\begin{solutionexercise}{9}
+\problemheading 一个内核每线程执行 36 次浮点运算，并进行 7 次 32 位全局内存访问。
+对下面每组设备属性，判断该内核是计算受限还是内存受限：
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item 峰值 FLOPS = 200 GFLOPS，峰值内存带宽 = 100 GB/s；
+  \item 峰值 FLOPS = 300 GFLOPS，峰值内存带宽 = 250 GB/s。
+\end{enumerate}
+
+\approachheading 算术强度为 FLOP/传输字节；与设备 ridge point
+$P_{\max}/B_{\max}$ 比较。
+
+\answerheading 每线程传输 $7\times4=28$ B，算术强度为
+\[
+I=\frac{36}{28}=\frac97\approx1.286\ \mathrm{FLOP/B}.
+\]
+(a) 设备阈值为 $200/100=2\ \mathrm{FLOP/B}$。因为 $I<2$，带宽屋顶只有
+$100\times9/7\approx128.6$ GFLOP/s，小于 200 GFLOP/s，故内存受限。
+
+(b) 设备阈值为 $300/250=1.2\ \mathrm{FLOP/B}$。因为 $I>1.2$，带宽屋顶为
+$250\times9/7\approx321.4$ GFLOP/s，高于 300 GFLOP/s，故计算受限。
+
+\conclusionheading (a) 内存受限；(b) 计算受限。
+\discussionheading
+\discussionpoint{ridge point 把算法强度与设备比例放在同一尺度。}
+本题每线程做 36 FLOP、传输 $7\times4=28$ B，所以算术强度为 $I=9/7\approx1.286$ FLOP/B；设备的 ridge point 是峰值计算率除以峰值带宽。对 (a)，交点为 2 FLOP/B，$I$ 位于其左侧，带宽屋顶仅约 128.6 GFLOP/s；对 (b)，交点为 1.2，算法落到右侧，计算屋顶 300 GFLOP/s 先被触及。这个比较不是凭两个峰值大小猜瓶颈，而是判断“每传一个字节可供多少计算”是否足以喂满计算单元。它也解释了同一内核为何换设备后能从内存受限变成计算受限。
+
+\discussionpoint{算术强度的分母必须绑定一个内存层次。}
+题解把七次 32 位全局访问直接计为 28 B，这是源码层的教学口径；若其中若干读取在 L2 命中，DRAM 实测字节会更少，而 cache line 过取、写回策略和 ECC 等因素也会让总线字节不同。若改画 L2 Roofline 或共享内存 Roofline，分母和相应带宽屋顶都必须一起更换，不能拿 DRAM 峰值配 L2 字节。分子同样要统一：一次 FMA 通常按乘和加计 2 FLOP，整数地址指令与控制指令不能塞进 FLOP 峰值比较。只有层次和计数规则一致，图上的位置才具有可比意义。
+
+\discussionpoint{落在某条屋顶下方不证明已经碰到那条屋顶。}
+Roofline 给出 $\min(P_{\max},I B_{\max})$ 的理想上界，真实内核可能因长依赖链、低并行度、分支分歧、未合并访问或指令发射限制远低于该线。比如 (a) 虽按模型归为内存侧，若只有很小网格，GPU 可能主要花在启动和延迟上，实际带宽根本未饱和；(b) 位于计算侧也不代表已达到峰值浮点管线。分析器若显示低 DRAM 吞吐且大量依赖停顿，更准确的诊断是延迟或执行效率不足。Roofline 先界定理论限制方向，scheduler、memory 和 instruction 指标再解释为何没有接近该界。
+
+\discussionpoint{优化应区分移动算法点与提高屋顶利用率。}
+对带宽侧内核，融合中间结果、增加数据复用、压缩表示或在误差允许时降低存储精度，能减少每 FLOP 对应字节，从而把点向右移动；单纯提高占用率若没有增加有效带宽，算术强度并未改变。对计算侧内核，可改善指令级并行、采用适合数据类型的矩阵指令或减少非浮点开销，让实际点向计算屋顶靠近。层次 Roofline 同时绘制 DRAM 和 L2 口径，可以判断复用发生在哪一级。工程报告若保留优化前后的 FLOP/s、各层字节和强度，就能分辨是算法数据运动变了，还是同一强度下硬件执行效率提高。
+\variantheading 若设备为 400 GFLOPS、200 GB/s，ridge point 为 2 FLOP/B，故本内核仍是内存受限。
+\practiceheading 用 Nsight Compute Roofline Chart 的实测 FLOP/s 与 DRAM 带宽定位瓶颈。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}{NVIDIA CUDA Best Practices Guide 的有效带宽与算术工作量分析方法；单位和两条屋顶独立复核，置信度高}
+\end{solutionexercise}
+
+\begin{solutionexercise}{10}
+\problemheading 为操作瓦片，一名 CUDA 新手编写了下面的设备内核，用于转置矩阵中的
+每个瓦片。瓦片大小为 \code{BLOCK_WIDTH}，矩阵各维度都是
+\code{BLOCK_WIDTH} 的倍数。内核调用和代码如下；\code{BLOCK_WIDTH} 在编译
+时已知，可以取 1 到 20 之间的任意值。
+\begin{lstlisting}[language=C++,firstnumber=1]
+dim3 blockDim(BLOCK_WIDTH, BLOCK_WIDTH);
+dim3 gridDim(A_width/blockDim.x, A_height/blockDim.y);
+BlockTranspose<<<gridDim, blockDim>>>(A, A_width, A_height);
+__global__ void
+BlockTranspose(float* A_elements, int A_width, int A_height)
+{
+    __shared__ float blockA[BLOCK_WIDTH][BLOCK_WIDTH];
+    int baseIdx = blockIdx.x * BLOCK_SIZE + threadIdx.x;
+    baseIdx += (blockIdx.y * BLOCK_SIZE + threadIdx.y) * A_width;
+    blockA[threadIdx.y][threadIdx.x] = A_elements[baseIdx];
+    A_elements[baseIdx] = blockA[threadIdx.x][threadIdx.y];
+}
+\end{lstlisting}
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item 在 \code{BLOCK_SIZE} 的可能取值范围内，哪些值能让该内核在设备上
+  正确执行？
+  \item 如果不是所有值都能正确执行，错误执行行为的根本原因是什么？如何
+  修改代码，使其对所有 \code{BLOCK_SIZE} 值都能工作？
+\end{enumerate}
+\approachheading 关键依赖是每个线程先写共享瓦片的 $(y,x)$ 元素，再由另一个线程
+读 $(x,y)$ 元素；必须在读前建立块级同步。另需统一底本混用的宏名。
+
+\answerheading 按教材传统 lockstep 模型，$B^2\le32$ 时整个块不超过一个 warp，
+所以常见预期答案是 $B=1,2,3,4,5$；$B\ge6$ 跨越多个 warp，某个 warp 可能在另一个
+warp 完成加载前读取共享数组。严格按现代 CUDA C++ 内存模型，未同步的跨线程读写
+没有可移植保证，因此除了不发生跨线程通信的 $B=1$ 外，不应宣称原程序对任何
+$B>1$ 必然正确。Volta 及更新架构的独立线程调度进一步否定了“单 warp 自然同步”
+这一假设。
+
+统一使用 \code{BLOCK_WIDTH} 并在加载之后加入块级屏障即可覆盖全部 $1\ldots20$：
+\begin{lstlisting}[language=C++]
+__global__ void BlockTranspose(float* A, int width, int height) {
+    __shared__ float tile[BLOCK_WIDTH][BLOCK_WIDTH];
+    int x = blockIdx.x * BLOCK_WIDTH + threadIdx.x;
+    int y = blockIdx.y * BLOCK_WIDTH + threadIdx.y;
+    int idx = y * width + x;
+    tile[threadIdx.y][threadIdx.x] = A[idx];
+    __syncthreads();
+    A[idx] = tile[threadIdx.x][threadIdx.y];
+}
+\end{lstlisting}
+题设保证矩阵维度整除块宽，所以无需额外边界判断。所有线程无条件到达屏障，写回位置
+互异，不存在全局写写竞态。
+
+\editorialnote 底本声明用 \code{BLOCK_WIDTH}、索引用 \code{BLOCK_SIZE}；上面的
+修复把二者统一。小题 (a) 的 $1\ldots5$ 是底本教学模型下的答案，现代内存模型的
+可移植答案更严格，故同时列出。
+
+\complexity{$O(B^2)$ 工作/块}{$4B^2$ B 共享内存}{$B^2$ 个加载与写回线程}
+\conclusionheading 教材预期为 $B=1\ldots5$；标准兼容代码必须加入
+\code{__syncthreads()}，之后 $B=1\ldots20$ 均可工作。
+\discussionheading
+\discussionpoint{转置把一次块内读写变成了跨线程依赖。}
+线程 $(y,x)$ 写入 \code{tile[y][x]}，随后读取 \code{tile[x][y]}；除 $x=y$ 的对角线外，读者与写者是两个不同线程。共享数组只让双方能够命名同一位置，并不会自动保证生产者已经完成写入或消费者能看见该值，因此加载与读取之间需要明确的 happens-before。若缺少同步，某些线程会读到未初始化或上一块物理存储留下的内容，表现随调度变化而变化。把每个共享位置的写者和读者列出来，能立即看出 $B=1$ 是唯一没有跨线程边的特例，也解释了问题根源不是矩阵整除性。
+
+\discussionpoint{“一个 warp 内”是旧教学模型，不是现代可移植契约。}
+当 $B\le5$ 时块至多 25 个线程，传统答案假定它们在一个 warp 中隐式锁步，所以列出 $B=1\ldots5$；这能解释底本预期，却不能作为现代 CUDA C++ 的保证。自 Volta 起独立线程调度允许同一 warp 的 lane 更细粒度地暂停和推进，即使早期目标偶然按锁步执行，编译器和内存模型也没有为未声明的跨线程通信承诺顺序。因而严格可移植答案只有不交换数据的 $B=1$ 原样正确，所有 $B>1$ 都应写出同步。区分“历史机器上常见行为”与“语言保证”，是对抗审查并发代码时尤其重要的一步。
+
+\discussionpoint{先修正确性，再单独优化共享布局。}
+统一混用的 \code{BLOCK_WIDTH}/\code{BLOCK_SIZE}，并在全块写入共享瓦片后执行 \code{__syncthreads()}，就为 $B=1\ldots20$ 建立块级到达与内存可见性；题设最大 $20^2=400$ 个线程也在给定设备能力允许时合法。若实现明确限制为单 warp，可以改用带正确参与掩码的 \code{__syncwarp}，但跨 warp 不能这样替代。转置的按列共享访问还可能产生 bank conflict，常见性能布局是在第二维增加 padding；这不会替代同步，只改变 bank 映射。把屏障修复与 padding 优化分开验证，可避免用更快的错误程序掩盖竞态。
+
+\discussionpoint{测试数据应主动破坏“偶然正确”的对称性。}
+若输入是全一矩阵或对称矩阵，读错 \code{tile[x][y]} 与读对 \code{tile[y][x]} 可能给出同值，未同步内核便会伪装成正确；单次运行也可能恰好采用有利调度。应让每个位置含唯一的非对称编码，例如 $1000y+x$，覆盖 $B=2,5,6,20$ 等单 warp 边界和跨 warp 情形，并重复运行多个目标 SM。Compute Sanitizer racecheck 可提供动态竞态证据，但未报告并不等价于所有调度已证明安全。源码层仍要为每条跨线程读写找到屏障或 warp 同步，这与数值参考比较共同构成完整验证。
+\variantheading 若 $B=6$，块有 36 个线程并跨两个 warp，原代码可能跨 warp 读到未写值；加屏障后正确。
+\practiceheading 针对 \code{sm_70} 及更新目标运行 Compute Sanitizer racecheck，并用非对称瓦片数据验证转置。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{NVIDIA CUDA C++ Programming Guide 的独立线程调度、块级屏障及内存可见性；对抗审查发现单 warp 假设不可移植}
+\end{solutionexercise}
+
+\begin{solutionexercise}{11}
+\problemheading 考虑下面的 CUDA 内核及调用它的主机函数：
+\begin{lstlisting}[language=C++,firstnumber=1]
+__global__ void foo_kernel(float* a, float* b) {
+    unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
+    float x[4];
+    __shared__ float y_s;
+    __shared__ float b_s[128];
+    for (unsigned int j = 0; j < 4; ++j) {
+        x[j] = a[j*blockDim.x*gridDim.x + i];
+    }
+    if (threadIdx.x == 0) {
+        y_s = 7.4f;
+    }
+    b_s[threadIdx.x] = b[i];
+    __syncthreads();
+    b[i] = 2.5f*x[0] + 3.7f*x[1] + 6.3f*x[2] + 8.5f*x[3]
+         + y_s*b_s[threadIdx.x] + b_s[(threadIdx.x + 3)%128];
+}
+void foo(int* a_d, int* b_d) {
+    unsigned int N = 1024;
+    foo_kernel<<<(N + 128 - 1)/128, 128>>>(a_d, b_d);
+}
+\end{lstlisting}
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item 变量 \code{i} 有多少个版本？
+  \item 数组 \code{x[]} 有多少个版本？
+  \item 变量 \code{y_s} 有多少个版本？
+  \item 数组 \code{b_s[]} 有多少个版本？
+  \item 每个线程块使用多少字节共享内存？
+  \item 该内核的浮点运算量与全局内存访问量之比是多少（OP/B）？
+\end{enumerate}
+\approachheading 自动变量按线程计数，共享变量按块计数；OP/B 只统计浮点算术和全局
+内存传输，不把共享访问计入分母。
+
+\answerheading 网格有 $1024/128=8$ 个块和 1024 个线程。
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+\item \code{i}：1024 个版本。
+\item \code{x[]}：1024 份数组（合计 $1024\times4=4096$ 个 \code{float} 元素）。
+\item \code{y_s}：每块一份，共 8 个版本。
+\item \code{b_s[]}：每块一份，共 8 份数组。
+\item 每块声明的共享内存有效载荷为
+$4+128\times4=516$ B；实现可能按硬件对齐粒度保留更多物理空间。
+\item 每线程有 5 次乘法和 5 次加法，共 10 FLOP；全局内存有 4 次
+\code{a} 加载、1 次 \code{b} 加载和 1 次 \code{b} 存储，共 6 个 32 位字，
+即 24 B。因此
+\[
+\frac{10}{24}=\frac5{12}\approx0.417\ \mathrm{OP/B}.
+\]
+\end{enumerate}
+若编译器生成 FMA，指令条数会变化，但 FLOP 计数仍把一次乘和一次加计为 2 FLOP。
+
+\editorialnote 底本主机函数把参数写成 \code{int*}，与内核的 \code{float*}
+不一致；实际可编译程序必须统一为 \code{float*}。
+
+\conclusionheading (a)--(f) 为 1024、1024 份、8、8 份、516 B、约
+$0.417$ OP/B。
+\discussionheading
+\discussionpoint{变量版本数来自执行作用域，而不是声明出现次数。}
+网格有 1024 个线程和 8 个块，所以线程私有的 \code{i} 与 \code{x[4]} 各有 1024 个逻辑版本，块共享的 \code{y_s} 与 \code{b_s[128]} 各有 8 份；数组版本数与其中元素总数又是两个不同问题。指针 \code{a}/\code{b} 虽作为每线程参数存在，其所指数据处于全局地址空间，不能因参数寄存器私有就误判数组也私有。按“线程、块、网格”逐级标注每个对象，既能复核本题计数，也能直接提示哪些访问需要跨线程同步。这个方法比看变量名中的后缀更可靠，因为名称没有内存空间语义。
+
+\discussionpoint{局部数组可能进入 local address space，但原因不止 spill。}
+循环若被展开且 \code{x[j]} 的索引静态可知，四个元素可能标量化为寄存器；动态索引、取地址或栈布局要求则可能让数组直接拥有 local 存储，即使并非寄存器压力导致的溢出。local address space 语义上每线程私有，物理访问经过缓存并由设备内存层次支持，会增加题目朴素模型未计的指令和流量。因而只查看 spill load/store 不能断言 \code{x} 的放置，还应结合 \code{ptxas} 的 \code{lmem}/stack frame、PTX 中的 \code{.local} 声明以及最终 cubin/SASS。多层证据能区分显式局部对象、栈和真正的寄存器溢出。
+
+\discussionpoint{$0.417$ OP/B 是一个口径明确的静态下层模型。}
+题解按每线程 5 次乘、5 次加计 10 FLOP，并按四次 \code{a} 读、一次 \code{b} 读和一次 \code{b} 写计 24 B，故得 $5/12\approx0.417$ OP/B。编译器若生成 FMA，机器指令数变少，但常用 FLOP 口径仍把一次乘加算作 2 FLOP；共享内存访问不进入“全局字节”分母。真实 DRAM 字节还会受缓存、事务过取和潜在 local 访问影响，所以静态强度不是实际吞吐，也可能不等于 profiler 的 DRAM Roofline 强度。比较工具前必须同时统一 FLOP、读写与内存层次定义。
+
+\discussionpoint{从静态计数到优化结论需要闭合测量链。}
+四个 \code{x} 输入沿全网格连续分段读取，首先应检查各轮 warp 地址是否合并；\code{y_s} 是块内广播常量，而 \code{b_s} 的邻居访问需要屏障但可能具有规则 bank 映射。算子融合可省掉后续中间数组，数据重用可能降低 DRAM 流量，然而更多局部状态也可能提高寄存器或 local 压力。工程上应把源码的 10 FLOP/24 B 与 SASS 指令、\code{ptxas} 资源、Nsight Compute 的 FLOP、L2/DRAM 字节和实际时间并列。模型与测量不一致时，再追查缓存、spill 或编译优化，而不是直接用理论 OP/B 宣称瓶颈。
+\variantheading 若删去最后一个原始 \code{b_s} 加项，则每线程变为 5 乘、4 加，即 $9/24=0.375$ OP/B。
+\practiceheading 同时检查 ptxas 的寄存器、spill、\code{lmem} 与 stack frame，搜索 PTX \code{.local} 并核对 cubin/SASS，再以 Nsight Compute 实测 DRAM Bytes 与 FLOP 计数。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{NVIDIA CUDA C++ Programming Guide 的变量内存空间与线程/块作用域；字节数和 FLOP 数独立复核，置信度高}
+\end{solutionexercise}
+
+\begin{solutionexercise}{12}
+\problemheading 某 GPU 的硬件限制为：每个 SM 2048 个线程、32 个线程块、65,536 个
+寄存器和 96 KB 共享内存。对下列内核特征，判断内核能否达到满占用率；如果
+不能，指出限制因素：
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item 每块 64 个线程，每线程 27 个寄存器，每个 SM 4 KB 共享内存；
+  \item 每块 256 个线程，每线程 31 个寄存器，每个 SM 8 KB 共享内存。
+\end{enumerate}
+
+\approachheading 按底本原文把共享内存数解释为“每 SM 使用量”；分别核对达到 2048
+线程所需的块数、寄存器数和共享内存。
+
+\answerheading
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+\item 64 线程/块需要 32 个块，恰好等于块上限；寄存器需求
+$2048\times27=55{,}296<65{,}536$，共享内存 $4$ KB $<96$ KB。因此可以满占用。
+\item 256 线程/块需要 8 个块；寄存器需求
+$2048\times31=63{,}488<65{,}536$，共享内存 $8$ KB $<96$ KB。因此也可以满占用。
+\end{enumerate}
+
+\editorialnote 底本明确写的是 shared memory/SM，而非 shared memory/block。若原意
+其实是每块用量，则 (a) 会因 $32\times4=128$ KB 超过 96 KB 而受共享内存限制，
+最多 24 块、1536 线程（$75\%$）；(b) 的 $8\times8=64$ KB 仍可满占用。题解不静默
+替换底本单位。
+
+\conclusionheading 按题面字面含义，两种配置都可达到满占用率。
+\discussionheading
+\discussionpoint{“每 SM 使用量”与“每块使用量”会导出不同答案。}
+硬件规格通常说 SM 总共有 96 KB，共享资源报告则通常说某内核每块用多少；题面却把 4 KB、8 KB 写成每 SM 使用量，因此按字面只需分别与 96 KB 比较，两项都不限制满占用。若原意其实是每块，(a) 为达到 2048 线程需要 32 块，总需求 $32\times4=128$ KB，只能驻留 24 块、1536 线程，即 $75\%$；(b) 的 8 块共 64 KB 仍可满占用。单位歧义不是文字小节，它改变了限制资源和数值结论。题解同时给出两条解释分支，比静默选择常见含义更可审计。
+
+\discussionpoint{活动块数由所有资源商的最小整数决定。}
+对每块线程数 $T$、寄存器用量 $R_b$ 和共享字节 $S_b$，简化模型的驻留块数取线程商、块上限、寄存器商与共享内存商向下取整后的最小值；满占用还要求该块数乘 $T$ 达到 2048。任何一项跨过整数边界都能成为新的限制因素，因此只验证寄存器总量小于 65,536 并不充分。真实设备还会按架构粒度分配寄存器和共享区，并把静态与启动时动态共享内存合并计算。这个“多维整数装箱”模型能统一前几章的占用率题，也说明为何临界手算必须用目标设备工具复核。若两项同时达到相同最小值，应把它们都报告为共同限制，而非任意挑一个名称。
+
+\discussionpoint{满占用只是延迟隐藏容量，不是性能终点。}
+按题面字面，两种配置都能达到理论 $100\%$，但 (a) 需要 32 个小块，(b) 只需 8 个大块，块级同步、调度自由度和数据复用方式并不相同。若为了维持满占用而强压寄存器，spill 可能增加 local 流量；若缩小共享瓦片，输入复用下降也可能让 DRAM 成为瓶颈。相反，一个计算密集内核在较低占用时仍可能有足够就绪 warp 填满管线。配置选择应同时观察实际吞吐、eligible warps、资源使用和数据移动，把占用率当作必要的容量诊断而非单一优化目标。
+
+\discussionpoint{资源结论要附带可复现的构建与设备证据。}
+同一源码因目标 SM、编译器版本、内联和模板参数不同，寄存器与静态共享内存都可能变化；动态共享内存又来自具体启动参数，所以文档中的一行数字不足以复现 occupancy。应记录设备属性、\code{cudaFuncAttributes}、编译命令和动态共享字节，再用 Occupancy API 或分析器计算活动块，并以实测驻留情况核对。遇到本题这样的单位冲突，还应在状态记录中保留原文、解释假设和两套数值，而不是只留下最终百分数。这样后来者能判断差异来自题面、编译产物还是硬件，而不会把假设变化误认为计算错误。
+\variantheading 按每块 4 KB 解释 (a)，96 KB 只能容纳 24 块，即 1536 线程、$75\%$ 占用率。
+\practiceheading 读取 \code{cudaFuncAttributes.sharedSizeBytes} 并用 Occupancy API 计算目标 GPU 的真实驻留数。
+\sourcecheck{https://docs.nvidia.com/nsight-compute/NsightCompute/index.html}{NVIDIA Nsight Compute Occupancy Calculator 的资源约束模型；并对底本 shared memory/SM 单位作对抗审查}
+\end{solutionexercise}

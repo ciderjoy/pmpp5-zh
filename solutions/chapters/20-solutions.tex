@@ -1,0 +1,264 @@
+\chapter{大语言模型}
+
+\begin{solutionexercise}{1}
+\problemheading 为原书图 20.9 中的 FlashAttention 内核补充主机端调用代码。设置输入
+和输出数组的大小时，参考原书图 20.8 中所示矩阵的维度：本教学内核计算一个注意力头，
+$Q,K,V,O$ 均为 $N\times d$，softmax 分母输出 $D$ 长度为 $N$；固定
+$d=128$、$B_r=B_c=32$、每块 512 个线程，并要求 $N$ 是 32 的倍数。主机代码须完成
+尺寸检查、设备属性/共享内存检查、分配与复制、内核启动、同步、错误检查、结果回传和释放。
+
+\approachheading 该教学内核固定 $d=128$、$B_r=B_c=32$、每块 512 线程。$Q,K,V,O$
+均为 $N\times d$，$D$ 长度为 $N$；外层 grid-stride 循环允许网格块数小于
+$T_r=N/B_r$。
+
+\answerheading 下面函数处理一个注意力头，假定主机输入已初始化：
+\begin{lstlisting}[language=C++]
+void run_flashattention(const float* hQ, const float* hK,
+                        const float* hV, int N,
+                        std::vector<float>& hO,
+                        std::vector<float>& hD) {
+  if (N <= 0 || N % B_r != 0 || N % B_c != 0)
+    throw std::invalid_argument("teaching kernel requires N % 32 == 0");
+  static_assert(d == 128 && BLOCK_SIZE == 512, "kernel constants");
+
+  size_t elements = size_t(N) * d;
+  if (elements > SIZE_MAX / sizeof(float))
+    throw std::overflow_error("attention allocation");
+  size_t matrixBytes = elements * sizeof(float);
+  size_t vectorBytes = size_t(N) * sizeof(float);
+  float *dQ=nullptr, *dK=nullptr, *dV=nullptr;
+  float *dO=nullptr, *dD=nullptr;
+  CHECK(cudaMalloc(&dQ, matrixBytes));
+  CHECK(cudaMalloc(&dK, matrixBytes));
+  CHECK(cudaMalloc(&dV, matrixBytes));
+  CHECK(cudaMalloc(&dO, matrixBytes));
+  CHECK(cudaMalloc(&dD, vectorBytes));
+  CHECK(cudaMemcpy(dQ, hQ, matrixBytes, cudaMemcpyHostToDevice));
+  CHECK(cudaMemcpy(dK, hK, matrixBytes, cudaMemcpyHostToDevice));
+  CHECK(cudaMemcpy(dV, hV, matrixBytes, cudaMemcpyHostToDevice));
+
+  cudaDeviceProp prop{};
+  int device=0, activePerSM=0;
+  CHECK(cudaGetDevice(&device));
+  CHECK(cudaGetDeviceProperties(&prop, device));
+  CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+      &activePerSM, flashattention_forward_kernel, BLOCK_SIZE, 0));
+  int tiles = N / B_r;
+  int blocks = std::min(tiles, activePerSM * prop.multiProcessorCount);
+  if (blocks <= 0) throw std::runtime_error("kernel cannot be resident");
+  float scaling = 1.0f / sqrtf(float(d));
+  flashattention_forward_kernel<<<blocks, BLOCK_SIZE, 0, 0>>>(
+      dQ, dK, dV, N, scaling, dD, dO);
+  CHECK(cudaGetLastError());
+  CHECK(cudaDeviceSynchronize());
+
+  hO.resize(elements); hD.resize(N);
+  CHECK(cudaMemcpy(hO.data(), dO, matrixBytes, cudaMemcpyDeviceToHost));
+  CHECK(cudaMemcpy(hD.data(), dD, vectorBytes, cudaMemcpyDeviceToHost));
+  CHECK(cudaFree(dD)); CHECK(cudaFree(dO)); CHECK(cudaFree(dV));
+  CHECK(cudaFree(dK)); CHECK(cudaFree(dQ));
+}
+\end{lstlisting}
+内核不读取输出初值，所以无需预清零 \code{dO} 和 \code{dD}。
+其寄存器状态必须由第 3 题的 \code{initialize()} 清零。同步既检查运行期错误，
+也建立输出复制前的生命周期完成点。
+异常安全的工程版本应以 RAII 管理五个设备指针。
+
+代码只覆盖原书教学前提。支持任意 $N$ 时，$T_r,T_c$ 必须向上取整，并在加载、掩码、
+写回中处理尾部；支持 batch/multi-head 时还要给指针增加批次与头偏移，或使用网格的其他
+维度。静态共享内存和 512 线程还必须满足目标设备限制。
+
+\complexity{精确注意力为 $O(N^2d)$ 算术；分块减少的是 HBM 流量而非渐近算术量}{$Q,K,V,O$ 各 $Nd$，$D$ 为 $N$；每块另用约 37 KiB 静态共享内存及寄存器 tile}{最多 $T_r=N/32$ 个独立行 tile；grid-stride 循环在块数受驻留限制时继续覆盖全部 tile}
+\conclusionheading 正确尺寸为三个 $N\times128$ 输入、一个 $N\times128$ 输出和一个
+$N$ 分母向量，缩放因子为 $1/\sqrt{128}$。
+\discussionheading
+\discussionpoint{FlashAttention 的关键是重排 I/O 而非近似 softmax。}
+朴素注意力先形成 $N\times N$ 分数矩阵，再做 softmax 和乘 $V$，中间矩阵会在 HBM 中反复读写；当 $N$ 很大时，这些字节常比算术更昂贵。分块算法让 $Q$ 的一组行与 $K,V$ tile 在片上相遇，并用在线归一化立即累计输出，因此不必把完整分数矩阵物化。它仍计算精确注意力公式，只因浮点运算重排产生允许范围内的舍入差异，渐近算术仍是 $O(N^2d)$。所以性能分析不能只数 FLOP，还要问每个 tile 被复用几次、避免了多少 HBM 往返，以及额外重算是否比保存中间量更划算。
+
+\discussionpoint{在线 softmax 保存的是可合并的行统计量。}
+处理一段 logits 后，只需保留最大值 $m$、缩放后的指数和 $D=\sum_j e^{s_j-m}$，以及同一尺度下的加权输出 $O=\sum_j e^{s_j-m}V_j$。两个有效块的状态应对称合并：令 $m=\max(m_1,m_2)$，则 $D=e^{m_1-m}D_1+e^{m_2-m}D_2$，且 $O=e^{m_1-m}O_1+e^{m_2-m}O_2$；这既覆盖新最大值变大的情形，也覆盖 $m_2<m_1$ 时只缩放新块的情形。最终 $O/D$ 与一次性 softmax 等价。若两块都全掩码而使 $m_1=m_2=-\infty$，上述差值会出现 $-\infty-(-\infty)$，必须由单独的无有效元素分支处理，不能依赖公式自行得到零。这个可合并状态也适用于流式 log-sum-exp 和分布式归约，其价值在于把完整历史压缩为充分统计量。
+
+\discussionpoint{tile 尺寸由线程、共享内存和寄存器共同约束。}
+教学配置用 512 线程、$B_r=B_c=32$、$d=128$，共享的 $K^T$、$V$ 和分数 tile 合计约 37~KiB；这换来片上复用，也可能让每个 SM 同时驻留的块减少。扩大 tile 可降低外层循环和加载次数，却会增长共享内存、寄存器状态与同步成本；缩小 tile 增加并行块，却让同一数据更频繁搬运。生产内核还会针对 FP16/BF16、Tensor Core、异步复制、dropout 和掩码选择不同形状，并为非整 tile 尾部生成谓词路径。因此教材常数只是一个可审查实例，不能直接当成所有序列长度和架构的最佳配置。
+
+\discussionpoint{训练预填充与逐 token 解码已经形成不同内核族。}
+训练或长提示的 prefill 同时拥有许多 query 行，矩阵乘规模大，重点是前后向总 I/O 和 Tensor Core 利用；自回归解码每步 query 很少，却要读取不断增长的 KV cache，瓶颈更接近容量与不连续访问。paged attention 用页表管理 KV 块，grouped-query attention 让多个 query 头共享较少的 KV 头，分别处理内存碎片与容量压力。评价时应按阶段和序列长度报告输出误差、HBM 字节、有效计算率和端到端 token/s，而不是用一个峰值代表全部场景。这个分化说明算法公式相同，并不意味着部署工作负载拥有同一性能结构。
+\variantheading 若 $N=96$，则有 3 个行 tile；每个 $N\times128$ 矩阵含 12,288 个 float、占 49,152 字节，$D$ 占 384 字节，缩放仍为 $1/\sqrt{128}\approx0.0883883$。
+\practiceheading 假定 NVIDIA GPU 支持每块 512 线程、至少 37 KiB 共享内存且输入为 FP32、$N$ 为 32 的倍数，用 FlashAttention 官方实现或 PyTorch SDPA 校验输出；以 Nsight Compute 比较 HBM 字节、occupancy 和数值误差。
+\sourcecheck{https://arxiv.org/abs/2205.14135}{FlashAttention 原始论文；对抗检查：该算法是精确重排但并不自动支持任意尾部，忽略 $N$ 的分块边界会漏算而不只是变慢}
+\end{solutionexercise}
+
+\begin{solutionexercise}{2}
+\problemheading 阅读 CUB 文档，了解 \code{WarpReduce} 命名空间中数据类型的细节，
+以及调用 \code{Reduce} 函数时各参数的语义。特别注意归约操作所支持的各种算术函数。
+回答须说明模板数据类型和逻辑 warp 宽度、每个逻辑 warp 的临时存储、每线程输入、二元
+归约操作、结果在哪些 lane 有效，以及和、最小值、最大值等操作的类型/结合性要求。
+
+\approachheading 以当前 CCCL/CUB 接口为准，区分类模板、临时存储、每线程输入、二元
+操作和结果有效 lane。
+
+\answerheading 常见声明为
+\begin{lstlisting}[language=C++]
+using WR = cub::WarpReduce<T, LOGICAL_WARP_THREADS>;
+__shared__ typename WR::TempStorage temp[WARPS_PER_BLOCK];
+T aggregate = WR(temp[warp_id]).Reduce(thread_value, binary_op);
+\end{lstlisting}
+其中：
+\begin{itemize}
+  \item \code{T} 是每线程贡献及返回聚合值的类型；\code{LOGICAL_WARP_THREADS} 默认是
+  硬件 warp 大小，也可把一个物理 warp 切成多个逻辑 warp。\code{TempStorage} 是该
+  collective 的共享临时类型，每个同时工作的逻辑 warp 必须有不重叠实例。
+  \item \code{thread_value} 是调用 lane 的输入，\code{binary_op} 是可调用的二元归约
+  运算。\code{Reduce} 的完整聚合只保证在每个逻辑 warp 的 lane 0 有效；若所有 lane
+  都需要结果，应再用 shuffle 从 lane 0 广播。
+  \item 带 \code{valid_items} 的重载只纳入前若干 lane。参与的线程必须以一致控制流调用；
+  临时存储在下一次复用前应遵守文档的 warp 同步要求。
+\end{itemize}
+
+\code{Reduce} 并不限于加法；它接受满足归约要求的自定义二元 functor。CUB 提供的常用
+操作包括 \code{cub::Sum()}、\code{cub::Min()}、\code{cub::Max()}，以及适合键值对的
+arg-min/arg-max 等操作；\code{Sum()} 还有专用便利成员。浮点加法虽然数学上结合，但在有限
+精度中不严格结合，所以树形归约的结果可能与串行和有若干 ULP 差异。
+
+\editorialnote 原书图 20.12 和图 20.15 各只声明一个共享
+\code{WarpReduce::TempStorage}，而原书图 20.9 的线程块有 16 个 warp，它们会并发调用
+归约。这会让多个 warp 竞态复用同一临时区。可执行实现应声明
+\code{temp_store[N_WARPS]} 并以 \code{warpIdx()} 选择；图 20.4 使用的是整块唯一的
+\code{BlockReduce}，不受这一问题影响。
+
+\conclusionheading \code{WarpReduce} 是逻辑 warp collective，不是普通标量函数；
+临时存储所有权、参与线程集合和 lane 0 结果语义都是正确调用的一部分。
+\discussionheading
+\discussionpoint{WarpReduce 是有参与契约的 collective。}
+调用 \code{Reduce} 不是 32 次互不相关的标量函数，而是一组 lane 共同完成一次归约；每个 lane 提供输入，库在它们之间交换数据。完整结果通常只保证在逻辑 warp 的 lane 0 有效，其余 lane 的返回值不能未经说明直接使用，若大家都需要就应显式广播。逻辑宽度还可以是 8 或 16，使一个物理 warp 包含多个独立小组。正确使用因此要同时说明输入类型、逻辑宽度、参与 lane、结果所有者和广播步骤；CUB 封装了通信实现，却没有取消调用者对集体操作边界的责任。
+
+\discussionpoint{临时存储的所有权必须与并发实例一一对应。}
+原书教学块有 16 个 warp，若它们同时把中间值写进同一个 \code{TempStorage}，不同 collective 的生命周期重叠，就会形成共享内存竞态。最直接的设计是声明 \code{temp[WARPS_PER_BLOCK]}，用 warp 编号选择独立元素；逻辑 warp 小于 32 时还要按实际小组数分配。同一组连续两次复用临时区也应遵守 API 的同步要求，不能把硬件常见的锁步执行当成无限期可见性保证。这个问题与线程池复用工作缓冲相同：库对象的类型正确不代表并发所有权正确，资源实例必须覆盖所有同时活动的操作。
+
+\discussionpoint{参与掩码定义了哪些值真正存在。}
+手写 shuffle 归约常在尾部或分支中出错：某个 lane 已退出，却仍被掩码列为来源，其他 lane 便可能读取未定义值。逻辑 warp 设为 8 时，物理 lane 0、8、16、24 分别是四组的根，不能把物理 lane 0 当成整个 warp 唯一结果位置。CUB 可以表达这些子组，但参与线程仍须以一致控制流进入 collective，并传入与有效数据一致的数量或掩码。这个边界也出现在 ballot、scan 和协作组中，说明 SIMD/SIMT 原语的正确性不仅取决于算术，还取决于“谁同时参加”这一控制流集合。
+
+\discussionpoint{归约操作需要代数性质与数值语义。}
+树形归约假定二元操作至少具有结合性，才能在改变括号位置后保持数学结果；最大值和整数加法通常满足，字符串减法之类的非结合操作则会随树形得到不同语义。浮点加法在实数中结合，在有限精度中却不严格结合，所以结果可能与串行顺序相差若干 ULP，即使 collective 没有任何竞态。自定义 functor 还应处理单位元、NaN 和有符号零等边界。性能上可以比较 shuffle、共享访问和同步，正确性上则要用不同逻辑宽度与输入分布检查结果，这把 API 使用问题连接到了并行代数结构。
+\variantheading 对 \code{WarpReduce<int,8>}，一个 32-lane 物理 warp 被分成 4 组；若物理 lane $i$ 输入 $i+1$ 并求和，则物理 lane $0,8,16,24$ 的有效聚合依次为 $36,100,164,228$。
+\practiceheading 在硬件 warp 为 32、CUDA 计算能力 7.0 或更新且逻辑 warp 设为 8 的 NVIDIA GPU 上，写 CUB 微测试并用 Compute Sanitizer racecheck 排除 TempStorage 复用；Nsight Compute 再比较 shuffle/shared 指令数。
+\sourcecheck{https://github.com/NVIDIA/cccl/tree/main/cub}{NVIDIA CCCL/CUB 官方源代码与文档；对抗检查：若所有 warp 共用一个 TempStorage，或未经广播就在任意 lane 使用 Reduce 返回值，教学公式正确也会被实现竞态破坏}
+\end{solutionexercise}
+
+\begin{solutionexercise}{3}
+\problemheading 编写原书图 20.9 第 21 行所调用的 \code{initialize()} device
+function，并解释为什么必须把 \code{O_i} 和 \code{D_i} 的元素初始化为
+\code{0.f}。还应说明为什么 \code{m_i} 需要初始化为负无穷。这里每个 warp 的寄存器
+状态包括 $O_i[B_{r,\mathrm{warp}}][d_{\mathrm{lane}}]$、
+$D_i[B_{r,\mathrm{warp}}]$ 和 $m_i[B_{r,\mathrm{warp}}]$，后续按在线 softmax 公式逐个
+$K/V$ tile 合并。
+
+\editorialnote 所核英文第 5 版底本只要求解释 $O_i$ 与 $D_i$ 为何初始化为 0；中文译稿
+另增加了 $m_i=-\infty$ 的问项。本题解保留译稿增补，并将三种状态的单位元一并说明。
+
+\approachheading 三个状态分别参加加法累积、分母累积和最大值累积，初始化应使用各自
+运算的单位元。
+
+\answerheading
+\begin{lstlisting}[language=C++]
+__device__ inline void initialize(
+    float O_i[B_r_warp][d_size],
+    float D_i[B_r_warp],
+    float m_i[B_r_warp]) {
+  #pragma unroll
+  for (int ii = 0; ii < B_r_warp; ++ii) {
+    D_i[ii] = 0.0f;
+    m_i[ii] = -CUDART_INF_F;
+    #pragma unroll
+    for (int dd = 0; dd < d_size; ++dd)
+      O_i[ii][dd] = 0.0f;
+  }
+}
+\end{lstlisting}
+$O_i=0$ 使第一个 $PV$ tile 从零部分和开始；否则未初始化寄存器会把任意位型带入最终输出。
+$D_i=0$ 是指数和的加法单位元，且在首次最大值更新时
+$0\cdot\exp(-\infty-m)=0$。$m_i=-\infty$ 是最大值运算的单位元，保证第一个包含合法 key
+的 tile 一定更新最大值。若误设为 0 且该行所有 logit 都为负，$m$ 不再等于已处理元素的
+真实最大值，破坏 online softmax 的状态不变量；在精确实数算术且无下溢时，分子分母仍可能
+因共同缩放而得到相同归一化结果，但极负 logit 会更早下溢，使分母为 0 或丢失贡献，因而
+不能把 0 当作数值稳定的初始化。
+
+这些寄存器数组是每线程私有的，无需同步；共享 $K,V,S$ tile 仍需要块屏障。若通用掩码允许
+某一整行没有任何合法 key，不能只期待状态自然保持 $D=0,m=-\infty$：当旧最大值和当前 tile
+最大值都是 $-\infty$ 时，缩放项会计算 $\exp[-\infty-(-\infty)]$，其中差值已经是 NaN，
+分母和输出累加器也可能被污染。生产实现必须维护“已有有效项”状态或有效计数，完全无效的
+tile 直接跳过，第一批有效项则直接建立最大值和累加器；最终再用 $D=0$ 检查作防御性收尾。
+因果掩码的每一行至少允许对角元素，所以原书场景不会触发该边界。
+
+\conclusionheading 0、0、$-\infty$ 分别是输出和、softmax 分母和最大值的正确单位元。
+\discussionheading
+\discussionpoint{负无穷是最大值递推的自然单位元。}
+初始化状态要表达“尚未见过任何有效 logit”，而不是假装已经见过数值 0。对任意有限 $x$，$\max(-\infty,x)=x$，且 $e^{-\infty}=0$，所以第一项能自然建立最大值和指数和，无需另设首项分支。若把 $m$ 初始化为 0，而真实 logits 全为负，归一化在精确算术中有时仍因共同尺度抵消而得到相同比例，但极负值更容易提前下溢，使分母丢失贡献。负无穷作为 max-plus 代数的单位元也用于 Viterbi、对数概率和 masked reduction，体现了用正确代数身份简化边界状态的普遍方法。
+
+\discussionpoint{全掩码 tile 会在最终除法之前制造 NaN。}
+若旧最大值与当前 tile 最大值都是 $-\infty$，直接计算缩放因子会遇到 $-\infty-(-\infty)=\mathrm{NaN}$，随后即使旧分母是 0，$0\times\mathrm{NaN}$ 仍是 NaN。因此不能只在最终写回时检查 \code{D==0}，因为 $D$ 可能早已被污染；实现应让全无效 tile 跳过递推，或维护有效计数/谓词，只对至少一个有限元素的集合更新状态。整行最终无有效 key 时，接口还要明确定义返回零、NaN 或错误。常规 causal mask 保留对角项，原书路径不会触发整行全掩码，但通用 attention mask 不能借用这一假设。
+
+\discussionpoint{有限的大负常数不能完全替代掩码语义。}
+用 $-10^4$ 之类常数代替 $-\infty$ 看似避免了非法运算，但该值在不同精度和缩放后可能成为有限数或舍入成无穷，语义并不稳定。若真实 logit 也达到类似量级，被屏蔽项甚至可能获得非零权重；当一整行都填同一有限常数时，softmax 还会产生近似均匀分布，而不是“没有有效项”。更稳健的设计是让有效谓词参与 max 与 sum，并在无有效项时采用接口约定的收尾路径。这个区别提醒我们，数值哨兵只是编码手段，不能取代集合成员关系和异常状态的显式表示。
+
+\discussionpoint{减最大值只是稳定递推的第一道防线。}
+把 logits 减去当前最大值可避免指数上溢，但 $D$ 的长序列累计、旧输出的反复缩放和最终除法仍会舍入，低精度下小贡献也可能下溢。实践中常让 Q/K/V 使用 FP16 或 BF16，而用 FP32 保存最大值、分母和输出累加器，再在最后转换。测试应覆盖极大正负值、单个有效 key、跨 tile 最大值突增、全掩码、不同 tile 划分和长序列，并与高精度朴素参考比较。只有在这些路径下都满足误差约定，才能说明“数值稳定”；一个普通随机样例相等只证明了最容易的分支。
+\variantheading 若允许某查询行屏蔽全部 key，应为每行维护 \code{hasValid} 或有效计数：空 tile 不执行 max/exp 递推，第一项有效 score 令 $m=s,D=1,O=V$；最终若仍无有效项，则按接口约定写 $O=0,D=0,m=-\infty$ 并跳过除法。只在写回前检测 $D_i=0$ 不能修复此前已经传播的 NaN。
+\practiceheading 假定 IEEE FP32 \code{expf}、NVIDIA GPU 且常规因果掩码至少保留对角元素，用 FlashAttention 或 PyTorch \code{scaled_dot_product_attention} 对照随机行；随附 CPU 回归还构造全掩码行和单一有效 key，验证空 tile 跳过、零向量约定及首项初始化，再用 Compute Sanitizer 检查越界而非掩盖 NaN。
+\sourcecheck{https://arxiv.org/abs/1805.02867}{Online normalizer calculation for softmax 原始论文；对抗检查：把 $m$ 初始化为最小正数或 0 都不是 max 的单位元，全掩码行还需单独处理零分母}
+\end{solutionexercise}
+
+\begin{solutionexercise}{4}
+\problemheading 证明原书图 20.11 的 device function 中嵌套循环对 $K$ 和 $V$ 的
+所有加载都是合并访问。代码对每个 $jj=0,\ldots,B_c-1$ 执行
+\code{for (dd=threadIdx.x; dd<d; dd+=blockDim.x)}，并从两数组的同一线性下标
+\[
+  (B_cj+jj)d+dd
+\]
+分别加载到共享内存 $K_j^{\mathsf T}[dd,jj]$ 和 $V_j[jj,dd]$。证明须按 warp/lane
+写出每轮全局地址，处理 $d=128$、\code{blockDim.x=512} 时的活动 warp，并区分“合并
+访问”与“单个对齐内存事务”。
+
+\approachheading 固定外层 \code{jj}，考察同一 warp 中相邻 lane 的 \code{dd} 和全局
+线性地址。块是一维 512 线程，\code{threadIdx.x} 就是线性线程号。
+
+\answerheading 对任意固定 $j,jj$，两个全局地址完全相同，只是基指针不同：
+\[
+ a_K(t)=a_V(t)=(B_cj+jj)d+t,
+\]
+其中 $t=\code{threadIdx.x}$。内层每次迭代把 $t$ 增加统一的
+\code{blockDim.x}，所以某 warp 的 lane $\ell=0,\ldots,31$ 在任一迭代读取
+\[
+  A+\ell,\qquad A=(B_cj+jj)d+w\cdot32+k\cdot\code{blockDim.x},
+\]
+即 32 个连续 \code{float}。因此 $K$ 和 $V$ 都形成连续的 128 字节 warp 请求；对齐时可由
+最少的内存交易服务，不对齐时至多拆成相邻交易，但仍是合并模式。
+
+在原书常数 $d=128$、\code{blockDim.x=512} 下，每个 \code{jj} 只有线程 0--127 活跃，
+恰好四个完整 warp，各自加载连续 32 个元素；其余 warp 统一不进入内层循环。\code{cudaMalloc}
+提供充分的基址对齐，而每行 $128\times4=512$ 字节，所以每行也保持对齐。若 $d>512$，
+下一次循环只是让每个 warp 跳到同一行中再后移 512 个元素，lane 间连续性不变。
+
+写共享内存时，$V_j[jj][dd]$ 按行连续；$K$ 则通过
+\code{addr(dd*B_c+jj)} 转置并加 padding。这个不连续的是\emph{共享内存目的地址}，不会
+改变全局源地址的合并性。若 $d$ 不是 warp 倍数，最后 warp 会部分活跃；若行基址未对齐，
+交易数可能增加，但不存在 lane 间大步长访问。
+
+\complexity{每个 $K/V$ tile 各加载 $B_cd$ 个元素，合计 $O(B_cd)$}{共享 tile 各 $B_cd$，$K^T$ 另有 bank padding}{块内线程共同搬运；每个活跃 warp 在固定 jj 时访问连续区段}
+\conclusionheading 合并性的关键是全局右端下标 \code{+dd}，而不是共享端的转置下标。
+\discussionheading
+\discussionpoint{合并访问只描述请求形状，不承诺高带宽。}
+同一 warp 的 lane 若读取连续且适当对齐的 FP32 地址，硬件可以用较少 sector 服务请求，这证明了交易效率；它没有说明设备同时有多少请求在途。教学配置每个 \code{jj} 只有四个 warp 负责 $d=128$ 的搬运，其余 warp 在该循环中空闲，若网格又很小，延迟仍可能无法隐藏。加载后的 tile 是否被多次复用也决定这些字节是否值得。因而“已合并”只是必要的局部地址性质，完整吞吐还受活跃 warp、并发块、缓存命中和消费算术约束，不能把一个地址证明直接升级成性能结论。
+
+\discussionpoint{二维线性化会让行距参与对齐。}
+$d=128$ 时每行是 512 字节，四个完整 warp 恰好覆盖一行，且下一行仍保持常见的 128 字节边界相位。若 $d=130$，第五个 warp 只有两个 lane 活跃，行距变为 520 字节；下一行基址相对 128 字节边界移动 8 字节，后续完整 warp 请求可能跨更多 sector。边界谓词足以保证正确性，却不能恢复对齐与活跃 lane 效率。可以为物理行加 padding、按向量宽度分块或重新安排线程，但都要区分逻辑 $d$ 与实际 stride，这与图像 pitch 和张量 leading dimension 是同一类布局问题。
+
+\discussionpoint{异步 copy 把加载和计算组织成生产消费流水。}
+同步实现让所有 warp 搬完当前 tile、经过屏障后再开始计算，加载等待与算术没有重叠。更深的实现可让 producer warp 用异步 copy 填充下一缓冲，consumer warp 同时处理上一缓冲，并以双缓冲和阶段标记防止过早覆盖。这样可能隐藏全局延迟，却会增加共享内存、屏障状态和生命周期证明，尾 tile 还要用谓词或零填充保持消费者看到合法值。流水级数过多会降低驻留，producer 分工不当也会让计算 warp 饥饿；它是资源交换，不是打开某条指令就自动获得的重叠。
+
+\discussionpoint{计数器验证应建立在地址推导之后。}
+先按 lane、元素宽度和行距推导期望的连续区段与 sector 数，再用 profiler 比较实际 sectors/request、活跃 lane 和 stall，才能判断偏差来自对齐、尾部还是并发不足。只看 Global Load Efficiency 可能遗漏“请求很高效但数量太少”，只看 DRAM 吞吐又可能把无用流量误作成功。对注意力还应把加载字节除以 tile 的片上复用次数，并同时观察共享内存和指数计算瓶颈。理论地址分析给出可证预期，硬件计数器用于验证实现是否遵守预期；两者结合比盲目扫描指标更有解释力。
+\variantheading 若 $d=130$、仍用 512 线程，则每行由 4 个完整 warp 加 1 个仅 2 lane 活跃的 warp 加载；行距为 520 字节，使相邻行基址相对 128 字节边界偏移 8 字节，后续完整请求可能拆成两个交易。
+\practiceheading 假定 32-lane warp、4 字节 FP32 和 128 字节对齐的 \code{cudaMalloc} 基址，在 $d=128,130,160$ 上用 Nsight Compute 记录 Global Load Efficiency、sectors/request 与活跃 lane；再与 FlashAttention/CUTLASS 的异步 copy 路径比较。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{CUDA C++ Programming Guide 的全局内存合并规则；对抗检查：共享目的地址的 padding 不能用来证明全局合并，证明必须直接比较同一 warp 的全局源地址}
+\end{solutionexercise}

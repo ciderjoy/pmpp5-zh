@@ -1,0 +1,445 @@
+\chapter{前缀扫描}
+
+\begin{solutionexercise}{1}
+\problemheading 对数组 $[4,6,7,1,2,8,5,2]$ 使用 Kogge--Stone 算法执行并行包含式前缀扫描，
+写出每一步后的数组中间状态。第 $r$ 轮步幅为 $2^r$；下标 $i\ge2^r$ 的元素把本轮开始时
+下标 $i-2^r$ 的值加到自身，所有线程完成该轮后才进入下一轮。
+
+\approachheading 长度为 8，故步幅依次为 1、2、4。步幅 $s$ 时，位置 $i\ge s$ 使用
+上一轮的值更新为 $x_i+x_{i-s}$。
+
+\answerheading
+\[
+\begin{array}{c|rrrrrrrr}
+\text{初始}&4&6&7&1&2&8&5&2\\
+s=1&4&10&13&8&3&10&13&7\\
+s=2&4&10&17&18&16&18&16&17\\
+s=4&4&10&17&18&20&28&33&35
+\end{array}
+\]
+最终一行与顺序前缀和逐项一致。每轮必须读取上一轮快照；若原地读取本轮较早 lane 的新值，
+例如步幅 1 时位置 2 读取已经更新的位置 1，就会重复计入 4。
+
+\complexity{$N\log_2N-N+1$ 次加法，深度 $O(\log N)$}{$O(N)$ 原地缓冲}{$N$ 个位置并行演化}
+\conclusionheading 包含式扫描结果为 $[4,10,17,18,20,28,33,35]$。
+\discussionheading
+\discussionpoint{扫描处理的是前缀代数而不只是整数加法。}每个输出都概括从序列开头到当前位置的全部输入，所以算法真正要求的是二元运算满足结合律，使括号可以从顺序链改写为并行树。它不要求交换律：字符串连接或矩阵乘法也能扫描，但合并时必须始终让左区段位于右区段之前；若把两个操作数颠倒，整数加法测试仍会通过，字符串结果却立刻乱序。单位元还决定排他扫描的首项以及空输入语义。由此可把同一框架用于最大前缀、逻辑状态传播、仿射函数组合和有限状态机摘要，并把正确性证明统一为“每个节点表示一个连续输入区间”。例如区间摘要若记录仿射映射 $x\mapsto ax+b$，组合次序一错，常数项就会给出立即可见的反例。
+
+\discussionpoint{前缀网络展示了工作量与依赖深度的交换。}Kogge--Stone 每轮把距离 $2^r$ 的前缀传播到更远节点，只需 $\log_2N$ 层，而且经典拓扑把单节点扇出控制在较小范围；代价是大量前缀节点、运算和密集跨距连线。Brent--Kung 或 Blelloch 用更深的上扫、下扫树把工作降到线性数量，布线也更稀疏。不能简单把前者称为“高扇出网络”，更准确的区别是低深度与节点/连线成本。这个谱系最早与并行加法器密切相关，在 GPU 上则对应屏障数、共享事务和能耗之间的同一组权衡。芯片上长连线增加电容与布线拥塞，软件中同一跨距则表现为更多共享读写，这使抽象网络成本能落到可测指标上。
+
+\discussionpoint{原地更新必须隔离相邻轮次。}第 $r$ 轮的每个线程都应读取第 $r-1$ 轮形成的完整状态；若线程先把新值写回共享数组，另一个线程随后可能把这个本轮值误当成旧值，导致一次轮次传播超过规定距离。安全实现可先读入寄存器、在所有读者完成后写回，并用块级屏障隔开轮次，或使用两个缓冲交替。warp 内 shuffle 以同步掩码交换寄存器，跨 warp 仍需共享状态；跨块更不能依靠 \code{__syncthreads()}，而要扫描块和并回加或使用严格的发布--获取协议。这个分层同步模型也是 stencil 时间步和动态规划波前正确性的共同基础。
+
+\discussionpoint{扫描是动态输出空间的地址生成器。}过滤先把谓词变成 0/1，再用排他前缀给每个保留元素分配唯一地址；基数排序用桶标志前缀确定稳定位置，CSR 构建则扫描每行非零数得到行指针。积分图、变长编码和并行内存分配看似不同，也都在询问“我之前一共需要多少资源”。测试因此不能只覆盖一组正整数：非 2 的幂会暴露尾部处理，空输入检验单位元，计数接近类型上限检验溢出，非交换结合运算能发现隐藏换序。把这些性质写成参数化测试后，一个扫描原语才真正可供多种上层算法复用。例如长度 $[3,0,2]$ 的三条记录经排他扫描得到偏移 $[0,3,3]$，同时展示零长度对象共享边界而不发生写冲突。
+\variantheading 若改求排他扫描，答案为 $[0,4,10,17,18,20,28,33]$；它可由本题包含式
+结果右移一位并在首项填加法单位元 0 得到。
+\practiceheading 以 CUB \code{DeviceScan::InclusiveSum} 对照随机与边界规模，并用 Nsight
+Compute 比较 Kogge--Stone 教学内核的全局流量和同步开销；浮点测试应允许由树形顺序导致的
+末位差异。
+\sourcecheck{https://doi.org/10.1109/TC.1973.5009159}{Kogge 与 Stone 的原始并行前缀网络论文；高置信度}
+假设审查：这里的运算是加法且要求包含当前位置；排他扫描应右移一位并在位置 0 填单位元。
+\end{solutionexercise}
+
+\begin{solutionexercise}{2}
+\problemheading 分析图 11.3 的 Kogge--Stone 内核，证明步幅不超过 warp 大小一半时，
+控制分歧只发生在每个块的第一个 warp 中。也就是说，warp 大小为 32 时，步幅为
+1、2、4、8、16 的各轮会出现控制分歧。图 11.3 的基线内核为：
+\begin{lstlisting}[language=C++,firstnumber=1]
+__global__ void scan_kernel(float *input, float *output, unsigned int N) {
+    __shared__ float buffer_s[SEG_SIZE];
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < N) buffer_s[threadIdx.x] = input[i];
+    else       buffer_s[threadIdx.x] = 0.0f;
+    for (unsigned int stride = 1; stride < blockDim.x; stride *= 2) {
+        __syncthreads();
+        float temp;
+        if (threadIdx.x >= stride)
+            temp = buffer_s[threadIdx.x] + buffer_s[threadIdx.x-stride];
+        __syncthreads();
+        if (threadIdx.x >= stride)
+            buffer_s[threadIdx.x] = temp;
+    }
+    if (i < N) output[i] = buffer_s[threadIdx.x];
+}
+\end{lstlisting}
+二维或多块的全局合并不在本题范围；只分析单个块内条件
+\code{threadIdx.x >= stride} 的 warp 内真假分布。
+
+\approachheading 内核条件是 \code{threadIdx.x >= stride}。步幅为 2 的幂，逐 warp
+分析真假 lane 的集合。
+
+\answerheading 设 warp 宽 $W=32$，且 $1\le s\le W/2$。第一个 warp 的 lane
+$0,\ldots,s-1$ 条件为假，lane $s,\ldots,W-1$ 为真，因此恰有这个 warp 分歧。对任意
+后续 warp，其最小线程下标至少为 $W>s$，全部 lane 条件为真，不分歧。
+
+当 $s\ge W$ 且 $s$ 是 $W$ 的整数倍时，前 $s/W$ 个 warp 全假，其余 warp 全真，边界
+落在 warp 之间，也不分歧。因此 $s=1,2,4,8,16$ 五轮各只有第一个 warp 分歧。
+
+\conclusionheading 结论成立；总计五个“warp--轮次”分歧事件，每轮都是 warp 0。
+\discussionheading
+\discussionpoint{一个阈值如何切开 warp。}条件 $t\ge s$ 把线程号轴分成假前缀和真后缀，分歧只会出现在阈值穿过的那个执行组。设 warp 宽为 $W$，当 $0<s<W$ 时，warp 0 同时含有 $s$ 个假 lane 和 $W-s$ 个真 lane，其后完整 warp 全真；当 $s=W$ 时，warp 0 全假而 warp 1 起全真，反而没有混合路径。这个几何视角比逐线程枚举更一般，还能处理 $t<k$ 的尾部谓词和按区间划分的稀疏任务。只要把阈值除以执行组宽度并观察余数，就能预测分歧发生在哪一组以及真假 lane 数量。
+
+\discussionpoint{少量分歧不代表扫描工作高效。}条件 $t\ge s$ 的真线程始终构成后缀 $[s,N)$，数量为 $N-s$；步幅从 1 翻倍到 $N/2$ 时，活跃数从 $N-1$ 降到 $N/2$，最后一轮仍有一半线程做加法，并非只剩很小前缀。因此本算法的问题不是后期几乎没有工作，而是同一批元素跨 $\log_2N$ 轮反复参与，总加法为 $N\log_2N-N+1$，并且每轮都要支付共享通信和块级屏障。branch efficiency 只能说明阈值是否切开 warp，不能据此推出 work efficiency 或同步延迟；与只做 $O(N)$ 运算的 Blelloch 树比较，才看得见低深度网络用额外工作换关键路径的真实代价。类似地，规则树内核应同时报告活跃 lane、总动态指令和 barrier stalls，而不能把“分支很整齐”当成整体高效。
+
+\discussionpoint{谓词化只改变控制实现而不创造有效工作。}编译器可能把短条件体翻译为带谓词的指令，使硬件不执行显式跳转；假 lane 虽不会写结果，仍可能占据指令发射槽，所以源代码没有分支事件不等于没有掩码浪费。warp shuffle 可在执行组内交换前缀并减少共享往返，但要求正确的活动掩码和一致参与；跨 warp 的总和仍要通过共享内存或块级集体原语传播。理解这两层后，就能选择让编译器谓词化短路径、用 shuffle 完成局部网络、再用共享数组连接各 warp，而不是把“无 branch 指令”误当作优化终点。
+
+\discussionpoint{测量必须把硬件事件对应回算法轮次。}一个内核汇总出的分支效率无法告诉我们问题发生在距离 1 还是距离 512 的传播，因此可在实验版本中拆分轮次、插入范围标记或对小规模版本逐轮计时。分析时应同时看活动 lane、已执行指令、屏障等待和共享事务，并以源代码条件推导的阈值位置作预测。证明还依赖块从线程 0 对齐分组、完整 warp 与给定宽度 $W$；尾 warp 或其他平台 subgroup 会改变掩码。这样先预测、再采样、最后解释偏差的过程，比看到一个低百分比便归因于“分歧”更有可证伪性，也可迁移到任何规则阈值内核。
+\variantheading 若假设 warp 宽为 64 且算法步幅不超过 32，则仍恰有第一个 warp 分歧；
+步幅 32 时它由 32 个假 lane 和 32 个真 lane 构成。
+\practiceheading 可在 Nsight Compute 的 Source Counters 中逐轮核对分支与活动线程掩码；
+生产扫描通常用 warp shuffle，使 $s<W$ 的数据交换不必经过共享内存，但仍须传入正确掩码。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{NVIDIA 对 warp 分支路径串行化的官方说明；高置信度}
+反例审查：若步幅不是 2 的幂或不与 32 对齐，例如 $s=40$，边界会落在第二个 warp 内；
+证明依赖算法的倍增步幅，不能推广到任意整数步幅。
+\end{solutionexercise}
+
+\begin{solutionexercise}{3}
+\problemheading 图 11.3 的 Kogge--Stone 内核扫描 2048 个元素时，总共执行多少次
+加法？在抽象算法计数中令步幅依次为 $1,2,4,\ldots,1024$，每轮由满足
+$i\ge\code{stride}$ 的元素执行一次加法。另请注意，实际 CUDA 设备通常不允许单块
+启动 2048 个线程，因此实现时还需说明如何分块以及分层扫描会引入的额外加法。
+
+\approachheading 第 $r$ 轮步幅 $2^r$，有 $N-2^r$ 个线程执行加法；$r=0,\ldots,10$。
+
+\answerheading
+\[
+\sum_{r=0}^{10}(2048-2^r)
+=11\cdot2048-(2^{11}-1)
+=22528-2047
+=\boxed{20481}.
+\]
+这里统计的是源代码层面的有效加法，不把分歧造成的空闲 lane 计为加法，也不计地址运算。
+
+\editorialnote 20,481 是一个含 2048 个逻辑节点的 Kogge--Stone 网络计数，不是合法的
+“单个 CUDA 块含 2048 个线程”启动配置；当前 CUDA 每块最多 1024 个线程。实际处理
+2048 项必须采用每线程多项或多块层次化扫描。例如两个 1024 项局部 Kogge--Stone 扫描
+先做 $2\times9217=18434$ 次加法，再扫描两个块和并把首块总和加到第二块的 1024 项，
+还需 $1+1024$ 次加法，总计 19,459 次；这已是另一种层次化算法，不能与抽象网络计数混同。
+
+\complexity{$O(N\log N)$ 工作、$O(\log N)$ 深度}{$O(N)$ 缓冲}{抽象网络有 $N$ 个逻辑节点；CUDA 实现须受每块线程上限约束并分层}
+\conclusionheading 总共执行 20,481 次加法。
+\discussionheading
+\discussionpoint{从逐轮计数可以看见非工作高效性。}当 $N=2^m$ 时，第 $r$ 轮只有前 $2^r$ 个位置缺少足够远的左前缀，因此执行 $N-2^r$ 次加法。求和得到 $\sum_{r=0}^{m-1}(N-2^r)=N\log_2N-N+1$，它比顺序扫描的 $N-1$ 次多一个对数因子，却把依赖深度降到 $m$。这个公式只计算数学加法，不包含条件、地址、共享读写和屏障，所以不能直接乘某个指令周期预测时间。区分 work 与 depth 后，才能讨论资源无限时的延迟、资源有限时的吞吐以及硬件实际执行成本三种不同评价。
+
+\discussionpoint{抽象网络规模不等于合法线程块规模。}2048 个前缀节点适合纸面推导 20,481 次加法，但常见 CUDA 设备的单块线程上限低于 2048，不能把每个节点直接映射为同一块线程。实际程序会把输入切成至多设备允许的块，先扫描各块，再扫描块总和并把前缀加回；若用两个 1024 项块，额外阶段和加回操作改变了工作量、内存流量与同步位置。因而算法网络计数和某个具体 kernel 的动态指令数必须分别报告。这个边界也提醒我们，PRAM 式无限处理器分析需要经过层次化映射才能成为可执行并行程序。实现还应在运行时查询线程数和共享内存上限，因为同一源码换到资源更小的设备后，合法分块本身就可能变化。
+
+\discussionpoint{低深度网络适合延迟目标，线性工作树适合带宽目标。}Kogge--Stone 对 2048 项只需 11 轮，在运算昂贵、数据已在片上且并行资源充分时，较短关键路径很有吸引力；代价是每项参与多轮传播。Brent--Kung 或 Blelloch 增加轮数，却显著减少总加法和共享事务，对长数组的流式扫描往往更接近带宽上限。若元素是大结构或二元运算本身昂贵，多出的操作代价会进一步放大；若只是极小整数且 launch 主导，网络差异又可能不可见。最佳算法由目标是低延迟还是高吞吐、元素成本和硬件容量共同决定。尤其当操作数是几十字节的状态摘要时，多做一轮不仅多一次算术，还会同步放大片上搬运，不能再用整数加法基准外推。
+
+\discussionpoint{端到端流水线可能奖励融合而不是最快的独立扫描。}基数排序、过滤和动态分配都把扫描夹在生产标志与消费偏移之间；若融合能够让中间值留在寄存器或共享内存，少一次全局往返可能比扫描原语本身快几个百分点更重要。基准应同时列出每元素时间、有效字节、数学加法与 launch 数，并特别测试 1024、1025 和 2048 这类跨越块层次的规模。还要把临时空间分配和同步计入端到端时间，而不是只截取一个 kernel。由此可建立组件微基准与应用基准的对应关系，避免为了孤立排名选择一个使整个流水线更慢的实现。若中间标志和偏移均为 32 位，单独物化就会新增至少两次写读，按每项十余字节估算可先判断融合的收益上限。
+\variantheading 若规模改为 $N=1024$，共有 10 轮，加法数为
+$10\cdot1024-(2^{10}-1)=\boxed{9217}$。
+\practiceheading 用 Nsight Compute 分别验证抽象单块可实现规模和 2048 项层次化版本的
+指令计数，并与 CUB \code{DeviceScan} 的吞吐量比较；测试规模应覆盖非 2 的幂，避免只验证
+恰好填满扫描树的输入。
+\sourcecheck{https://github.com/NVIDIA/cccl/tree/main/cub}{CUB BlockScan 官方文档列出的块级扫描语义与复杂度背景；高置信度}
+假设审查：若问的是 Brent--Kung 或工作高效扫描，答案会是线性量级；本题明确指定
+Kogge--Stone，不能用 $2N-2-\log_2N$ 代替。
+\end{solutionexercise}
+
+\begin{solutionexercise}{4}
+\problemheading 修改图 11.13 的内核，使用向量加载与存储，并消除共享内存 bank 冲突。
+图 11.13 的完整基线为：
+\begin{lstlisting}[language=C++,firstnumber=1]
+__global__ void scan_kernel(float *input, float *output, unsigned int N) {
+    unsigned int blockSegment = blockIdx.x * COARSE_FACTOR * BLOCK_DIM;
+    __shared__ float buffer_s[COARSE_FACTOR * BLOCK_DIM];
+    for (unsigned int c = 0; c < COARSE_FACTOR; ++c)
+        buffer_s[c * BLOCK_DIM + threadIdx.x] =
+            input[blockSegment + c * BLOCK_DIM + threadIdx.x];
+    __syncthreads();
+
+    unsigned int threadSegment = threadIdx.x * COARSE_FACTOR;
+    float buffer_r[COARSE_FACTOR];
+    buffer_r[0] = buffer_s[threadSegment];
+#pragma unroll
+    for (unsigned int c = 1; c < COARSE_FACTOR; ++c)
+        buffer_r[c] = buffer_s[threadSegment + c] + buffer_r[c - 1];
+
+    float threadSum = buffer_r[COARSE_FACTOR - 1];
+    threadSum = blockScan(threadSum);
+    __shared__ float threadSums[BLOCK_DIM];
+    threadSums[threadIdx.x] = threadSum;
+    __syncthreads();
+    float prevPartialSum = (threadIdx.x > 0)
+                           ? threadSums[threadIdx.x - 1] : 0.0f;
+#pragma unroll
+    for (unsigned int c = 0; c < COARSE_FACTOR; ++c)
+        buffer_s[threadSegment + c] = buffer_r[c] + prevPartialSum;
+    __syncthreads();
+    for (unsigned int c = 0; c < COARSE_FACTOR; ++c)
+        output[blockSegment + c * BLOCK_DIM + threadIdx.x] =
+            buffer_s[c * BLOCK_DIM + threadIdx.x];
+}
+\end{lstlisting}
+\code{blockScan} 表示块级包含式扫描。题目要求保持全局装载/存储合并，使用向量访问，
+并通过共享数组布局或填充避免线程私有连续子段访问造成的 bank 冲突；还应补齐
+\code{N} 的尾部边界处理。
+
+\approachheading 令每线程粗化因子 $C$ 为 4 的倍数，$V=C/4$。全局阶段让 warp 以
+striped 次序读取相邻的 \code{float4}，再用块交换把它转为每线程持有 $V$ 个连续向量的
+blocked 次序；写回时执行逆交换。这样向量事务在全局地址上连续，线程内仍能顺序扫描自己的
+$C$ 项，也不会出现朴素 \code{s[thread][item]} 在固定 item 上按 $C$ 跨步的 bank 模式。
+
+\answerheading 下列核心内核用 CUB 的 warp-transpose BlockLoad/BlockStore 实现真实的
+striped--blocked 交换；\code{blockInclusive()} 返回每线程总和的块级包含式扫描。完整且
+16 字节对齐的分段走 \code{float4}，尾段由同一算法的标量有界路径处理。
+\begin{lstlisting}[language=C++]
+template<int B, int C>
+__global__ void scan_vec_exchange(const float* in,float* out,size_t n) {
+    static_assert((B & (B-1)) == 0 && C % 4 == 0, "shape");
+    constexpr int V=C/4;
+    using VL=cub::BlockLoad<float4,B,V,cub::BLOCK_LOAD_WARP_TRANSPOSE>;
+    using VS=cub::BlockStore<float4,B,V,cub::BLOCK_STORE_WARP_TRANSPOSE>;
+    using SL=cub::BlockLoad<float,B,C,cub::BLOCK_LOAD_WARP_TRANSPOSE>;
+    using SS=cub::BlockStore<float,B,C,cub::BLOCK_STORE_WARP_TRANSPOSE>;
+    union X { typename VL::TempStorage vl; typename VS::TempStorage vs;
+              typename SL::TempStorage sl; typename SS::TempStorage ss; };
+    __shared__ X exchange;
+    __shared__ float totals[B];
+    const size_t seg = size_t(blockIdx.x) * B * C;
+    const int valid = seg<n ? int(min(size_t(B*C),n-seg)) : 0;
+    const bool vec = valid==B*C &&
+        ((reinterpret_cast<size_t>(in+seg)|
+          reinterpret_cast<size_t>(out+seg))&15)==0;
+    float r[C];
+    if (vec) {
+        float4 p[V];
+        VL(exchange.vl).Load(reinterpret_cast<const float4*>(in+seg),p);
+        for(int q=0;q<V;++q) {
+            r[4*q]=p[q].x; r[4*q+1]=p[q].y;
+            r[4*q+2]=p[q].z; r[4*q+3]=p[q].w;
+        }
+    } else {
+        SL(exchange.sl).Load(in+seg,r,valid,0.0f);
+    }
+    __syncthreads();
+    for(int c=1;c<C;++c) r[c]+=r[c-1];
+    float inclusive=blockInclusive<B>(r[C-1]);
+    totals[threadIdx.x] = inclusive;
+    __syncthreads();
+    const float before=threadIdx.x ? totals[threadIdx.x-1] : 0.0f;
+    for(int c=0;c<C;++c) r[c]+=before;
+    __syncthreads();
+    if (vec) {
+        float4 p[V];
+        for(int q=0;q<V;++q) {
+            p[q]=make_float4(r[4*q],r[4*q+1],r[4*q+2],r[4*q+3]);
+        }
+        VS(exchange.vs).Store(reinterpret_cast<float4*>(out+seg),p);
+    } else {
+        SS(exchange.ss).Store(out+seg,r,valid);
+    }
+}
+\end{lstlisting}
+BlockLoad 先以 warp-striped 方式取得连续全局事务，再由内部 BlockExchange 返回 blocked
+线程私有数组；BlockStore 执行逆过程。\code{vec} 是块内一致分支，union 临时区每次换用途前
+都有屏障。标量尾路径以 0 填充无效项并只写前 \code{valid} 项，所以不会越界。
+
+\complexity{$O(BC)$ 工作、块内深度 $O(C+\log B)$}{$O(BC)$ 交换临时区和 $B$ 个块扫描总和}{$B$ 线程，每线程 $C$ 个元素}
+\conclusionheading 完整分段使用合并的 \code{float4} warp-striped 事务，经真实布局交换后按线程连续扫描；尾段安全退化为合并标量路径。
+\discussionheading
+\discussionpoint{布局转换的核心是把数据所有权交给另一个线程。}全局访问希望 lane $t$ 读取与 lane $t+1$ 相邻的位置，这叫 striped 布局；线程内顺序扫描却希望同一线程最终拥有连续 $C$ 项，这叫 blocked 布局。若线程始终只写、只读 \code{s[t][c]}，共享数组只是暂存，所有权没有变化，自然不构成转置。真正的 BlockExchange 先按 striped 次序装入，让不同线程把值放到可交换的共享槽，再按 blocked 下标取回；写回时执行逆过程。这个区别连接到矩阵转置、结构数组变换和 Tensor Core fragment 排列，凡声称“转置”都应能指出元素从哪个线程移交给哪个线程。
+
+\discussionpoint{bank 冲突必须从地址映射公式推导。}共享内存把地址字映射到有限个 bank，同一 warp 的不同地址若落到同一 bank，访问会拆成多批；为二维行增加一列常使行跨度与 bank 数互质，从而把固定列访问置换到不同 bank。以 32 个四字节 bank 和 \code{float} 为例，跨度 $C+1$ 需要结合 $\gcd(C+1,32)$ 分析，不能把“加一永远无冲突”推广到 \code{double}、复数或不同 bank 配置。向量指令还可能分成多个共享事务，每个子事务都要单独检查。参数化推导比记忆 padding 常数更可靠，也适用于 tiled GEMM 和卷积共享布局。
+
+\discussionpoint{向量指令和 warp 合并是两层不同条件。}一次 \code{float4} 要求起始地址 16 字节对齐并且四项都在有效对象内，它可以减少单线程加载指令；但若线程 $t$ 的起点为 $tC$ 且 $C>4$，相邻 lane 的向量之间仍留有间隔，warp 会覆盖更多内存扇区。warp-striped BlockLoad 让 lane 先读取相邻向量，从而获得高事务利用率，再经共享交换恢复每线程连续所有权。尾部、未对齐子视图和行首偏移必须用标量或受保护路径，不能先形成非法向量指针再避免解引用。这个双层分析同样适用于 SIMD gather 与网络批量包。
+
+\discussionpoint{粗化因子会同时占用寄存器、共享容量和并行机会。}增大 $C$ 能让一次块扫描服务更多元素，摊薄同步和块总和处理；每线程却需要保存更长的局部前缀，BlockExchange 临时空间也随项目数增长。寄存器不足时数组可能落入 local memory，较大共享空间又减少每 SM 驻留块数，结果是内存延迟更难隐藏。现代实现可比较直接 blocked、warp-striped 转置和异步搬运三类策略，并在相同边界语义下观察每元素时间、global sectors、bank 冲突、寄存器和 occupancy。只有这些量随 $C$ 的曲线一致，才能判断收益来自少指令、好合并还是阶段融合。
+\variantheading 若 $C=12$，则 $V=3$：每个 lane 在全局阶段参与读取连续的 warp-striped
+\code{float4}，交换后得到属于自己的 3 个连续向量；若省略交换而从 \code{t*C} 直接加载，
+相邻 lane 起点相隔 48 字节，无法得到与 $C=4$ 相同的事务利用率。
+\practiceheading 用 Nsight Compute 的 Shared Load/Store Bank Conflicts 分别测
+$C=4,8,12,16$，并用 CUB \code{BlockScan} 校验结果；启动配置还须满足 $B$ 为 2 的幂、
+$BC$ 的交换临时区不超过设备上限；随附可执行代码覆盖 $C=12$ 和 997 项尾块。
+\sourcecheck{https://github.com/NVIDIA/cccl/tree/main/cub}{NVIDIA CCCL/CUB 的 BlockLoad、BlockStore 与 BlockExchange 官方实现；对抗检查：只有 striped 装载后发生真实所有权交换，才能同时得到高事务利用率与 blocked 线程布局}
+边界审查：\code{float4} 要求 16 字节对齐且整段有效；否则统一退回有 \code{valid} 计数的
+标量 warp-transpose 路径。共享交换的 bank 行为还应在目标架构实测，不能由二维数组外形臆断。
+\end{solutionexercise}
+
+\begin{solutionexercise}{5}
+\problemheading 修改图 11.17 的 \code{interBlockScan} 设备函数，用解耦回看替代
+单次回看。图 11.17 的完整单次回看基线为：
+\begin{lstlisting}[language=C++,firstnumber=1]
+__device__ inline float interBlockScan(float val, unsigned int bid,
+                                       float *partialSums,
+                                       unsigned int *flags) {
+    __shared__ float prevBlockPartialSum_s;
+    if (threadIdx.x == blockDim.x - 1) {
+        if (bid > 0) {
+            cuda::atomic_ref<unsigned int, cuda::thread_scope_device>
+                prevBlockFlag_ref(flags[bid - 1]);
+            while (prevBlockFlag_ref.fetch_add(
+                       0, cuda::memory_order_acquire) == 0) {}
+            prevBlockPartialSum_s = partialSums[bid - 1];
+        } else {
+            prevBlockPartialSum_s = 0.0f;
+        }
+        partialSums[bid] = prevBlockPartialSum_s + val;
+        cuda::atomic_ref<unsigned int, cuda::thread_scope_device>
+            myBlockFlag_ref(flags[bid]);
+        myBlockFlag_ref.fetch_add(1, cuda::memory_order_release);
+    }
+    __syncthreads();
+    return prevBlockPartialSum_s;
+}
+\end{lstlisting}
+其中 \code{bid} 必须在线程块开始执行后动态分配，以避免后继块占满设备并等待尚未调度
+的前驱块。解耦回看版本应区分“块聚合值已就绪”和“完整前缀已就绪”两类状态：向前
+跨过只有聚合值的块时累加其块和，遇到已有完整前缀的块时终止回看，并以设备作用域的
+release/acquire 发布和读取状态。
+
+\approachheading 每块先发布自己的块和；向前回看时，遇到“块和就绪”便累加并继续，
+遇到“前缀就绪”便累加该前缀并停止。块和与完整前缀分开存放，避免同一非原子位置在读写
+间发生数据竞态。
+
+\answerheading 状态 0、1、2 分别表示 EMPTY、AGGREGATE、PREFIX。动态块号必须按块开始
+执行的先后原子分配。
+\begin{lstlisting}[language=C++]
+#include <cuda/atomic>
+enum : unsigned { EMPTY=0, AGGREGATE=1, PREFIX=2 };
+
+__device__ float decoupledLookback(float blockSum, unsigned bid,
+    float* aggregates, float* prefixes, unsigned* states) {
+  __shared__ float exclusive_s;
+  if (threadIdx.x == blockDim.x-1) {
+    aggregates[bid] = blockSum;
+    cuda::atomic_ref<unsigned, cuda::thread_scope_device> mine(states[bid]);
+    mine.store(AGGREGATE, cuda::memory_order_release);
+
+    float before = 0.0f;
+    int p = int(bid)-1;
+    while (p >= 0) {
+      cuda::atomic_ref<unsigned, cuda::thread_scope_device> st(states[p]);
+      unsigned kind;
+      do { kind=st.load(cuda::memory_order_acquire); } while(kind==EMPTY);
+      if (kind == PREFIX) { before += prefixes[p]; break; }
+      before += aggregates[p--];
+    }
+    exclusive_s = before;
+    prefixes[bid] = before + blockSum;
+    mine.store(PREFIX, cuda::memory_order_release);
+  }
+  __syncthreads();
+  return exclusive_s;
+}
+\end{lstlisting}
+不变量是 \code{before} 等于已越过连续块的块和；遇到完整前缀 $P_p$ 后，
+$P_p+\sum_{q=p+1}^{bid-1}A_q$ 正好是当前块的排他基址。release/acquire 使状态发布前的
+数据写入对等待块可见。
+
+\complexity{最坏 $O(G^2)$ 回看工作，通常远低于单次链式等待}{$O(G)$ 状态、块和与前缀空间}{$G$ 块可重叠回看}
+\conclusionheading 解耦回看允许跳过尚未形成前缀的前驱块，以冗余加法换取更短等待路径。
+\discussionheading
+\discussionpoint{状态值其实是一份跨块可见性契约。}AGG 表示该块的局部总和已经写好，PREFIX 表示从开头到该块的完整前缀已经写好；消费者看到不同状态，允许读取的载荷也不同。生产者必须先写普通数组，再用 device-scope release 存储发布状态；消费者以 acquire 读到状态后，前面的载荷写才与其建立 happens-before。若先写状态再写数值，或只把标志声明为 \code{volatile}，另一个 SM 可能观察到“就绪”却读到旧载荷。这个消息传递模式与无锁队列、GPU 任务图和 CPU 原子发布完全同构，原子性与内存排序缺一不可。
+
+\discussionpoint{跨块等待首先受调度前向进度约束。}若逻辑编号直接等于静态 \code{blockIdx.x}，调度器可能先让高编号块占满所有驻留槽，而它们又自旋等待尚未获准运行的低编号前驱，于是形成资源死锁。让块在真正开始执行后原子领取递增逻辑号，可以保证较小编号至少已经启动；不过它不承诺固定时间内获得调度，自旋次数仍可能很大。生产级持久 kernel 通常限制驻留块数量、在轮询中降低资源压力并保留诊断。这个案例说明无锁并不等于无等待，算法证明必须包含执行平台的进度保证。例如设备只能驻留 8 块而先调度逻辑 8--15 时，八个等待者就能共同阻止逻辑 0 获得任何执行槽。
+
+\discussionpoint{解耦回看用冗余相加换取不必串行等待。}若前驱只有 AGG，当前块无需等它算出完整 PREFIX，可以把该块总和加入临时累计并继续向左；一旦遇到某个 PREFIX，就用它一次覆盖更长历史并停止。多个后继可能重复累加同一组 AGG，所以总工作最坏可达平方量级，状态轮询也产生缓存一致性流量；换来的好处是多数块能与前缀传播重叠，不形成逐块接力。它体现了并发算法常见的空间--工作--等待三方交换，与路径压缩、帮助完成和乐观并发中的冗余工作具有相似思想。以四块全都只发布 AGG 的瞬间为例，末块可能依次累加前三块，而相邻块也重复走过其中一段，冗余来源由此清晰可见。
+
+\discussionpoint{单遍扫描是许多融合算法的基础设施。}过滤需要前缀来分配输出地址，基数排序需要桶偏移，动态编码需要为变长记录预留空间；解耦回看让这些步骤有机会在一次输入遍历中完成。协议复杂且依赖微妙内存序，所以工程上优先使用成熟实现，并用低 occupancy、随机延迟和竞争检查主动扩大进度与可见性缺陷。若元素是浮点数，不同块观察 PREFIX 的时机还可能改变合并括号，从而破坏逐位确定性；需要固定结果时应采用固定层次树或明确误差契约。这里性能优化最终会变成 API 语义选择，而不只是少一次 launch。
+\variantheading 若逻辑块号 $bid=0$，回看循环立即结束，排他基址为 0，并发布
+\code{prefixes[0]=blockSum}；这是协议的启动边界。
+\practiceheading 生产中优先使用 CUB \code{DeviceScan} 已验证的解耦回看实现；自定义版本
+应在不同驻留块限制下做压力测试，并用 Compute Sanitizer racecheck 检查状态与载荷的
+release/acquire 配对。
+\sourcecheck{https://research.nvidia.com/publication/2016-03_single-pass-parallel-prefix-scan-decoupled-look-back}{Merrill 与 Garland 的 NVIDIA 原始技术报告；高置信度}
+对抗审查：若让 \code{aggregates} 与 \code{prefixes} 共用一个普通 \code{float} 数组，
+读块和与覆写前缀可能并发，属于数据竞态。静态 \code{blockIdx.x} 还可能使后继块占满设备
+并等待尚未调度的前驱块；必须动态分配逻辑块号。
+\end{solutionexercise}
+
+\begin{solutionexercise}{6}
+\problemheading 对数组 $[4,6,7,1,2,8,5,2]$ 使用 Brent--Kung 算法执行并行包含式前缀扫描，
+写出每一步后的数组中间状态。先按距离 1、2、4 构造归约树，再按距离 2、1 执行反向树；
+每轮更新必须读取该轮开始时的值。
+
+\approachheading 先做归约树（距离 1、2、4），再做反向树（距离 2、1）。所有更新都使用
+本轮开始时的值。
+
+\answerheading
+\[
+\begin{array}{c|rrrrrrrr}
+\text{初始}&4&6&7&1&2&8&5&2\\
+\text{归约 }1&4&10&7&8&2&10&5&7\\
+\text{归约 }2&4&10&7&18&2&10&5&17\\
+\text{归约 }4&4&10&7&18&2&10&5&35\\
+\text{反向 }2&4&10&7&18&2&28&5&35\\
+\text{反向 }1&4&10&17&18&20&28&33&35
+\end{array}
+\]
+归约树产生区间和；反向距离 2 更新位置 5，距离 1 更新位置 2、4、6。总加法数为
+$2N-2-\log_2N=16-2-3=11$。
+
+\complexity{$O(N)$ 工作，$2\log_2N-1$ 轮}{$O(N)$ 原地缓冲}{每轮最多 $N/2$ 个并行加法}
+\conclusionheading 最终扫描结果同样是 $[4,10,17,18,20,28,33,35]$。
+\discussionheading
+\discussionpoint{Brent--Kung 通过稀疏节点换取更长路径。}上扫阶段只让每个长度 $2^r$ 区段的末端保存总和，因此许多位置暂时没有完整前缀；反向树再把左侧已知区段传播到这些缺口。对 $N$ 项，它把工作控制在线性数量附近，却需要约 $2\log_2N-1$ 层。Kogge--Stone 只有 $\log_2N$ 层且保持受限扇出，但创建更多前缀节点和密集连线；Brent--Kung 的主要优势是节点和布线较少，不能简化为“最大扇出更低”。这种网络取舍既影响芯片加法器布线，也映射为 GPU 的加法数、共享事务和屏障深度。
+
+\discussionpoint{渐近工作相同仍可能对应不同硬件瓶颈。}Brent--Kung 少做加法，通常也少读写共享内存，适合带宽或能耗受限的大块；反向阶段增加轮次，每轮又需要同步，会拉长单个块的关键路径。若二元运算本身昂贵，省一次运算可能远胜多一个屏障；若输入很小且延迟敏感，浅网络反而更快。还要考虑块数量是否足以让其他 warp 遮蔽屏障等待，不能只从 $O(N)$ 与 $O(N\log N)$ 下结论。用 roofline 加同步成本的简化模型，可以把算法网络参数转成设备上的可测假设。实验中还应固定块数与数据位置，否则缓存热度和可并发块数的变化会被误认成网络拓扑收益。
+
+\discussionpoint{包含式和排他式共享骨架但边界语义不同。}包含式第 $i$ 项含 $x_i$，排他式只含其左侧输入，所以可把包含式结果右移一位并在开头填单位元；也可在树的根和下扫规则中直接构造排他结果，省去额外搬移。对加法，两种实现很难暴露操作数次序；对字符串连接，反向阶段必须把左区段放在当前区段之前，否则前缀内部会倒序。空数组、单元素和没有单位元的运算还需要 API 明确定义。理解这些差别后，同一树才能安全泛化到函数组合、区间变换和分段扫描，而不只是数值数组。例如输入字符串 $[a,b,c]$ 的排他结果应为 $[\epsilon,a,ab]$，它能同时检查单位元、方向与移位边界。
+
+\discussionpoint{逐轮状态可以成为可执行规范。}题目列出的五轮数组不仅用于手算，它准确规定了每一屏障前后哪些位置允许变化、每个新值由哪些旧值组成。CPU 模拟器可复制同一轮次并把每轮状态作为黄金断言，GPU 调试版本则只在小输入时保存快照；一旦偏离，就能定位错误下扫下标、缺失同步或误用本轮新值。进一步比较 Kogge--Stone、Brent--Kung 与库实现时，应同时统计数学加法、屏障、共享事务、时间和浮点误差。这样建立的选择图谱比单一吞吐排名更完整，也让网络图真正成为工程验证工具。对随机大输入不必保存全部快照，可逐轮计算哈希并在首个不一致轮次缩小复现规模，降低调试数据量。
+\variantheading 若要求同一输入的排他结果，可把包含式结果右移并填 0，得到
+$[0,4,10,17,18,20,28,33]$；上扫与反向树的中间状态本身不必改写。
+\practiceheading 将每轮状态作为单元测试断言，可定位遗漏屏障或错误下扫下标；部署时用
+CUB \code{BlockScan} 作基线，并在 Nsight Compute 中比较同步停顿和共享内存流量。
+\sourcecheck{https://doi.org/10.1109/TC.1982.1675982}{Brent 与 Kung 的原始并行加法器论文；高置信度}
+假设审查：反向树不能从距离 4 再更新最终元素；位置 7 已是完整前缀。把经典排他扫描的
+下扫交换步骤直接套到这里，会得到不同的中间状态。
+\end{solutionexercise}
+
+\begin{solutionexercise}{7}
+\problemheading 实现一个在块级扫描数组的 Brent--Kung CUDA 内核。内核应产生包含式
+前缀结果，处理不足一个块的尾段，并明确块大小为 2 的幂这一前提；还应说明单个块级
+内核为何不能单独完成跨多个线程块的全数组扫描。
+
+\approachheading 用共享内存保存一个长度为 2 的幂的块区段。上扫阶段更新每个分组末端，
+下扫阶段补齐其余位置；尾块以单位元 0 填充。
+
+\answerheading
+\begin{lstlisting}[language=C++]
+template<int B>
+__global__ void brent_kung_scan(const float* in, float* out, size_t n) {
+  static_assert((B & (B-1)) == 0, "B must be a power of two");
+  __shared__ float x[B];
+  size_t g = size_t(blockIdx.x)*B + threadIdx.x;
+  x[threadIdx.x] = (g<n) ? in[g] : 0.0f;
+  __syncthreads();
+
+  // Reduction tree.
+  for (unsigned stride=1; stride<B; stride<<=1) {
+    unsigned i=(threadIdx.x+1)*(stride<<1)-1;
+    if (i<B) x[i] += x[i-stride];
+    __syncthreads();
+  }
+  // Reverse tree for inclusive prefixes.
+  for (unsigned stride=B>>2; stride>0; stride>>=1) {
+    unsigned i=(threadIdx.x+1)*(stride<<1)+stride-1;
+    if (i<B) x[i] += x[i-stride];
+    __syncthreads();
+  }
+  if (g<n) out[g]=x[threadIdx.x];
+}
+// brent_kung_scan<1024><<<(n+1023)/1024,1024>>>(in,out,n);
+\end{lstlisting}
+归纳可证上扫后位置 $2^k-1$ 保存相应前缀区间和；下扫从大距离到小距离，把紧邻左侧的
+完整区间加到缺失前缀的位置。每个位置每轮至多一个写者，屏障隔开读写轮次。
+
+\complexity{每满块 $2B-2-\log_2B$ 次加法，$O(B)$ 工作}{$B$ 个共享元素}{$B$ 线程，深度 $2\log_2B-1$}
+\conclusionheading 内核正确产生每块包含式扫描；全数组扫描还需扫描块和并把块前缀加回。
+\discussionheading
+\discussionpoint{全数组前缀可以分解为块外与块内两部分。}单块内核得到的只是相对于块首的局部前缀；全局第 $i$ 项还需要组合所有前块的总和。标准三步是保存每块总和、扫描这些总和，再把相应排他块前缀组合回块内每项；块数仍太多时，中间扫描可以递归。若两块局部结果分别为 $L_0,L_1$，第二块每项应变成 $s_0\mathbin\circ L_1[i]$，其中 $s_0$ 是第一块总和，而第一块保持原值。正确性不变量正是“全局前缀等于前块摘要前缀与当前块局部前缀的有序组合”，因此非交换运算也必须让前块结果在左。这个分解与 MPI Scan、分层时钟和分布式日志偏移同构，展示了局部知识如何通过小型摘要扩展到全局。
+
+\discussionpoint{尾部填充值由代数单位元决定。}最后一个块不足 $B$ 项时，把无效共享槽填 0 能保持所有线程执行相同上扫、下扫流程，因为 0 不改变加法结果；最大值应填负无穷，逻辑与则填真。写回仍必须屏蔽虚拟位置，避免越界。若 $B$ 不是 2 的幂，当前索引公式描述的规则树不再覆盖所有叶子，可以把容量提升到下一幂并填单位元，也可换任意长度算法。由单位元统一边界比在每轮插入不同分支更容易证明，但无单位元的运算需要显式有效标志，不能捏造中性值。例如全为负数的最大前缀若误填 0，虚拟叶就会胜过真实数据，使边界错误污染整个尾块。
+
+\discussionpoint{块大小同时控制上层规模和片上占用。}增大 $B$ 会把上层块和数组规模降为 $\lceil N/B\rceil$，并可能减少递归层；每块却需要更多线程、共享槽和屏障参与者，寄存器总量也可能限制同时驻留块数。若 $B=1024$ 只允许一个块驻留，较小的 256 线程块反而可能用更多并发隐藏内存延迟；若二元运算昂贵，大块减少上层工作又可能获益。常见的 256 或 512 只是初始候选，应针对元素宽度、操作成本和输入规模测量。这个多级权衡与 GEMM tile、排序批次和网络消息大小调优具有相同结构，而且尾块利用率也要纳入比较，不能只测整除规模。
+
+\discussionpoint{结果类型和数值契约决定生产可用性。}浮点树的加法顺序不同于 CPU 顺序循环，块边界变化还会改变高层配对，所以默认只能承诺某个误差容限而非逐位相同；需要确定性时应固定分块与编译模式，需要准确度时可提高累加精度。整数扫描常用于过滤位置、基数桶偏移和稀疏行指针，其风险不是舍入而是总数超过 32 位后静默回绕，必须从最大输出容量选择类型。块级结果可与 BlockScan 对照，全局结果可与 DeviceScan 对照，再用应用不变量验证消费端地址。算法正确、数值语义和容量安全三者都通过后，扫描才是可靠基础设施。
+\variantheading 若 $B=512,n=700$，需两个块：首块扫描 512 项，次块扫描其余 188 项并以
+0 填充；在扫描两个块和并回加前，第二块输出仍缺少首块总和。
+\practiceheading 用 CUB \code{BlockScan} 和 \code{DeviceScan} 分别验证块内与全局两层结果，
+并用 Compute Sanitizer synccheck 覆盖尾块；启动前查询设备是否允许所选 $B$ 个线程。
+\sourcecheck{https://github.com/NVIDIA/cccl/tree/main/cub}{CUB BlockScan 官方块级接口与同步约束；高置信度}
+边界审查：该代码只完成块级扫描，不能把不同块误当作已全局同步。输入运算必须有单位元；
+浮点加法的树形顺序可能与 CPU 顺序累加有末位差异。
+\end{solutionexercise}

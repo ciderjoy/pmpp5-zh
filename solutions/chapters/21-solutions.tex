@@ -1,0 +1,322 @@
+\chapter{静电势图}
+
+\begin{solutionexercise}{1}
+\problemheading 为原书图 21.6 中的聚集式 DCS 内核补全主机代码，配置线程网格并使用
+全部执行配置参数调用内核。\code{cenergy} 依次接收势网格指针 \code{energygrid}、
+逻辑尺寸 \code{grid}、网格间距 \code{gridspacing}、切片坐标 $z$ 和原子数
+\code{numatoms}；二维线程坐标 $(i,j)$ 对应当前 $z$ 切片中的一个网格点，原子以
+$(x_a,y_a,z_a,q_a)$ 四元组分块存入常量数组，每个线程累加
+$\sum_a q_a/\sqrt{(x-x_a)^2+(y-y_a)^2+(z-z_a)^2}$。主机代码须给出
+启动配置中的网格维度、块维度、动态共享内存字节数和 stream 四项参数，并完成常量内存
+分块复制、边界检查、同步/错误检查以及输出缓冲区的生命周期管理。
+
+\approachheading 每个线程对应切片中的一个 $(i,j)$ 网格点。原子数据按
+\code{CHUNK_SIZE} 分块复制到常量符号；常量复制和内核放入同一 stream，保证下一块覆盖
+符号以前，上一内核已经读完。
+
+\answerheading 原书内核在计算 $i,j$ 后必须补上边界保护：
+\begin{lstlisting}[language=C++]
+if (i >= grid.x || j >= grid.y) return;
+\end{lstlisting}
+否则向上取整的启动网格会越界。设三个逻辑维度为 $G_x,G_y,G_z$；对已经分配为至少
+$G_xG_yG_z$ 个 float 的 \code{dEnergy}，单切片主机函数为：
+\begin{lstlisting}[language=C++]
+void launch_cenergy_slice(float* dEnergy, dim3 logical,
+                          float spacing, unsigned slice,
+                          const float* hAtoms, int numAtoms,
+                          cudaStream_t stream) {
+  if (!dEnergy || logical.x == 0 || logical.y == 0 || logical.z == 0 ||
+      spacing <= 0.0f || slice >= logical.z ||
+      numAtoms < 0 || (numAtoms && !hAtoms))
+    throw std::invalid_argument("cenergy arguments");
+
+  dim3 threads(32, 8, 1); // 256 threads, x is the contiguous dimension
+  dim3 blocks((logical.x + threads.x - 1) / threads.x,
+              (logical.y + threads.y - 1) / threads.y, 1);
+  size_t dynamicSmemBytes = 0;
+  float z = float(slice) * spacing;
+
+  size_t plane = size_t(logical.x) * logical.y;
+  size_t firstEnergy = size_t(slice) * plane;
+  CHECK(cudaMemsetAsync(dEnergy + firstEnergy, 0,
+                        plane * sizeof(float), stream));
+
+  for (int first = 0; first < numAtoms; first += CHUNK_SIZE) {
+    int count = std::min(CHUNK_SIZE, numAtoms - first);
+    CHECK(cudaMemcpyToSymbolAsync(
+        atoms, hAtoms + size_t(first)*4,
+        size_t(count)*4*sizeof(float), 0,
+        cudaMemcpyHostToDevice, stream));
+    cenergy<<<blocks, threads, dynamicSmemBytes, stream>>>(
+        dEnergy, logical, spacing, z, count);
+    CHECK(cudaGetLastError());
+  }
+}
+\end{lstlisting}
+\code{cudaMemsetAsync} 先把本切片置零；它与后续复制、内核同处一个 stream，所以所有
+原子块的 \code{+=} 都累加到确定的零初值。若 \code{numAtoms==0}，循环不执行，但排队的
+清零仍使整张切片得到正确的零势能，而不是遗留旧内容。
+
+四项执行配置依次是 \code{blocks}、\code{threads}、动态共享内存字节数 0 和
+\code{stream}。同一 stream 的有序语义使“复制第 $c$ 块、执行第 $c$ 块、复制第
+$c+1$ 块”保持顺序；不能在多个 stream 中无协调地覆盖同一个 \code{__constant__ atoms}
+符号。调用者在读取结果或释放输入前应同步 stream/event，并检查异步执行错误。
+
+原书用浮点式 \code{k=z/gridspacing} 恢复切片下标；主机按
+\code{z=slice*spacing} 构造可减小不一致风险，但更稳健的接口应把整数 \code{slice}
+直接传给内核。$i,j,k$ 及线性乘积也应使用足够宽的无符号类型，防止大网格溢出。
+
+题设模型严格是 $q/r$，没有 $\sqrt{r^2+\varepsilon}$ 软化项。若网格点恰与电荷位置重合且
+$q\ne0$，结果按该模型发散为带符号无穷；测试数据应显式避开或专门验证这个奇点。工程上
+可以把 $\varepsilon$ 做成用户可见参数以正则化，但这会改变物理模型，不能在 CPU 与 GPU
+参考中同时静默加入。
+
+\complexity{每个切片 $O(G_xG_yA)$，$A$ 为原子数}{$O(G_xG_yG_z)$ 势网格和每块最多 $4\,\code{CHUNK_SIZE}$ 个常量 float}{每次原子块启动 $\lceil G_x/32\rceil\lceil G_y/8\rceil$ 个线程块；每线程独占一个网格点，无写竞态}
+\conclusionheading 二维向上取整要求内核边界判断；同一常量符号的复制、使用和覆盖必须由
+stream 顺序管理。
+\discussionheading
+\discussionpoint{常量内存的优势来自 warp 广播。}
+当一个 warp 的所有 lane 在循环第 $n$ 次都读取同一个原子坐标时，常量缓存可以把这次地址请求广播给整组线程，数据只需取一次。若各 lane 同时访问不同地址，请求会按不同地址拆分，吞吐随地址种类增加而下降；“只读”本身并不保证高效。DCS 让相邻线程处理不同网格点，却以相同原子顺序循环，正好构成广播模式。分析常量内存时因此要写出某一时刻各 lane 的地址，而不能只看到变量声明中的 \code{const}；这种统一控制流与共享参数的模式也常见于小型卷积核和查表系数。
+
+\discussionpoint{原子分块把超容量求和变成流式归约。}
+常量空间有限时，可以复制一批原子，让所有网格点把这批贡献累加到输出，再复制下一批；数学上只是把 $\sum_{a=0}^{A-1}$ 分成若干连续部分和。输出必须在第一批前清零，并在批次间保留已有值，否则每个 tile 都会覆盖前面的贡献。批次太小会增加复制和内核启动次数，太大又可能超出容量或降低缓存复用，因而存在传输固定开销与计算粒度的平衡。这个过程类似流式数据库聚合：无法一次容纳全部输入时，只要累加状态满足结合语义，就能分块处理并得到同一目标结果。跨批次误差还取决于部分和累加次序，应同时与高精度参考比较。
+
+\discussionpoint{常量符号是设备级共享状态而非 stream 私有副本。}
+把复制和内核放进同一 stream，只能保证这个 stream 内“先复制、后读取”的顺序；另一个 stream 仍可能在前一内核结束前覆盖同一个常量符号。此时两个批次读取的原子集合混杂，问题不是缓存一致性慢，而是数据生命周期发生真实竞态。需要并发处理时，可以为每项工作分配独立只读全局缓冲，通过事件串行化符号更新，或在不同设备上使用各自副本。全局常量符号使用方便，却把所有调用者绑定到同一可变资源，这与复用全局配置表或静态工作区时的可重入性问题完全相同。
+
+\discussionpoint{大规模静电计算必须利用空间与尺度结构。}
+让 $P$ 个网格点遍历 $A$ 个原子需要 $O(PA)$ 工作，常量缓存只能降低取数成本，无法改变这个渐近量。实际系统会用空间分箱和邻居表只枚举近场原子，再用多极方法、FFT 网格法或 Ewald 类分解处理远场，使工作接近线性或 $N\log N$。这些方法引入截断、插值和全局通信误差，常量分块仍可作为小规模精确参考或近场 tile。评价方案应同时观察原子与点的空间分布、每点误差和复制计算时间，因为一个缓存优化不能代替算法层面对相互作用范围的重新组织。若电荷分布随时间变化，邻居结构的重建成本也必须摊入总账。
+\variantheading 若逻辑切片为 $65\times17$、线程块为 $32\times8$，网格是 $3\times3=9$ 块，共启动 2304 个线程，其中仅 1105 个通过边界检查；当 \code{numAtoms=0} 时不启动 DCS 内核但仍清零这 1105 个输出点。
+\practiceheading 假定 32-lane NVIDIA GPU、\code{CHUNK_SIZE} 个 16 字节原子不超过 constant memory 容量且每个 warp 处理连续 $x$，用 Nsight Systems 核对 copy/kernel 的同 stream 顺序，再以 Nsight Compute 的 Constant Cache Hit Rate 比较全局只读版本。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{CUDA C++ Programming Guide 对执行配置、stream 顺序和 constant memory 的官方说明；对抗检查：只配置恰好整除的示例尺寸会掩盖越界，跨 stream 覆盖常量符号则会造成数据生命周期竞态}
+\end{solutionexercise}
+
+\begin{solutionexercise}{2}
+\problemheading 比较原书图 21.6 内核每次迭代执行的运算数量（内存加载、浮点运算、
+分支）与把原书图 21.8 推广为粗化因子 8 后的内核。注意，后一个内核的每个线程对应前一个
+内核的 8 个线程。按覆盖相同 8 个网格点、处理同一个原子的口径，分别统计四个原子字段的
+加载，距离与势能表达式中的减、乘、加、平方根和除法，以及原子循环的控制分支；说明
+FMA 或 \code{rsqrtf} 等编译器变换是否计入。
+
+\editorialnote 题目文字要求把粗化因子取为 8，而其引用的原书图 21.8 代码实际定义
+\code{COARSEN_FACTOR 4}。本解按题目要求把图中四点结构推广到八点后计数，并同时给出
+因子 4 的变体结果；不把图中常量静默改成 8。
+
+\approachheading 为避免把编译器的 FMA、常量折叠和 \code{rsqrt} 混入手算，采用明确
+的源码级约定：只数 4 个 \code{atoms[]} 数据加载；把加、减、乘、除、\code{sqrtf} 分列；
+计入 \code{energy +=}，不计地址整数运算。并列给出原书图 21.8 写法的直接八点推广，
+以及再用 \code{dx[r]=dx[r-1]+spacing} 消去常数倍乘法的递推优化。
+
+\answerheading 对一个普通线程、一个原子、一个网格点，循环体有 4 次原子数据加载，
+3 减、3 乘、3 加、1 次平方根、1 次除法。因此覆盖 8 个点的 8 个线程合计为：
+\begin{center}
+\begin{tabular}{c|rrrrrr|c}
+\toprule
+方案 & 加载 & 减 & 乘 & 加 & \code{sqrtf} & 除 & 原子循环控制\\
+\midrule
+8 个普通线程 & 32 & 24 & 24 & 24 & 8 & 8 & 8 个 lane 各执行一次\\
+图 21.8 直接推广 & 4 & 3 & 16 & 24 & 8 & 8 & 1 个 lane 执行一次\\
+递推优化 & 4 & 3 & 10 & 24 & 8 & 8 & 1 个 lane 执行一次\\
+\bottomrule
+\end{tabular}
+\end{center}
+两条粗化行都有 $dx_0,dy,dz$ 共 3 减；$dy^2,dz^2$ 与 8 个 $dx_r^2$ 共 10 次必需乘法；
+7 次横坐标更新、1 次公共平方和、8 次半径平方和、8 次能量累加共 24 加。原图直接推广还
+按 \code{dx0+r*spacing} 计算 $r=2,\ldots,7$，故另有 6 次常数倍乘法，总数为 16；递推
+版本把这 6 次乘法变成已经计入的相邻点加法，降为 10。平方根和除法是每个网格点不可复用
+的，各仍为 8。表中“8 对 1”表达逻辑 lane 工作量；实际动态分支指令数还取决于点与 warp
+的映射。编译器也可能融合乘加、降低除法/平方根，最终 SASS 应以 profiler/反汇编为准。
+
+\editorialnote 英文底本相邻正文给粗化因子 4 报出“11 次加法”。按同一段对基础内核的
+计数口径，$3$ 次 $dx$ 偏移、$1$ 次公共平方和、$4$ 次半径平方和及 $4$ 次能量累加共
+12 次；其乘法数又取决于是否把常数倍间距移出循环。底本没有声明这一优化口径，因此本解
+不沿用该数值，而显式给出可复算的源码模型。
+
+\conclusionheading 粗化 8 倍把原子加载从 32 降到 4、减法从 24 降到 3；按原图直接推广是
+16 次乘法，另作递推优化才是 10 次。每点的平方根、除法和最终累加不能由复用消除。
+\discussionheading
+\discussionpoint{线程粗化用较少线程换取寄存器内复用。}
+普通映射让八个线程各算一个相邻网格点，它们会分别加载同一原子的四个字段，并重复计算共同的 $dy,dz$。粗化后一个线程维护八个累加器，只加载一次原子，且 $dy^2+dz^2$ 可供八个 $x$ 位置复用；代价是可独立调度的线程数降为约八分之一。这个交换与 CPU 循环展开、寄存器分块和 GEMM micro-kernel 同源，都是把跨任务共享的数据提升到线程私有快速状态。是否获益取决于原来是否受加载限制，以及剩余线程能否覆盖设备，不能从“加载减少八倍”直接推出“时间减少八倍”。
+
+\discussionpoint{距离递推减少乘法却引入依赖与舍入传播。}
+相邻位置满足 $(x+h-a_x)^2=(x-a_x)^2+2h(x-a_x)+h^2$，所以可以从前一点更新平方距离，而不是每次重新计算坐标差和乘法。这样节省算术，却让第 $r+1$ 点依赖第 $r$ 点，形成串行链；每步 FP32 舍入也可能沿长粗化区间累积。按一阶误差模型，连续 $r$ 次更新引入的舍入项上界通常随 $r u$ 增长，而从原坐标独立重算不会继承前一点的舍入误差，因此两种公式即使数学等价也未必逐位相同。对于因子 4 或 8，误差通常可由参考实现量化，若跨度很长则可每隔若干点从原坐标重算，作为数值锚点。递推优化广泛用于有限差分和光栅化，但都要在少算指令、指令级并行与累计误差之间作明确选择。
+
+\discussionpoint{复用会把瓶颈从存储层推向执行管线。}
+原子字段加载减少后，每个网格点仍要形成平方距离并执行平方根、倒数或 \code{rsqrtf}；这些特殊函数不会因相邻点共享而消失。当常量数据已命中缓存，SFU 吞吐、长依赖链或寄存器 spill 可能先成为限制，内存带宽反而不再主导。Roofline 风格分析应重新计算粗化后的字节数与算术强度，并把每点特殊函数单独看待，因为一条 \code{sqrtf} 不能简单折算成一次普通加法。优化改变瓶颈位置是常见现象，后续调优必须重新测量，而不是继续针对已经缓解的原始瓶颈。
+
+\discussionpoint{粗化因子需要按问题形状与资源共同选择。}
+较大因子提高数据复用，却为每线程增加累加器、坐标状态和尾部谓词，寄存器数上升后可能降低驻留或发生 local memory spill。总线程数也随因子下降，小网格可能无法覆盖全部 SM；因子过小则保留并行度，却失去共享原子的机会。工程实现可为 1、2、4、8 等常见因子生成特化版本，用 \code{ptxas} 报告和实测每点时间选择，并在非整宽度上验证尾部。选择过程还应与未粗化 FP64 参考比较误差，使 autotuning 不会只追求吞吐而接受未经说明的数值漂移。
+\variantheading 若粗化因子改为 4，四个普通线程合计为 16 次加载、12 次减/乘/加、4 次平方根和 4 次除法；直接推广有 4 次加载、3 次减、8 次乘、12 次加，递推后乘法再降为 6 次。
+\practiceheading 固定 NVIDIA \code{sm_80}、FP32、\code{--use_fast_math} 关闭和粗化因子 8，用 \code{nvdisasm} 检查实际 FMA/\code{MUFU} 指令，再由 Nsight Compute 记录寄存器数、spill、SFU 利用率和每点周期。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}{CUDA C++ Best Practices Guide 仅用于核验寄存器、占用率与生成指令之间的一般测量权衡，并不直接给出本题粗化算术；表中 16/10 的源码级计数由原书图 21.8 独立推广复算。对抗检查：把优化后的 10 冒充原图直接推广值，或把源码运算数直接等同于机器指令数，都会得到过强结论}
+\end{solutionexercise}
+
+\begin{solutionexercise}{3}
+\problemheading 如原书第 21.3 节所示，增加每个 CUDA 线程完成的工作量可能带来哪两个
+潜在缺点？回答须分别从每线程资源需求以及可供 GPU 调度的并行任务数量说明其机制，而非
+只列性能现象。
+
+\approachheading 分别考察单线程资源和整个网格可用并行任务数。
+
+\answerheading 两个主要缺点是：
+\begin{enumerate}
+  \item \textbf{资源压力与占用率下降。}粗化需要同时保存更多坐标、中间距离和能量累加器，
+  增加每线程寄存器数；超过寄存器预算时，同一 SM 可驻留的 warp/块减少，甚至发生 local
+  memory spill。延迟隐藏能力随之下降，新增复用可能抵不过 spill 流量。
+  \item \textbf{并行度与负载均衡下降。}粗化因子 $c$ 使线程数约降为原来的 $1/c$。小问题
+  或边界 tile 可能没有足够线程填满 GPU；每线程运行更久，尾部无效点、数据相关分支或不同
+  工作量也会拉长整个 warp/块的关键路径。
+\end{enumerate}
+合格的开放题还可提及指令级依赖增加、调度公平性、代码尺寸/编译器压力，但评分核心是
+“寄存器/占用率”和“并行任务/负载均衡”两类不同机制。最佳粗化因子必须用目标问题尺寸和
+目标 GPU 实测，不能仅凭复用次数选择。
+
+\conclusionheading 粗化以减少冗余换取更多单线程状态和更少线程；收益存在硬件与问题规模
+共同决定的拐点。
+\discussionheading
+\discussionpoint{occupancy 是驻留上限，不是综合性能得分。}
+occupancy 表示每个 SM 实际或理论驻留 warp 数相对架构上限的比例，寄存器、共享内存、每块线程数和最大块数都可能限制它。更多驻留 warp 给调度器更多候选来隐藏延迟，却不保证内存、SFU 或发射槽已经充分利用；数据复用好的内核即使 occupancy 较低也可能更快。反过来，把寄存器强行限制到获得 100\% occupancy，若导致 spill 到 local memory，性能反而下降。因此它适合诊断“是否可能缺少并发”，不适合作为独立优化目标，更不能跨架构比较一个脱离资源配置的百分比。
+
+\discussionpoint{粗化增加 ILP 的同时减少 TLP。}
+一个线程维护多个网格点时，编译器和调度器可能交错独立的加载、平方根与累加，从而用指令级并行 ILP 隐藏单条依赖延迟。可是线程级并行 TLP 随粗化下降，尾部块和小问题可能留下空闲 SM，也减少可用于切换的 warp。理想状态不是让某一个比例达到 100\%，而是让 ILP 与 TLP 共同提供足够在途工作，同时保持数据复用。这个平衡也出现在 CPU 向量化和软件流水中：扩大单任务内部并行会减少任务数量，调度层级之间必须通过实测协调。不同问题尺寸还会改变可用并行任务数，最优粗化率不应写死。
+
+\discussionpoint{寄存器分配以离散粒度形成驻留台阶。}
+纸面上从每线程 64 个寄存器增加到 65 个似乎只增长 1.6\%，硬件却按 warp 或块的分配粒度向上取整，可能突然让一个 SM 少驻留一个完整线程块。编译器在压力过高时还会把局部值溢出到 local memory，使静态寄存器数下降但增加全局内存流量；只看一个数字会误判。应把 \code{ptxas} 的实际报告、块尺寸、动态共享内存和目标架构输入 Occupancy API，再与 profiler 的 achieved occupancy 对照。离散资源台阶说明性能空间不是光滑函数，跨过边界的小改动可能产生不成比例的结果。
+
+\discussionpoint{诊断核心是延迟是否已经被充分隐藏。}
+看到 occupancy 从 75\% 降到 50\% 时，首先应问 eligible warps 是否仍足够、发射槽是否空闲，以及 stall 来自内存依赖、SFU 还是同步。如果低 occupancy 伴随更高缓存复用和更少指令，端到端每点时间可能改善；若同时出现 spill 与 eligible warp 枯竭，才说明资源压力真正伤害吞吐。行业调优通常扫描块大小与粗化因子，寻找时间、资源和误差的 Pareto 点，并为小网格另设低延迟配置。计数器的作用是建立因果链，而不是堆成一张没有问题假设的指标清单。
+\variantheading 在每 SM 有 65,536 个 32 位寄存器、块含 256 线程且暂不计分配粒度时，64 寄存器/线程可驻留 4 块、1024 线程；粗化后若升到 96 寄存器/线程，只能驻留 2 块、512 线程。
+\practiceheading 假定目标 SM 正好有 65,536 个寄存器并使用 256 线程块，用 \code{nvcc --ptxas-options=-v} 和 CUDA Occupancy API 核对静态上限；Nsight Compute 同时观察 achieved occupancy、Local Memory spill 和 Eligible Warps，避免只优化单一占用率。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}{CUDA C++ Best Practices Guide 仅核验寄存器压力、occupancy、spill 和可用并行度的一般权衡，并非 DCS 粗化因子的直接实验依据；对抗检查：高 occupancy 不是独立性能目标，但寄存器 spill 和线程数不足是必须排除的真实反例}
+\end{solutionexercise}
+
+\begin{solutionexercise}{4}
+\problemheading 修改原书图 21.8 的内核，使更新势网格点时可以使用向量存储来改善内存
+访问合并。原内核的粗化因子为 4，每个线程计算同一行中 4 个连续点并执行四次标量
+\code{energygrid[...] += energy}。修改后须用四元素向量完成对齐的完整组读--改--写，
+同时处理 $x$ 维不足四项的尾部、地址对齐和二维网格边界。
+
+\approachheading 要让每个线程拥有不重叠且 16 字节对齐的连续四点，起始 $i$ 必须是线性
+线程号乘 4。由于原操作是 \code{+=}，需做一次 \code{float4} 向量加载、分量累加和一次
+向量存储；不完整或未对齐尾部走标量路径。
+
+\answerheading 计算 \code{energy0..energy3} 的原子循环保持不变，索引和写回改成：
+\begin{lstlisting}[language=C++]
+constexpr int C = 4;
+int linear_x = blockIdx.x * blockDim.x + threadIdx.x;
+int i = linear_x * C;
+int j = blockIdx.y * blockDim.y + threadIdx.y;
+if (j >= grid.y || i >= grid.x) return;
+
+// x = i * gridspacing; compute energy0..energy3 for x + r*spacing.
+size_t rowBase = (size_t(grid.x) * grid.y * k) + size_t(grid.x) * j;
+size_t first = rowBase + i;
+if (i + 3 < grid.x && (first & 3u) == 0) {
+    float4* p = reinterpret_cast<float4*>(energygrid + first);
+    float4 old = *p;
+    old.x += energy0; old.y += energy1;
+    old.z += energy2; old.w += energy3;
+    *p = old;
+} else {
+    const float e[4] = {energy0, energy1, energy2, energy3};
+    #pragma unroll
+    for (int r = 0; r < 4; ++r)
+        if (i + r < grid.x) energygrid[first + r] += e[r];
+}
+\end{lstlisting}
+\code{cudaMalloc} 返回的基址满足向量对齐；要让每行始终走向量路径，还应令逻辑宽度
+$G_x$ 是 4 的倍数，或手工把物理行步长补齐到 4 的倍数。若改用
+\code{cudaMallocPitch}，内核必须接收以元素为单位的行步长
+$p=\code{pitchBytes}/\code{sizeof(float)}$，并把行首改为
+\[
+  \code{rowBase}=(\code{size_t}(k)\,G_y+j)\,p.
+\]
+继续按逻辑宽度 $G_x$ 计算会索引到错误行。
+相邻 warp lane 的 \code{float4} 地址依次相差
+16 字节，合起来覆盖连续区域，因而能形成合并交易。每个线程的四点区间互不重叠，所以普通
+读改写安全；若另一个内核或主机同时更新同一网格，仍需建立 stream/event 依赖或改变归并
+策略。
+
+\editorialnote 原书图 21.8 的索引写成：
+\begin{lstlisting}[language=C++,numbers=none]
+i = blockIdx.x * blockDim.x * COARSEN_FACTOR + threadIdx.x;
+\end{lstlisting}
+但随后访问 $i,i+1,i+2,i+3$。这样相邻线程的区间重叠，并与正文所称“相邻线程相隔
+4 个元素”矛盾。正确的连续四点映射是：
+\begin{lstlisting}[language=C++,numbers=none]
+i = (blockIdx.x * blockDim.x + threadIdx.x) * COARSEN_FACTOR;
+\end{lstlisting}
+本解同时补上原图缺少的 $i,j$ 边界检查。
+
+\complexity{算术仍为每线程 $O(4A)$，$A$ 为原子数}{$O(1)$ 每线程额外寄存器；向量路径一次 16 字节加载和一次 16 字节存储}{约 $\lceil G_x/4\rceil G_y$ 个线程；每线程独占四点，无原子竞态}
+\conclusionheading 向量类型本身不会修复错误映射；先保证四点所有权不重叠和 16 字节对齐，
+再使用 \code{float4} 才同时正确且合并。
+\discussionheading
+\discussionpoint{向量类型减少指令，却不减少逻辑数据量。}
+用 \code{float4} 读改写四个连续势能值，逻辑上仍读取并写回各 16 字节，与四次标量访问处理的数据完全相同。宽指令可能减少地址计算、指令数和前端压力，但若四个标量原本已由 warp 合并进相同内存交易，DRAM 字节不会因此再降四倍。反过来，非对齐宽访问可能被拆分，甚至比标量路径更差。评价向量化应区分指令级收益和事务级收益，先问瓶颈在发射、地址计算还是带宽；这个区分也适用于 SIMD 加载和网络批量拷贝，打包操作不是数据压缩。只有硬件计数器才能判明交易数是否真的改变。
+
+\discussionpoint{对齐契约必须覆盖基址、行首和线程起点。}
+\code{cudaMalloc} 给出的整体基址通常有充分对齐，但若每行含 10 个 float，下一行首相对前一行移动 40 字节，并不总是 16 字节倍数。即使行首对齐，线程起点也必须满足元素下标为 4 的倍数，才能把 \code{float*} 合法解释为 \code{float4*}。可用 padding 或 \code{cudaMallocPitch} 保证行距，也可在运行时检查地址后选择宽路径，其他位置退回标量。对齐不是分配时一次完成的属性，而是沿每次指针偏移传播的证明义务，这正是多维数组最容易忽略的边界。
+
+\discussionpoint{尾部策略必须保证一次且仅一次的所有权。}
+行宽不是 4 的倍数时，主体可以每线程处理一个 \code{float4}，尾部再由标量循环清理；也可以为存储加 padding、使用支持掩码的宽操作，或把尾部放进单独内核。标量清理最容易证明却引入分支，padding 增加空间且要求无效槽不可影响语义，第二内核则增加启动成本。无论选择哪种方案，都要证明主体与尾部区间互斥，且它们的并集恰为 $[0,\mathrm{grid.x})$。这和并行分区中的完整覆盖不变量相同，比“样例没有越界”更强，也能直接指导 sanitizer 测试。
+
+\discussionpoint{源码中的宽类型还要由机器指令确认。}
+类型别名、潜在非对齐或复杂控制流可能让编译器把 \code{float4} 拆成多个标量指令；反过来，清晰的标量循环也可能被自动向量化。仅从 C++ 类型无法知道最终加载宽度，应检查 PTX/SASS，并用事务数与动态指令数验证。对很短或不规则的行，为对齐而增加的 padding 和尾部判断可能超过减少的指令，尤其当内核本来受平方根而非访存限制。向量化因此是一项需要编译结果和真实工作负载共同证明的优化，而不是换一个类型名就完成的性能承诺。这种证据链可以防止优化只停留在源码表象。
+\variantheading 若 \code{grid.x=10} 且行首 16 字节对齐，起点 $i=0,4$ 的两个线程走 \code{float4}，$i=8$ 的线程标量处理元素 8、9；索引 0--9 恰好各更新一次，没有重叠或越界。
+\practiceheading 假定 32-lane warp、\code{float4} 自然对齐为 16 字节，用两种版本比较：
+当前线性分配令 \code{grid.x} 为 4 的倍数；pitched 版本用 \code{cudaMallocPitch} 并把
+\code{pitchElements} 传入上述行首公式。用 Compute Sanitizer racecheck 验证所有权，再以
+Nsight Compute 比较 Global Store sectors 和 scalar/vector 指令数。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{CUDA C++ Programming Guide 对内建向量类型、自然对齐和全局内存访问的官方说明；高置信度}
+对抗检查：把未对齐地址强制转换为 \code{float4*}，或让相邻线程覆盖重叠四元组，分别会
+造成未定义行为和数据竞态。
+\end{solutionexercise}
+
+\begin{solutionexercise}{5}
+\problemheading 使用原书图 21.13 解释：当块中的线程处理邻域列表中的一个分箱时，
+控制流分歧如何产生？该图的二维示意中，一个线程块覆盖中心分箱内的一片网格点区域，并用
+“截断距离加分箱半对角线”形成超级圆；真实实现对应 $8\times8\times8$ 网格点块和三维
+超级球。邻域列表会保守纳入与超级球相交的分箱，各线程随后针对同一候选原子独立判断自身
+网格点是否落在截断半径内。请说明哪些分箱/原子会使同一 warp 的判断结果不同。
+
+\approachheading 块共享同一邻域分箱列表和其中的原子，但每个线程代表不同网格点；判断
+条件取决于“当前线程的点到当前原子”的距离。
+
+\answerheading 线程协作把一个候选分箱的原子载入共享内存后，对同一原子 $a$，线程
+$t$ 计算
+\[
+ r_{t,a}^2=(x_t-x_a)^2+(y_t-y_a)^2+(z_t-z_a)^2
+\]
+并执行类似 \code{if (r2 < cutoff2) accumulate(...)} 的分支。原书图 21.13 中一个块覆盖
+有面积/体积的区域：靠近原子的线程可能在截断球内，远端线程却在球外。同一 warp 对条件
+得到混合谓词时，硬件先屏蔽 false lane 执行累加路径，再处理另一条路径，产生分歧。
+
+分歧最严重的是只与块的截断“超级圆/球”部分相交的边界分箱；若某原子对整块所有网格点都
+在截断内（或都在截断外），该原子的判断一致，不产生这处分歧。邻域列表采用保守覆盖是正确性
+所需：它宁可纳入部分相交分箱，再逐线程精确判断，不能因为想消除分支就漏掉截断球内原子。
+
+评分点包括：共同候选原子、线程坐标不同、距离谓词不同、warp 串行化两条路径，以及部分相交
+分箱最易触发。可用无分支谓词乘法减少显式控制流，但会为球外原子执行昂贵的平方根/除法；
+是否更快需测量，并应避免 $0\times\infty$ 等数值异常。严格小于还是小于等于截断半径也必须
+统一，否则边界原子会因浮点舍入产生实现差异。
+
+\complexity{每网格点工作为 $O(A_{\rm neighborhood})$，理想情况下与全局原子总数无关}{每块共享一个分箱原子 tile，另有每线程能量累加器}{块间独立；块内协作加载后同步，逐线程距离判断可能在 warp 内分歧}
+\conclusionheading 分歧不是因为线程访问不同分箱，而是因为它们对同一候选原子拥有不同
+空间距离，因而在截断谓词上分道执行。
+\discussionheading
+\discussionpoint{截断把全局相互作用改造成局部近似。}
+原始 $q/r$ 势没有有限作用半径，每个原子理论上影响所有网格点；设置截断半径后，球外贡献被忽略，每个原子只需更新附近空间分箱，工作量才可能从 $PA$ 降到接近线性。硬截断会让势在边界处跳变，力作为导数还可能出现更明显不连续，因此物理模拟常用 switching 或 shifted potential 在一段区间内平滑过渡。半径越小计算越省，近似误差却越大。这里的分支优化只是局部实现，真正的算法选择还必须说明截断模型和允许的物理误差。切换函数的连续阶数还会影响能量漂移与积分稳定性。
+
+\discussionpoint{分支分歧取决于线程映射的空间相干性。}
+若一个 warp 处理相邻网格点，它们相对同一原子的距离通常相近，绝大多数 lane 会一起处在球内或球外；只有截断球面穿过该区域时才出现混合路径。若线程随机映射到远处分散的点，内外判断缺少相干性，分歧会更频繁。按空间 tile 分配 warp、先用包围盒粗筛或把原子按分箱排列，都能让控制流与几何局部性对齐。分支效率因此不只是 if 语句写法的属性，还由数据排序和任务映射共同塑造，这一规律同样适用于光线追踪和碰撞检测。阈值附近的数据重排成本也应计入完整内核时间。
+
+\discussionpoint{谓词化可能隐藏分支却保留昂贵工作。}
+把球外贡献乘以 0 可以让所有 lane 走同一指令序列，但它们仍可能执行平方根和倒数，既没有节省昂贵运算，又可能在 $r=0$ 时形成 $0\times\infty=\mathrm{NaN}$。本题保持物理公式 $q/r$，重合点就是有符号无穷的奇点，不能通过静默加入软化项改变模型。更好的实现通常先比较廉价的平方距离，只让活动 lane 计算倒数，同时显式约定奇点是保留、报错还是由上层模型排除。谓词化与分支各有成本，正确性语义必须先于减少控制流分歧的愿望。若活动比例很低，先压缩活动索引也可能更合算。
+
+\discussionpoint{近场与远场方法共同承担误差预算。}
+工业分子模拟不会简单丢弃所有远场：邻居表负责短程直接作用，粒子网格 Ewald、FFT 或多极方法以近似方式汇总长程贡献。截断半径不仅影响本地计算，还决定多 GPU 分区需要多宽的 halo、多久重建邻居表以及远场误差由哪一层补偿。验证应比较势能、力、长期守恒漂移与运行时间，而不是只观察分支效率；相同速度若破坏物理可接受范围就没有意义。这个多尺度分解把一道 warp 分支题连接到了科学计算的核心方法：为不同距离尺度选择不同算法，并协调它们的误差与通信成本。
+\variantheading 若一个 32-lane warp 对应 $8\times4$ 网格点，而某原子的截断范围恰覆盖每行的前 4 个 $x$ 点，则 16 lane 进入累加、16 lane 跳过；该次动态判断的活动比例为 $50\%$。
+\practiceheading 假定硬件 warp 为 32、一个 $8\times4$ 线程块恰映射单 warp 且距离用 FP32，在 Nsight Compute 中联合查看 Branch Efficiency、Warp Execution Efficiency 和 \code{MUFU} 利用率；用 NAMD/VMD 生成的实际原子分箱分布比较分支与谓词版本。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{CUDA C++ Programming Guide 对 warp 控制流分歧和屏蔽执行的官方说明；对抗检查：共同遍历同一循环并不保证无分歧，数据相关的截断条件仍可让 lane 采取不同路径}
+\end{solutionexercise}
