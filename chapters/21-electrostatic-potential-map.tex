@@ -1,0 +1,500 @@
+\chapter{静电势图}
+\label{chap:electrostatic-potential-map}
+
+\setcounter{footnote}{0}
+
+\noindent\textit{John Stone 特别参与撰写。}
+
+本章用一个基于规则网格数据结构的分子动力学应用，说明如何使用内存访问合并和提高计算吞吐量的优化技术。我们将依次给出静电势图计算内核的多个实现，每个版本都在前一个版本的基础上改进。每个版本都采用第 6 章介绍的一种或多种实用技术。有些技术与前面章节相同，有些则不同，包括从散布到聚集的转换、系统地复用计算结果，以及快速检查边界条件。有效使用这些实用技术可以显著提高应用速度。
+
+\noindent\textbf{译者注：}底本此处列出 ``gather-to-scatter transformation''，但本章先从按原子散布的实现（图 \ref{fig:21-5}）转为按网格点聚集的实现（图 \ref{fig:21-6}），后续优化也都建立在聚集内核之上。因此这里的实际转换方向应为 scatter-to-gather，即“从散布到聚集”；译稿按全章上下文处理。
+
+\section{背景}
+\label{sec:electrostatic-background}
+
+本章研究的应用基于 VMD（可视分子动力学，Visual Molecular Dynamics）\cite{ch21-humphrey1996vmd}。VMD 是一个流行的软件系统，用于显示、动画演示和分析生物分子系统。它是现代“计算显微镜”的重要基础，使生物学家能够观察病毒等小到无法用传统显微镜观察的生命形式。VMD 内置了强大的生物分子系统分析功能，例如在分子系统的空间网格点上计算静电势值（这正是本章关注的内容）；凭借其灵活性和用户可扩展性，它也常被用来显示测序数据、量子化学模拟数据和体数据等其他大型数据集。
+
+大多数用户把 VMD 当作桌面科学应用，用于交互式三维可视化和分析。对于运行时间过长、不适合交互式使用的计算，VMD 还可以批处理模式渲染电影，供之后使用。加速 VMD 的一个动机，是让批处理任务足够快，达到交互式使用的程度，从而大幅提高科学研究的生产率。CUDA 设备已经广泛存在于桌面 PC 中，因此这种加速可以惠及广大 VMD 用户。迄今为止，VMD 的多个方面都已使用 CUDA 加速，包括静电势图计算、离子放置、分子轨道计算与显示，以及蛋白质中气体迁移路径的成像。
+
+本案例研究的计算，是在网格空间中计算静电势图。分子动力学模拟常用这项计算，把离子放入分子结构。图 \ref{fig:21-1} 示意了在分子动力学模拟准备阶段，把离子（小圆点）放入蛋白质结构的过程。在该应用中，静电势图用于依据物理定律找出离子可以放置的空间位置。这个函数还可以计算分子动力学模拟期间的时间平均电场势图，既有助于模拟过程，也有助于可视化和分析模拟结果。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[x=0.72cm,y=0.72cm,>=Stealth]
+    \foreach \x/\y in {0/0,0.8/0.4,1.6/0,2.4/0.55,3.2/0.1,0.4/1.15,1.25/1.5,2.1/1.2,3/1.45,3.8/0.9,0.1/2.1,0.9/2.55,1.8/2.15,2.7/2.65,3.6/2.2,0.55/3.25,1.5/3.55,2.45/3.25,3.35/3.65}
+      \draw[fill=cyan!35,draw=cyan!60!black] (\x,\y) circle (0.23);
+    \foreach \x/\y in {0.35/0.6,2.9/0.35,3.55/1.9,0.75/2.9,2.25/2.5,1.6/0.55}
+      \draw[fill=yellow!65!red,draw=black!60] (\x,\y) circle (0.13);
+    \draw[rounded corners,draw=black!50,dashed] (0.05,-0.25) rectangle (3.95,3.95);
+    \foreach \x/\y/\l in {4.55/0.35/{+},4.65/1.25/{-},4.45/2.2/{+},4.75/3.1/{-}}
+      \node[draw=black!55,fill=white,circle,inner sep=1.5pt] at (\x,\y) {\l};
+    \draw[->,thick] (4.25,1.7) -- (3.55,1.9);
+    \node[align=left,font=\small] at (6.05,1.7) {静电势图帮助判断\\离子可放置的位置};
+  \end{tikzpicture}
+  \caption{分子结构周围的静电势与离子放置概念示意。依据原书图 21.1 重绘；青色与黄色圆点表示两类分子原子，带正负号的小圆点表示待放置的离子。}
+  \label{fig:21-1}
+\end{figure}
+
+计算静电势图有多种方法。其中，直接库仑求和（Direct Coulomb Summation，DCS）是一种精度很高、尤其适合 GPU 的方法\cite{ch21-stone2007accelerating}。DCS 把每个网格点的静电势值计算为系统中所有原子贡献之和，如图 \ref{fig:21-2} 所示。原子 $i$ 对格点 $j$ 的贡献，是原子 $i$ 的电荷除以格点 $j$ 到原子 $i$ 的距离。由于必须处理所有网格点和所有原子，计算次数与系统中原子总数和网格点总数的乘积成正比。对于真实的分子系统，这个乘积可能非常大。因此，静电势图计算传统上在 VMD 中以批处理作业完成。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[x=0.62cm,y=0.62cm,>=Stealth]
+    \draw[step=1,gray!65] (0,0) grid (6,4);
+    \fill[red!75] (1.1,1.0) circle (0.28);
+    \fill[cyan!65] (4.45,2.8) circle (0.3);
+    \fill[green!65!black] (3,2) circle (0.08);
+    \draw[->,thick] (3,2) -- (1.1,1.0) node[midway,below,font=\scriptsize] {$r_{i,j}$};
+    \draw[->,thick] (3,2) -- (4.45,2.8);
+    \node[font=\small,align=left] at (1.5,4.75) {$\mathrm{potential}[j]$：正在求值的网格点 $j$};
+    \node[font=\small,align=left] at (4.6,0.25) {$\mathrm{atom}[i]$：原子 $i$};
+    \node[font=\small,align=left] at (3,5.3) {单个贡献：$\mathrm{atom}[i].\mathrm{charge}/r_{i,j}$};
+    \node[font=\small,align=left] at (3,-0.55) {DCS：对所有原子的贡献求和};
+  \end{tikzpicture}
+  \caption{原子 $i$ 对网格点 $j$ 的静电势贡献及 DCS 求和关系。依据原书图 21.2 重绘。}
+  \label{fig:21-2}
+\end{figure}
+
+\section{内核设计中的散布与聚集}
+\label{sec:electrostatic-scatter-gather}
+
+图 \ref{fig:21-3} 给出了 DCS 代码的基础 C 实现。该函数处理三维网格的一个二维切片，并由调用者针对所建模空间的所有切片重复调用。函数结构很简单，包含三层 for 循环。最外两层遍历网格点空间的 $y$ 维（第 4 行）和 $x$ 维（第 6 行）。对每个网格点，最内层 for 循环遍历所有原子（第 9 行），计算所有原子对该网格点的静电势能贡献（第 10--13 行）。注意，\code{atoms[]} 数组中每个原子由连续的 4 个元素表示：前 3 个元素存储原子的 $x$、$y$、$z$ 坐标，第 4 个元素存储原子的电荷。最内层循环结束后，把网格点的累加值写入网格数据结构（第 15 行），外层循环继续到下一个网格点。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C,basicstyle=\ttfamily\scriptsize,firstnumber=1]
+void cenergy(float *energygrid, dim3 grid, float gridspacing, float z,
+             const float *atoms, int numatoms) {
+  int atomarrdim = numatoms * 4; //x,y,z, and charge info for each atom
+  for (int j=0; j<grid.y; j++) {
+    // calculate y coordinate of the grid point based on j
+    float y = gridspacing * (float) j;
+    for (int i=0; i<grid.x; i++) {
+      // calculate x coordinate based on i
+      float x = gridspacing * (float) i;
+      float energy = 0.0f;
+      for (int n=0; n<atomarrdim; n+=4) {
+        float dx = x - atoms[n  ];
+        float dy = y - atoms[n+1];
+        float dz = z - atoms[n+2];
+        energy += atoms[n+3] / sqrtf(dx*dx + dy*dy + dz*dz);
+      }
+      energygrid[grid.x*grid.y*z + grid.x*j + i] = energy;
+    }
+  }
+}
+  \end{lstlisting}
+  \caption{二维切片的未优化 DCS C 代码。依据原书图 21.3 逐字符重排；代码中的数组标识符保持底本原貌。}
+  \label{fig:21-3}
+\end{figure}
+
+图 \ref{fig:21-3} 中的 DCS 函数在计算网格点坐标时，在线乘以网格点索引与网格点间距。这里采用均匀网格方法，三个维度中的网格点都以相同距离间隔排列。函数利用了同一切片内所有网格点具有相同 $z$ 坐标这一事实：该值由调用者预先计算，并作为参数 $z$ 传入。不过，图 \ref{fig:21-3} 的顺序 C 代码还可以进行多项优化，以显著提高执行速度。
+
+图 \ref{fig:21-4} 给出若干优化后的 DCS C 代码。首先，把图 \ref{fig:21-3} 第 9 行的最内层循环交换到图 \ref{fig:21-4} 第 5 行的最外层。因此代码遍历所有原子；对每个原子，内层循环（第 9 行和第 14 行）把该原子的贡献散布到所有网格点。交换循环是允许的，因为图 \ref{fig:21-3} 的三层循环完全嵌套，且所有迭代彼此独立。循环交换的净效果只是改变最内层循环体实例的执行顺序；由于这些实例相互独立，可以按任意顺序执行而不影响最终结果。
+
+这种循环交换带来两项优化。第一，原子与平面中所有网格点之间距离的 $z$ 分量都相同，可以对整个平面只计算一次，因此放到两个内层循环之外（第 6--7 行）。同理，原子与同一行中所有网格点之间距离的 $y$ 分量也相同，可以放到最内层循环之外（第 11--12 行）。相比之下，图 \ref{fig:21-3} 在最内层循环中同时计算距离的 $y$ 和 $z$ 分量。计算次数的大幅减少使图 \ref{fig:21-4} 的 C 代码更快；图 \ref{fig:21-3} 无法做这些优化，因为最内层循环遍历所有原子，原子变化时必须重新计算距离的 $x$、$y$、$z$ 分量。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C,basicstyle=\ttfamily\scriptsize,firstnumber=1]
+void cenergy(float *energygrid, dim3 grid, float gridspacing, float z,
+             const float *atoms, int numatoms) {
+  int atomarrdim = numatoms * 4;
+  // starting point of this slice in the energy grid
+  int grid_slice_offset = (grid.x*grid.y*z) / gridspacing;
+  // calculate potential contribution of each atom
+  for (int n=0; n<atomarrdim; n+=4) {
+    float dz = z - atoms[n+2];  // all grid points in a slice have the same
+    float dz2 = dz*dz;          // z value, no recalculation in inner loops
+    float charge = atoms[n+3];
+    for (int j=0; j<grid.y; j++) {
+      float y = gridspacing * (float) j;
+      float dy = y-atoms[n+1];  // all grid points in a row have the same
+      float dy2 = dy*dy;        // y value
+      int grid_row_offset = grid_slice_offset + grid.x*j;
+      for (int i=0; i<grid.x; i++) {
+        float x = gridspacing * (float) i;
+        float dx = x - atoms[n  ];
+        energygrid[grid_row_offset+i] += charge / sqrtf(dx*dx + dy2 + dz2);
+      }
+    }
+  }
+}
+  \end{lstlisting}
+  \caption{二维切片的优化 DCS C 代码。依据原书图 21.4 逐字符重排。}
+  \label{fig:21-4}
+\end{figure}
+
+对于 GPU 执行，假定主机程序在系统内存中输入并维护原子的电荷和坐标，也在系统内存中维护网格点数据结构。DCS 内核处理静电势网格点结构的二维切片，注意这不是 CUDA 线程网格。这里的网格点类似第 8 章讨论的离散化网格点。对每个二维切片，CPU 把网格数据传输到设备全局内存。原子信息被分成适合常量内存的若干块；对每个原子信息块，CPU 将其传入设备常量内存，调用 DCS 内核计算当前块对当前切片的贡献，同时准备传输下一个块。当前切片的所有原子块处理完后，再把切片传回 CPU，更新系统内存中的网格点数据结构，然后转到下一个切片。
+
+现在考察 DCS 内核设计。自然的做法是并行化图 \ref{fig:21-4} 的优化 C 代码，得到图 \ref{fig:21-5} 的内核。常量定义 \code{CHUNK_SIZE} 指定每次内核调用传入 GPU 常量内存的原子数。应设置 \code{CHUNK_SIZE*4}，使数组能够装入常量内存。内核使用每个线程实现图 \ref{fig:21-4} 最外层循环的一次迭代，并把所分配原子的贡献散布到所有网格点，也就是每个线程把一个原子的贡献散布到所有网格点。不幸的是，这种散布式并行化需要使用原子操作更新势网格点（第 17--18 行），会显著降低并行执行速度。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1]
+__constant__ float atoms[CHUNK_SIZE*4];
+void __global__ cenergy(float *energygrid, dim3 grid, float gridspacing,
+                        float z) {
+  int n = (blockIdx.x * blockDim.x + threadIdx.x) * 4;
+  float dz = z - atoms[n+2];  // all grid points in a slice have the same
+  float dz2 = dz*dz;          // z value
+  // starting position of the slice in the energy grid
+  int grid_slice_offset = (grid.x*grid.y*z) / gridspacing;
+  float charge = atoms[n+3];
+  for (int j=0; j<grid.y; j++) {
+    float y = gridspacing * (float) j;
+    float dy = y-atoms[n+1];  // all grid points in a row have the same
+    float dy2 = dy*dy;        // y value
+    // starting position of the row in the energy grid
+    int grid_row_offset = grid_slice_offset + grid.x*j;
+    for (int i=0; i<grid.x; i++) {
+      float x = gridspacing * (float) i;
+      float dx = x - atoms[n  ];
+      atomicAdd(&energygrid[grid_row_offset+i],
+                charge / sqrtf(dx*dx+dy2+dz2));
+    }
+  }
+}
+  \end{lstlisting}
+  \caption{采用散布方法的 DCS 内核。依据原书图 21.5 逐字符重排。}
+  \label{fig:21-5}
+\end{figure}
+
+也可以采用聚集方法，让每个线程计算一个网格点从所有原子获得的累加贡献，也就是每个线程从所有原子聚集对一个网格点的贡献。这种方法更可取，因为每个线程只写入自己的网格点，不需要原子操作。不过，它要求把循环排列成图 \ref{fig:21-3} 未优化 C 代码的顺序，即并行化一个较慢的 C 实现。这体现了并行化应用时经常遇到的困境：优化后的顺序代码不如未优化的顺序代码适合并行化。代价是每个线程内部的执行可能慢得多，从而降低并行化带来的速度收益；本章稍后还会回到这一点。
+
+图 \ref{fig:21-6} 给出基于聚集方法的内核。它以图 \ref{fig:21-3} 的未优化 C 代码为基础，构造一个与二维势网格组织相匹配的二维线程网格。为此，需要把图 \ref{fig:21-3} 第 4--6 行的两个外层循环改造成完全嵌套的循环，使每个线程执行两层循环的一次迭代。具体做法是把计算 $y$ 坐标的语句（图 \ref{fig:21-3} 第 5 行）移入内层循环。这样，所有 $i$ 和 $j$ 迭代都可以并行执行；代价是每个内层循环迭代都冗余地计算 $y$ 坐标。这是计算量与所获得并行度之间的权衡。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1]
+__constant__ float atoms[CHUNK_SIZE*4];
+void __global__ cenergy(float *energygrid, dim3 grid, float gridspacing,
+                        float z, int numatoms) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  int j = blockIdx.y * blockDim.y + threadIdx.y;
+  int atomarrdim = numatoms * 4;
+  int k = z / gridspacing;
+  float y = gridspacing * (float) j;
+  float x = gridspacing * (float) i;
+  float energy = 0.0f;
+  // calculate potential contribution from all atoms
+  for (int n=0; n<atomarrdim; n+=4) {
+    float dx = x - atoms[n  ];
+    float dy = y - atoms[n+1];
+    float dz = z - atoms[n+2];
+    energy += atoms[n+3] / sqrtf(dx*dx + dy*dy + dz*dz);
+  }
+  energygrid[grid.x*grid.y*k + grid.x*j + i] += energy;
+}
+  \end{lstlisting}
+  \caption{采用聚集方法的 DCS 内核。依据原书图 21.6 逐字符重排；二维线程网格与二维势网格点一一对应。}
+  \label{fig:21-6}
+\end{figure}
+
+图 \ref{fig:21-6} 内核的执行性能相当好，因为它不受原子操作拖累。快速查看代码可知，每访问 \code{atoms[]} 数组的 4 个元素，就执行 9 次浮点运算。这些原子数组元素缓存在每个 SM 的硬件常量缓存中，并广播给许多线程。线程间对常量内存元素的大量复用使常量缓存非常有效，消除了绝大多数 DRAM 访问。因此，全局内存带宽不是该内核的限制因素。
+
+\section{线程粗化}
+\label{sec:electrostatic-coarsening}
+
+虽然图 \ref{fig:21-6} 的内核通过常量缓存避免了全局内存瓶颈，但每执行 9 次浮点运算，仍需执行 4 条常量内存访问指令。这些内存访问指令会占用本可用于提高浮点指令吞吐量的硬件资源，而且还会消耗能量，这是许多大规模并行计算系统的重要限制因素。本节说明如何使用线程粗化技术，把几个线程融合起来，使 \code{atoms[]} 数据只从常量内存取一次、存入寄存器，然后用于计算多个网格点。
+
+此外，如图 \ref{fig:21-7} 所示，同一行（$y$ 维）上的所有势网格点具有相同的 $y$ 坐标。因此，原子 $y$ 坐标与该行任一网格点 $y$ 坐标之差都相同。在图 \ref{fig:21-6} 的 DCS 内核中，计算原子与网格点距离时，每一行的所有网格点线程都会重复计算这个差值。消除这项冗余可以提高执行效率。
+
+思路是让每个线程计算同一行中的多个势网格点。图 \ref{fig:21-8} 的内核让每个线程计算 4 个网格点。对每个原子，代码只计算一次 $dy$（第 21 行），然后计算 $dy*dy+dz*dz$，并把结果保存到自动变量 \code{dysqdzsq} 中；该变量会分配到寄存器（第 23 行），对 4 个网格点都相同。原子的电荷信息也从常量内存读取并存入自动变量 \code{charge}（第 24 行），所以 \code{energy0} 到 \code{energy3} 的计算都可以使用寄存器中的值。
+
+同样，原子的 $x$ 坐标从常量内存读取，用于计算 \code{dx0} 到 \code{dx3}（第 17--20 行）。总的来说，对一个原子处理 4 个网格点时，该内核消除了 3 次 $y$ 坐标常量内存访问、3 次 $x$ 坐标访问、3 次电荷访问、3 次浮点减法、5 次浮点乘法和 9 次浮点加法。仔细检查图 \ref{fig:21-8} 的代码可知，每次循环迭代为 4 个网格点执行 4 次常量内存访问、3 次浮点减法、11 次浮点加法、6 次浮点乘法和 4 次浮点除法。
+
+读者还应验证，图 \ref{fig:21-6} 的 DCS 内核针对相同的 4 个网格点执行 16 次常量内存访问、12 次浮点减法、12 次浮点加法、12 次浮点乘法和 12 次浮点除法，总计 48 次浮点运算。从图 \ref{fig:21-6} 到图 \ref{fig:21-8}，总量从 16 次常量内存访问和 48 次运算减少到 4 次常量内存访问和 24 次浮点运算，降幅可观；可以预期内核的执行时间和能耗都会显著改善。
+
+这项优化的代价，是每个线程使用更多寄存器，可能降低占用率。不过，本例每线程使用的寄存器数量仍在允许范围内，因此不会限制占用率。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[x=0.7cm,y=0.7cm,>=Stealth]
+    \draw[step=1,gray!60] (0,0) grid (8,3);
+    \node[font=\small] at (4,3.45) {同一行中的网格点具有相同的 $y$ 坐标};
+    \fill[cyan!65] (3.5,1.5) circle (0.28);
+    \node[font=\scriptsize,above] at (3.5,1.83) {原子 $i$};
+    \foreach \x in {0.5,1.5,2.5,3.5,4.5,5.5,6.5,7.5} {
+      \draw[->,thin] (3.5,1.5) -- (\x,0.5);
+    }
+    \node[font=\scriptsize,below] at (4,-0.15) {$dy=y-\mathrm{atoms}[n+1]$ 对这一行只需计算一次};
+  \end{tikzpicture}
+  \caption{多个网格点之间的计算结果复用。依据原书图 21.7 重绘。}
+  \label{fig:21-7}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1]
+__constant__ float atoms[CHUNK_SIZE*4];
+#define COARSEN_FACTOR 4
+void __global__ cenergy(float *energygrid, dim3 grid, float gridspacing,
+                        float z, int numatoms) {
+  int i = blockIdx.x * blockDim.x*COARSEN_FACTOR + threadIdx.x;
+  int j = blockIdx.y * blockDim.y + threadIdx.y;
+  int atomarrdim = numatoms * 4;
+  int k = z / gridspacing;
+  float y = gridspacing * (float) j;
+  float x = gridspacing * (float) i;
+  float energy0 = 0.0f;
+  float energy1 = 0.0f;
+  float energy2 = 0.0f;
+  float energy3 = 0.0f;
+  // calculate potential contribution from all atoms
+  for (int n=0; n<atomarrdim; n+=4) {
+    float dx0 = x - atoms[n  ];
+    float dx1 = dx0 + gridspacing;
+    float dx2 = dx0 + 2*gridspacing;
+    float dx3 = dx0 + 3*gridspacing;
+    float dy = y - atoms[n+1];
+    float dz = z - atoms[n+2];
+    float dysqdzsq = dy*dy + dz*dz;
+    float charge = atoms[n+3];
+    energy0 += charge / sqrtf(dx0*dx0 + dysqdzsq);
+    energy1 += charge / sqrtf(dx1*dx1 + dysqdzsq);
+    energy2 += charge / sqrtf(dx2*dx2 + dysqdzsq);
+    energy3 += charge / sqrtf(dx3*dx3 + dysqdzsq);
+  }
+  energygrid[grid.x*grid.y*k + grid.x*j + i  ] += energy0;
+  energygrid[grid.x*grid.y*k + grid.x*j + i+1] += energy1;
+  energygrid[grid.x*grid.y*k + grid.x*j + i+2] += energy2;
+  energygrid[grid.x*grid.y*k + grid.x*j + i+3] += energy3;
+}
+  \end{lstlisting}
+  \caption{采用线程粗化的 DCS 内核，粗化因子为 4。依据原书图 21.8 逐字符重排。}
+  \label{fig:21-8}
+\end{figure}
+
+\section{内存访问合并}
+\label{sec:electrostatic-coalescing}
+
+虽然图 \ref{fig:21-8} 的 DCS 内核性能很高，但快速分析会发现线程的内存写入效率不高。在第 30--33 行，每个线程写入 4 个相邻网格点。不幸的是，一个 warp 中相邻线程的写入模式会导致未合并的全局内存写入。内核中的未合并写入有两个原因。第一，每个线程计算 4 个相邻网格点，因此对每条写入 \code{energygrid[]} 的语句，warp 中的线程并不会访问相邻位置。两个相邻线程访问的内存位置相隔 4 个元素；因此，一个 warp 的 32 个写入位置被分散开，每个已加载或写入位置之间有 3 个元素。为解决这个问题，可以把相邻网格点分配给每个块中的相邻线程：先把 $x$ 维中连续的 \code{blockDim.x} 个网格点分配给线程，再把后续连续的 \code{blockDim.x} 个网格点分配给同一批线程，重复该分配，直到每个线程拥有所需数量的网格点。图 \ref{fig:21-9} 示意了这种分配。
+
+图 \ref{fig:21-10} 给出了采用线程粗化并且考虑合并访问的网格点分配内核。注意，用于计算线程所分配网格点与原子距离的 $x$ 坐标，会按 \code{blockDim.x*gridspacing} 偏移。这反映了一个事实：分配给同一线程的 4 个网格点在 $x$ 方向彼此相隔 \code{blockDim.x} 个网格点。循环结束后，写入 \code{energygrid} 数组的索引也彼此相隔 \code{blockDim.x}，因此所有写入都能合并，内核性能优于图 \ref{fig:21-8}。
+
+粗化因子为 4 时，也可以在原始线程到网格点的分配方式中使用向量存储，实现写入合并；使用向量存储的实现留作读者练习。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[x=0.52cm,y=0.52cm,>=Stealth]
+    \draw[step=1,gray!65] (0,0) grid (12,6);
+    \draw[very thick,blue!70] (0,3) rectangle (8,6);
+    \foreach \x/\y/\t in {0.5/5.5/0,1.5/5.5/1,2.5/5.5/2,3.5/5.5/3,4.5/5.5/4,5.5/5.5/5,6.5/5.5/6,7.5/5.5/7} {
+      \fill[blue!18] (\x-0.5,\y-0.5) rectangle +(1,1);
+      \node[font=\tiny] at (\x,\y) {线程 \t};
+    }
+    \foreach \x in {0.5,1.5,2.5,3.5,4.5,5.5,6.5,7.5} {
+      \draw[->,thin] (\x,5.1) -- (\x,4.1);
+      \draw[->,thin] (\x,3.9) -- (\x,2.1);
+    }
+    \node[font=\scriptsize,align=center] at (4,6.65) {先分配连续的 $\code{blockDim.x}$ 个网格点};
+    \node[font=\scriptsize,align=left,fill=white,inner sep=1pt] at (10.3,2.8) {同一线程\\后续网格点};
+    \draw[<->,thin] (8.2,0) -- (8.2,6) node[midway,right=5pt,font=\scriptsize] {后续分配};
+  \end{tikzpicture}
+  \caption{为合并写入组织线程和内存布局。依据原书图 21.9 重绘；相邻线程先取得连续的网格点，再按固定偏移取得后续点。}
+  \label{fig:21-9}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1]
+__constant__ float atoms[CHUNK_SIZE*4];
+#define COARSEN_FACTOR 4
+void __global__ cenergy(float *energygrid, dim3 grid, float gridspacing,
+                        float z, int numatoms) {
+  int i = blockIdx.x * blockDim.x*COARSEN_FACTOR + threadIdx.x;
+  int j = blockIdx.y * blockDim.y + threadIdx.y;
+  int atomarrdim = numatoms * 4;
+  int k = z / gridspacing;
+  float y = gridspacing * (float) j;
+  float x = gridspacing * (float) i;
+  float energy0 = 0.0f;
+  float energy1 = 0.0f;
+  float energy2 = 0.0f;
+  float energy3 = 0.0f;
+  // calculate potential contribution from all atoms
+  for (int n=0; n<atomarrdim; n+=4) {
+    float dx0 = x - atoms[n  ];
+    float dx1 = dx0 + blockDim.x * gridspacing;
+    float dx2 = dx0 + 2*blockDim.x * gridspacing;
+    float dx3 = dx0 + 3*blockDim.x * gridspacing;
+    float dy = y - atoms[n+1];
+    float dz = z - atoms[n+2];
+    float dysqdzsq = dy*dy + dz*dz;
+    float charge = atoms[n+3];
+    energy0 += charge / sqrtf(dx0*dx0 + dysqdzsq);
+    energy1 += charge / sqrtf(dx1*dx1 + dysqdzsq);
+    energy2 += charge / sqrtf(dx2*dx2 + dysqdzsq);
+    energy3 += charge / sqrtf(dx3*dx3 + dysqdzsq);
+  }
+  energygrid[grid.x*grid.y*k + grid.x*j + i                 ] += energy0;
+  energygrid[grid.x*grid.y*k + grid.x*j + i +   blockDim.x] += energy1;
+  energygrid[grid.x*grid.y*k + grid.x*j + i + 2*blockDim.x] += energy2;
+  energygrid[grid.x*grid.y*k + grid.x*j + i + 3*blockDim.x] += energy3;
+}
+  \end{lstlisting}
+  \caption{采用线程粗化和内存访问合并的 DCS 内核。依据原书图 21.10 逐字符重排。}
+  \label{fig:21-10}
+\end{figure}
+
+\section{面向数据规模可扩展性的截断分箱}
+\label{sec:electrostatic-cutoff-binning}
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[x=0.65cm,y=0.65cm,>=Stealth]
+    \node[font=\small\bfseries] at (2,4.6) {(a) 直接求和};
+    \draw[step=1,fill=gray!10] (0,0) grid (4,4);
+    \fill[green!70!black] (0.7,0.7) circle (0.16); \fill[green!70!black] (2.1,3.3) circle (0.16);
+    \fill[green!70!black] (3.2,1.2) circle (0.16); \fill[green!70!black] (3.25,3.4) circle (0.16);
+    \fill[green!70!black] (0.9,2.5) circle (0.16); \fill[green!70!black] (2.8,2.1) circle (0.16);
+    \fill[blue!70] (2,2) circle (0.11);
+    \foreach \x/\y in {0.7/0.7,2.1/3.3,3.2/1.2,3.25/3.4,0.9/2.5,2.8/2.1} {\draw[->,thin] (2,2) -- (\x,\y);}
+    \node[font=\scriptsize,align=left] at (6.1,2.1) {每个网格点\\对所有电荷求和};
+    \node[font=\small\bfseries] at (2,-0.85) {(b) 截断求和};
+    \draw[step=1,fill=gray!10] (0,-5.7) grid (4,-1.7);
+    \fill[green!70!black] (0.7,-2.4) circle (0.16); \fill[green!70!black] (2.1,-2.3) circle (0.16);
+    \fill[green!70!black] (3.2,-3.5) circle (0.16); \fill[red!70] (0.9,-4.8) circle (0.16); \fill[red!70] (3.2,-5.0) circle (0.16);
+    \fill[blue!70] (1.6,-3.45) circle (0.11);
+    \draw[dashed] (1.6,-3.45) circle (1.15);
+    \draw[->,thin] (1.6,-3.45) -- (0.7,-2.4); \draw[->,thin] (1.6,-3.45) -- (2.1,-2.3);
+    \node[font=\scriptsize,align=left] at (6.1,-3.55) {只求和附近电荷；\\分箱后再处理};
+  \end{tikzpicture}
+  \caption{截断求和与直接求和的比较。依据原书图 21.11 重绘；深色远处原子在截断阶段不直接参与。}
+  \label{fig:21-11}
+\end{figure}
+
+解决一个问题通常有多种算法。有些算法需要的计算步骤较少，有些暴露出更高程度的并行执行，有些数值稳定性更好，还有些消耗的内存带宽更少。不幸的是，通常没有一种算法能在所有方面都优于其他算法。给定问题和分解策略，并行程序员往往需要针对给定硬件系统选择折中最优的算法。
+
+一般而言，用于解决同一问题的替代算法应当得到相同的解。在这一要求下，可以优化计算以获得更高效率和/或更多并行性。在某些应用中，如果允许最终解有轻微变化，还可以采用更激进的算法策略。一种重要的算法策略称为截断求和，它牺牲少量精度，却能显著提高静电势这类网格算法的执行效率。其依据是：许多网格计算问题建立在物理定律上，远离网格点的粒子或样本所产生的数值贡献，可以用计算复杂度低得多的隐式方法统一处理。
+
+图 \ref{fig:21-11} 展示了静电势计算中的截断求和策略。图 \ref{fig:21-11}(a) 是本章前几节讨论的直接求和算法；每个网格点都接收所有原子的贡献。这种方法具有很高的并行性并能取得很好的加速比，但对于超大型势网格系统并不具备良好可扩展性，因为原子数会随系统体积增加。计算量随体积的平方增加；对于大体积系统，即使是大规模并行设备也会因而花费过长时间。
+
+我们知道，每个网格点都需要准确接收邻近原子的贡献。不过，远离网格点的原子对该点能量值的贡献很小，因为贡献与距离成反比。图 \ref{fig:21-11}(b) 用围绕网格点画出的圆说明这一点。圆外原子（深色原子）对该网格点能量的贡献很小，可以用单独的隐式方法处理。如果能设计一种算法，让每个网格点只接收其坐标固定半径内原子的贡献，算法的计算复杂度就会降低为与系统体积线性相关，执行时间也会随系统体积线性增长。这类算法在顺序计算中已经得到广泛使用。
+
+在顺序计算中，简单的截断算法一次处理一个原子。对每个原子，算法遍历落在该原子坐标一定半径内的网格点。由于网格点存储在数组中，可以根据坐标轻松索引，所以这一过程很直接。只需把图 \ref{fig:21-4} 的 DCS C 实现稍作修改，限制内层循环 $i$ 和 $j$ 的范围，使之只覆盖半径内的势网格点，就能得到截断算法的 C 实现。然而，这种简单过程不容易直接转成并行执行。原因正是第 \ref{sec:electrostatic-scatter-gather} 节讨论的：以原子为中心的并行化会产生散布式内存更新行为，效果不佳。
+
+因此，需要基于网格点中心分解设计截断分箱算法，即每个线程计算一个网格点的能量值。幸运的是，有一种广为人知的方法，可以把图 \ref{fig:21-10} 这样的直接求和算法改造成截断分箱算法。Rodrigues 等人给出了静电势问题的这类算法\cite{ch21-rodrigues2008cutoff}。
+
+该算法的关键思路，是先按坐标把输入原子排序到分箱中。每个分箱对应势网格空间中的一个盒子，包含坐标落在该盒子内的所有原子。分箱用多维数组实现：前三个维度是 $x$、$y$、$z$，第 4 个维度是分箱内的原子向量。
+
+对一个网格点，我们把“邻域”定义为这样一组分箱：其中包含所有可能对该网格点能量值产生贡献的原子。图 \ref{fig:21-12} 展示了网格点的邻域分箱示例。可以看到，网格点周围有 9 个分箱与截断圆重叠。要正确进行截断求和，必须保证这 9 个分箱中的所有原子都被考虑。注意，邻域分箱中的某些原子可能不在半径内。因此，在处理邻域分箱中的原子时，所有线程都需要检查该原子是否落入自己的半径，这可能造成一个 warp 内线程之间的控制流分歧。
+
+虽然图 \ref{fig:21-12} 只展示了紧邻网格点所在分箱周围的一层二维分箱，但真实算法通常会在一个网格点的邻域中使用多个三维分箱。在这种方法中，所有线程都遍历自己的邻域；它们用块索引和线程索引确定所分配网格点的坐标，再用这些坐标确定要检查的分箱。可以把邻域分箱看成势网格空间中的一个模板。不过，根据截断半径确定邻域分箱涉及复杂的几何问题，求解可能耗时。因此，通常为一个块中的所有线程预先定义邻域分箱，并在启动网格前准备好。
+
+图 \ref{fig:21-13} 展示了按块设计邻域分箱的方法。根据块维度和网格间距，可以计算每个块覆盖的势网格空间面积（在三维中是体积）。图中用正方形表示块覆盖的区域。为简单起见，假设每个区域也由一个分箱覆盖，也就是说，落入同一正方形的所有原子都会收集到同一个分箱。例如，若网格间距为 $0.5\,\text{\AA}$ 且块为 $8\times8\times8$，每个块在势网格空间覆盖 $4\,\text{\AA}\times4\,\text{\AA}\times4\,\text{\AA}$ 的立方体。若分子级力计算的典型截断距离为 $12\,\text{\AA}$，就需要找出所有可能被该块所覆盖的 512 个网格点中的任意一个完全或部分覆盖的分箱。
+
+每个圆的圆心位于一个线程覆盖的网格点。还可以使用保守近似：以分箱中心为圆心，绘制半径等于截断距离加分箱对角线一半的超级圆。这样做的理由是，超级圆会覆盖所有以分箱角点为圆心的圆。然后只需创建一个列表，列出被超级圆完全或部分覆盖的分箱相对位置。
+
+图 \ref{fig:21-14} 展示了识别邻域分箱的小例子。对于每个分箱，超级圆完全覆盖 9 个分箱，部分覆盖 12 个分箱。因此，可以生成含 $9+12=21$ 个邻域分箱的列表；块中的每个线程都需要检查这些分箱，寻找处于该线程负责网格点截断距离内的原子。这些分箱用分箱坐标的相对偏移表示。例如，超级圆完全覆盖的 9 个分箱可以表示为列表
+\[
+(-1,-1),\ (0,-1),\ (1,-1),\ (-1,0),\ (0,0),\ (1,0),\ (-1,1),\ (0,1),\ (1,1).
+\]
+如图 \ref{fig:21-14} 上半部分所示。这个列表会传给内核，很可能存放为常量内存数组。内核执行期间，一个块中的所有线程都遍历邻域列表。对每个邻域分箱，线程把偏移应用于块所覆盖分箱的坐标，得到邻居分箱坐标，如图 \ref{fig:21-14} 下半部分所示。线程协作把分箱中的原子加载到共享内存，然后每个线程独立检查这些原子是否落在截断距离内。对于同一个原子，不同线程可能做出不同的决定，判断是否把它计入自己网格点的能量值，这正是潜在控制流分歧的来源。
+
+截断分箱算法的计算复杂度之所以改善，主要是因为在大型网格系统中，每个线程现在只需检查邻域分箱定义的较小原子子集。但这也使常量内存不再适合存放原子。由于不同线程块会访问不同邻域，容量有限的常量内存很可能无法容纳所有活动线程块需要的全部原子。因此，应使用全局内存存放规模大得多的原子集合。为减轻带宽消耗，一个块中的线程协作，把每个共同邻域分箱中的原子信息加载到共享内存；随后所有线程从共享内存检查原子。
+
+分箱还有一个微妙问题：不同分箱最终可能包含不同数量的原子。原子在网格系统中呈统计分布，有些分箱可能包含很多原子，有些甚至一个也没有。为了保证内存访问合并，所有分箱必须具有相同大小，并在适当的合并边界上对齐。这要求用电荷为 0 的虚拟原子填充许多分箱，会带来两个负面影响。第一，虚拟原子仍占用全局内存和共享内存存储空间，也消耗向设备传输数据的带宽。第二，对于真实原子较少的分箱，虚拟原子会延长线程块的执行时间。
+
+一种较好的做法，是把分箱大小设置为一个合理值，覆盖绝大多数分箱中的原子数，通常远小于单个分箱可能拥有的最大原子数。分箱过程维护一个溢出列表。处理原子时，如果该原子的归属分箱已满，就把原子加入溢出列表。设备完成一个内核后，把得到的网格点能量值传回主机；主机对溢出列表中的原子执行顺序截断算法，补上这些溢出原子缺少的贡献。
+
+只要溢出原子占全部原子的比例很小（例如低于 3\%），顺序处理溢出原子的额外时间通常就会短于设备执行时间。还可以把内核设计成每次调用只计算一部分网格点子体积的能量值。每次内核完成后，主机启动下一个内核，同时处理刚完成内核的溢出原子。这样，设备执行下一个内核时，主机并行处理溢出原子；由于两者重叠执行，处理溢出原子的延迟大部分甚至全部都可以隐藏。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[x=0.45cm,y=0.45cm]
+    \draw[step=1,gray!55] (0,0) grid (10,8);
+    \foreach \x/\y in {1/1,2/6,4/2,5/5,8/1,9/6} {\fill[red!75] (\x+0.5,\y+0.5) circle (0.18);}
+    \foreach \x/\y in {4/4,5/3,5/4,6/4,6/5} {\fill[green!65!black] (\x+0.5,\y+0.5) circle (0.18);}
+    \fill[blue!70] (5.5,4.5) circle (0.12);
+    \draw[dashed] (5.5,4.5) circle (2.15);
+    \foreach \x/\y in {3/3,4/3,5/3,6/3,7/3,3/4,4/4,5/4,6/4,7/4,3/5,4/5,5/5,6/5,7/5} {\draw[thick,green!50!black] (\x,\y) rectangle +(1,1);}
+    \node[font=\scriptsize,align=left] at (12.5,4.5) {截断圆外的原子\\贡献很小；\\邻域分箱内的\\原子仍需逐个检查};
+    \node[font=\scriptsize] at (5.5,-0.45) {网格点所在分箱及其邻域分箱};
+  \end{tikzpicture}
+  \caption{网格点的邻域分箱。依据原书图 21.12 重绘；绿色框表示必须检查的候选分箱，虚线圆表示截断距离。}
+  \label{fig:21-12}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[x=0.5cm,y=0.5cm,>=Stealth]
+    \foreach \x/\y in {0/0,1/1,2/2,1/-1,-1/1,-2/0,-1/-1,2/0,0/-2} {
+      \draw[fill=gray!18,draw=gray!70] (\x,\y) rectangle +(1,1);
+    }
+    \draw[fill=green!60!black] (0.5,0.5) rectangle +(1,1);
+    \draw[dashed] (0.5,0.5) circle (3.1);
+    \node[font=\scriptsize,above] at (1,3.75) {一个块处理的网格点区域};
+    \node[font=\scriptsize,align=left] at (7,1.8) {超级圆半径 =\\截断距离 +\\分箱对角线的一半};
+    \draw[->] (5.8,2) -- (2.8,2.3);
+    \node[font=\scriptsize] at (0.5,-2.7) {$4\,\text{\AA}$};
+    \draw[<->] (-0.1,-2.2) -- (0.9,-2.2);
+    \node[font=\scriptsize,align=left] at (7,-0.8) {二维示意；真实块覆盖 $8\times8\times8$ 的三维体积};
+  \end{tikzpicture}
+  \caption{为一个块处理的所有网格点识别邻域分箱。依据原书图 21.13 重绘；灰色方块是分箱，绿色方块表示块覆盖的中心分箱。}
+  \label{fig:21-13}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[x=0.45cm,y=0.45cm,>=Stealth]
+    \begin{scope}[shift={(0,0)}]
+      \draw[step=1,gray!55] (0,0) grid (5,5);
+      \foreach \x/\y in {0/0,1/0,2/0,0/1,1/1,2/1,0/2,1/2,2/2} {\fill[green!55] (\x,\y) rectangle +(1,1);}
+      \draw[red,thick] (1.5,1.5) circle (1.85);
+      \fill[white] (1.5,1.5) circle (0.06);
+      \node[font=\scriptsize] at (1.5,-0.9) {相对偏移：$(-1,-1)$ 到 $(1,1)$};
+      \node[font=\scriptsize] at (1.5,5.55) {完全覆盖的 9 个分箱};
+    \end{scope}
+    \begin{scope}[shift={(7,0)}]
+      \draw[step=1,gray!55] (0,0) grid (5,5);
+      \foreach \x/\y in {0/0,1/0,2/0,0/1,1/1,2/1,0/2,1/2,2/2,3/0,3/1,3/2,0/3,1/3,2/3} {\fill[green!55] (\x,\y) rectangle +(1,1);}
+      \draw[red,thick] (1.5,1.5) circle (1.85);
+      \fill[white] (1.5,1.5) circle (0.06);
+      \node[font=\scriptsize] at (1.5,-0.9) {块中心坐标 $(X,Y)$ 加相对偏移};
+      \node[font=\scriptsize] at (1.5,5.55) {部分覆盖的分箱也要纳入};
+    \end{scope}
+    \node[font=\scriptsize,align=left] at (6,6.35) {9 个完全覆盖 + 12 个部分覆盖 = 21 个邻域分箱};
+  \end{tikzpicture}
+  \caption{使用相对偏移构造邻域列表。依据原书图 21.14 重绘；列表可放入常量内存，并由块内线程共同遍历。}
+  \label{fig:21-14}
+\end{figure}
+
+\section{小结}
+\label{sec:electrostatic-summary}
+
+本章展示了在规则间隔势网格中并行计算静电势能时的一系列决策和权衡。我们首先看到，把高度优化的顺序 DCS C 实现并行化，会得到需要大量原子操作、速度较慢的散布内核。随后看到，把一个优化程度较低的顺序 C 代码并行化，可以得到具有更高并行执行速度的聚集内核。通过线程粗化，还可以重新获得优化顺序执行的大部分效率。最后，我们展示了如何谨慎选择折叠到每个线程中的网格点，使内核具有完全合并的内存写入模式。
+
+DCS 是计算分子系统静电势能图的高精度方法，但不具备可扩展性。该方法执行的运算次数与原子数和网格点数的乘积成正比。当增大要模拟的分子系统物理体积时，网格点数和原子数都应随物理体积线性增加。因此，运算次数大致与物理体积的平方成正比，也就是随所模拟系统的体积呈二次增长。这使 DCS 不适合模拟真实的生物系统。我们看到，截断分箱方法只略微降低精度，却能在保留高并行度的同时，显著改善计算复杂度。
+
+\section{练习}
+\label{sec:electrostatic-exercises}
+
+\begin{enumerate}[label=\arabic*.,leftmargin=2.7em]
+  \item 为图 \ref{fig:21-6} 中的内核补全主机代码，配置线程网格并使用全部执行配置参数调用内核。
+
+  \item 比较图 \ref{fig:21-6} 内核每次迭代执行的运算数量（内存加载、浮点运算、分支）与图 \ref{fig:21-8} 中粗化因子为 8 的内核。注意，后一个内核的每个线程对应前一个内核的 8 个线程。
+
+  \item 如第 \ref{sec:electrostatic-coarsening} 节所示，增加每个 CUDA 线程完成的工作量可能带来哪两个潜在缺点？
+
+  \item 修改图 \ref{fig:21-8} 的内核，使更新势网格点时可以使用向量存储来改善内存访问合并。
+
+  \item 使用图 \ref{fig:21-13} 解释：当块中的线程处理邻域列表中的一个分箱时，控制流分歧如何产生？
+\end{enumerate}
+
+\begin{chapterbibliography}{3}
+  \bibitem{ch21-humphrey1996vmd}
+  W. Humphrey, A. Dalke, K. Schulten, VMD: visual molecular dynamics,
+  \emph{Journal of Molecular Graphics} 14 (1) (1996) 33--38.
+
+  \bibitem{ch21-stone2007accelerating}
+  J. E. Stone, J. C. Phillips, P. L. Freddolino, D. J. Hardy, L. G. Trabuco,
+  K. Schulten, Accelerating molecular modeling applications with graphics processors,
+  \emph{Journal of Computational Chemistry} 28 (16) (2007) 2618--2640.
+
+  \bibitem{ch21-rodrigues2008cutoff}
+  C. I. Rodrigues, D. J. Hardy, J. E. Stone, K. Schulten, W.-M. W. Hwu,
+  GPU acceleration of cutoff pair potentials for molecular modeling applications,
+  in: \emph{Proceedings of the 5th Conference on Computing Frontiers}, 2008, pp.~273--282.
+\end{chapterbibliography}

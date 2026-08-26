@@ -134,10 +134,12 @@
 \include{chapters/16-dynamic-programming-wavefront}
 \include{chapters/17-sparse-matrix-computation}
 \include{chapters/18-graph-traversal}
-
-% 第 19 章暂缺；显式设置计数器，使先行完成的本章保持原书编号。
-\setcounter{chapter}{19}
+\include{chapters/19-convolutional-neural-networks}
 \include{chapters/20-large-language-models}
+\include{chapters/21-electrostatic-potential-map}
+\include{chapters/22-algorithm-selection-problem-decomposition-and-problem-formulation}
+\include{chapters/23-multi-gpu-programming}
+\include{chapters/24-conclusion-and-future-outlook}
 
 \backmatter
 
@@ -206,6 +208,24 @@
   \item[bottleneck] 瓶颈
   \item[convolution] 卷积
   \item[convolution filter] 卷积滤波器
+  \item[convolutional neural network (CNN)] 卷积神经网络
+  \item[feed-forward network] 前馈网络
+  \item[convolutional layer] 卷积层
+  \item[feature map] 特征图
+  \item[input/output feature map] 输入/输出特征图
+  \item[input/output channel] 输入/输出通道
+  \item[filter bank] 滤波器组
+  \item[activation function] 激活函数
+  \item[forward/backward propagation] 前向/反向传播
+  \item[mini-batch] 小批量
+  \item[tensor] 张量
+  \item[tensor layout] 张量布局
+  \item[subsampling layer] 下采样层
+  \item[GEMM] 通用矩阵乘法（General Matrix Multiply）
+  \item[explicit/implicit unfolding] 显式/隐式展开
+  \item[stride] 步幅
+  \item[padding] 填充
+  \item[cuDNN] NVIDIA 的深度神经网络基本操作库
   \item[filter radius] 滤波器半径
   \item[ghost cell] ghost cell（幽灵单元）
   \item[halo cell] halo cell（晕影单元）
@@ -300,6 +320,78 @@
   \item[token] token；词元
   \item[embedding] 嵌入
   \item[positional encoding] 位置编码
+  \item[electrostatic potential map] 静电势图
+  \item[electrostatic potential] 静电势
+  \item[potential energy] 静电势能
+  \item[Direct Coulomb Summation (DCS)] 直接库仑求和（DCS）
+  \item[grid point] 网格点
+  \item[2D slice] 二维切片
+  \item[scatter/gather] 散布/聚集
+  \item[binning] 分箱
+  \item[neighborhood bin] 邻域分箱
+  \item[neighborhood list] 邻域列表
+  \item[relative offset] 相对偏移
+  \item[control-flow divergence] 控制流分歧
+  \item[virtual atom] 虚拟原子
+  \item[overflow list] 溢出列表
+  \item[cutoff summation] 截断求和
+  \item[cutoff distance] 截断距离
+  \item[vector store] 向量存储
+  \item[algorithm selection] 算法选择
+  \item[problem decomposition] 问题分解
+  \item[problem formulation] 问题表述
+  \item[parallel thinking] 并行思维
+  \item[work unit] 工作单元
+  \item[subproblem] 子问题
+  \item[definiteness] 确定性
+  \item[effective computability] 有效可计算性
+  \item[finiteness] 有限性
+  \item[algorithmic complexity] 算法复杂度
+  \item[generality] 通用性
+  \item[numerical stability] 数值稳定性
+  \item[output-centric decomposition] 输出中心分解
+  \item[input-centric decomposition] 输入中心分解
+  \item[gather/scatter access] 聚集/散布访问
+  \item[idempotent update] 幂等更新
+  \item[task-level parallelization] 任务级并行化
+  \item[Amdahl's law] 阿姆达尔定律
+  \item[sequential portion] 顺序部分
+  \item[application-level speedup] 应用级加速比
+  \item[latency optimization] 延迟优化
+  \item[QKV projection] QKV 投影
+  \item[vector-matrix multiplication] 向量—矩阵乘法
+  \item[multi-GPU programming] 多 GPU 编程
+  \item[SPMD] 单程序多数据（Single Program, Multiple Data）
+  \item[MPI] 消息传递接口（Message Passing Interface）
+  \item[MPI rank] MPI 秩
+  \item[communicator] 通信器
+  \item[domain partition/decomposition] 域分区/域分解
+  \item[halo exchange] halo 交换
+  \item[point-to-point/collective communication] 点对点/集体通信
+  \item[two-sided/one-sided communication] 双边/单边通信
+  \item[CUDA stream] CUDA stream（有序 CUDA 操作序列）
+  \item[CUDA event] CUDA 事件
+  \item[synchronization overhead] 同步开销
+  \item[pinned memory] 固定页内存；页锁定内存
+  \item[DMA] 直接内存访问（Direct Memory Access）
+  \item[NCCL] NVIDIA 集体通信库
+  \item[NVSHMEM] NVIDIA OpenSHMEM 库
+  \item[processing element (PE)] 处理元素
+  \item[symmetric heap] 对称堆
+  \item[kernel fusion] 内核融合
+  \item[periodic boundary condition] 周期边界条件
+  \item[computational thinking] 计算思维
+  \item[compute throughput] 计算吞吐量
+  \item[memory capacity] 内存容量
+  \item[PCIe bandwidth] PCIe 带宽
+  \item[NVLink bandwidth] NVLink 带宽
+  \item[hyperscaler] 超大规模厂商（数据中心规模极大的科技公司）
+  \item[high-performance computing (HPC)] 高性能计算（HPC）
+  \item[data analytics] 数据分析
+  \item[individualized medicine] 个性化医学
+  \item[computational genomics] 计算基因组学
+  \item[lithography mask] 光刻掩模
+  \item[storage data] 存储数据
 \end{description}
 
 \end{document}
