@@ -141,6 +141,12 @@
 \include{chapters/23-multi-gpu-programming}
 \include{chapters/24-conclusion-and-future-outlook}
 
+\part{附录}
+\appendix
+\include{chapters/appendix-a-numerical-considerations}
+\include{chapters/appendix-b-deep-learning-basics}
+\include{chapters/appendix-c-cuda-memories-address-spaces-and-pointers}
+
 \backmatter
 
 \chapter*{术语表}
@@ -392,6 +398,42 @@
   \item[computational genomics] 计算基因组学
   \item[lithography mask] 光刻掩模
   \item[storage data] 存储数据
+  \item[floating-point format] 浮点格式
+  \item[representable number] 可表示数
+  \item[normalized/denormalized number] 规格化数/反规格化数
+  \item[exponent/mantissa] 指数/尾数
+  \item[precision/accuracy] 精度/准确度
+  \item[ULP] 末位单位（Unit in the Last Place）
+  \item[abrupt underflow] 突然下溢
+  \item[round to nearest, ties to even] 舍入到最近值，遇中间值取偶数
+  \item[Kahan summation] Kahan 求和；补偿求和
+  \item[Gaussian elimination] 高斯消元
+  \item[back substitution] 回代
+  \item[pivoting/partial pivoting] 选主元/部分选主元
+  \item[communication-avoiding algorithm] 通信规避算法
+  \item[machine learning] 机器学习
+  \item[classification/regression] 分类/回归
+  \item[transcription/translation] 转录/翻译
+  \item[classifier] 分类器
+  \item[perceptron] 感知机
+  \item[weight/bias] 权重/偏置
+  \item[inference] 推理
+  \item[multi-layer perceptron (MLP)] 多层感知机
+  \item[fully connected layer] 全连接层
+  \item[supervised training] 监督训练
+  \item[loss/cost/error function] 损失函数/代价函数/误差函数
+  \item[stochastic gradient descent (SGD)] 随机梯度下降
+  \item[epoch] 轮次
+  \item[chain rule] 链式法则
+  \item[learning rate] 学习率
+  \item[zero-copy access] 零拷贝访问
+  \item[Unified Virtual Address Space (UVAS)] 统一虚拟地址空间
+  \item[Unified Memory] 统一内存
+  \item[managed memory] 托管内存
+  \item[page fault] 缺页
+  \item[memory migration] 内存迁移
+  \item[coherence] 一致性
+  \item[virtual address space control] 虚拟地址空间控制
 \end{description}
 
 \end{document}
