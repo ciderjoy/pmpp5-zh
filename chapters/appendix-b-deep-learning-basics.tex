@@ -1,0 +1,960 @@
+\chapter{深度学习基础}
+\label{app:deep-learning-basics}
+
+\begin{center}
+  \small Carl Pearson 和 Boris Ginsburg 特别贡献
+\end{center}
+
+机器学习（machine learning）一词由 IBM 的 Arthur Samuel 于 1959 年提出
+\cite{appb-samuel}。它是计算机科学的一个领域，研究如何从数据中学习应用逻辑，而不是
+显式设计算法。对于难以显式设计算法的计算任务，机器学习最为成功；造成这种困难的主要原因，
+通常是人们还不具备设计这种显式算法所需的充分知识。也就是说，人们可以举例说明各种情形下
+应当发生什么，却无法给出适用于所有可能输入的一般决策规则。例如，机器学习推动了自动语音
+识别、计算机视觉、自然语言处理和推荐系统等应用领域近年来的进步。在这些领域中，人们可以
+提供大量输入示例以及每个输入应当得到的输出，却没有能够正确处理所有可能输入的算法。
+
+机器学习建立的应用逻辑可以按照所执行的任务类型组织。机器学习任务范围很广，下面只列出
+其中几类：
+\begin{itemize}
+  \item \textbf{分类（classification）}：确定输入属于 $k$ 个类别中的哪一类。例如物体
+  识别：这张照片中是什么食物？
+  \item \textbf{回归（regression）}：根据若干输入预测一个数值。例如预测下一个交易日
+  收盘时的股票价格。
+  \item \textbf{转录（transcription）}：把非结构化数据转换成文本形式。例如光学字符
+  识别。
+  \item \textbf{翻译（translation）}：把一种语言的符号序列转换成另一种语言的符号
+  序列。例如把英文翻译成中文。
+  \item \textbf{嵌入（embedding）}：在保留实体间关系的同时把输入转换成向量。例如把
+  自然语言句子转换成多维向量。
+\end{itemize}
+
+关于各种机器学习任务的数学背景和实际解决方案，已有大量文献可供读者参考。本附录的目的，
+是介绍以神经网络解决分类任务时涉及的计算内核。具体理解这些内核以后，读者就能理解并开发
+用深度学习处理其他机器学习任务所需的内核。因此，下一节将详细介绍分类任务，为理解神经
+网络建立背景知识。
+
+\section{分类器}
+\label{sec:appb-classifiers}
+
+在机器学习中，分类器是一个函数 $f$，它把 $n$ 维向量输入映射到 $k$ 个类别或标签之一，
+从而完成分类任务：
+\begin{equation}
+  f:\mathbb{R}^n\rightarrow\{1,2,\ldots,k\}.
+  \label{eq:appb-1}
+\end{equation}
+例如，输入可以是二维向量（$n=2$），第一个元素是一个人的收入水平，第二个元素是同一个人
+的年龄。分类器 $f$ 可以把具有这种向量的人映射到四个类别之一（$k=4$）：拥有研究生学位
+（1）、拥有学士学位（2）、高中毕业（3）或以上皆非（4）。
+
+分类器函数 $f$ 是由 $\theta$ 参数化的数学表达式，它定义如何把输入向量 $x$ 映射为数值
+编码 $y$：
+\begin{equation}
+  y=f(x,\theta).
+  \label{eq:appb-2}
+\end{equation}
+参数 $\theta$ 通常称为\textbf{模型（model）}，它封装了从数据中学习得到的 $f$ 的数学
+表达式系数。下面用具体例子说明 $\theta$ 的含义。
+
+考虑一种称为\textbf{感知机（perceptron）}\cite{appb-rosenblatt} 的分类器：
+\begin{equation}
+  y=\operatorname{sign}(W\cdot x+b),
+  \label{eq:appb-3}
+\end{equation}
+其中，$W$ 是输入向量 $x$ 的系数向量，$b$ 是偏置常数，$W$ 和 $x$ 长度相同。sign 函数
+的输入为正时返回 1，为 0 时返回 0，为负时返回 $-1$。也就是说，sign 函数作为分类器会
+激活并最终确定把输入值映射到 $-1,0,1$ 三个类别，因此常称为\textbf{激活函数
+（activation function）}。激活函数给感知机原本为线性的函数引入了非线性。
+
+在这个例子中，模型 $\theta$ 是向量 $W$ 和常数 $b$ 的组合。模型的结构是一个 sign 函数，
+其输入为关于 $x$ 各元素的线性表达式：系数是 $W$ 的元素（即 $W$ 向量与 $x$ 向量的点积），
+常数项是 $b$。
+
+$W$ 的元素先与 $x$ 的相应元素相乘，成对乘积再在点积中相加，因此它们是最终和中各 $x$
+元素的加权系数，通常称为模型的\textbf{权重（weight）}。由于 $f$ 是输入激活函数 sign
+的 $x$ 的线性函数，感知机是一种线性分类器。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[x=1.15cm,y=1.0cm,>=Stealth]
+    \draw[->] (0,0)--(5.2,0) node[right] {$x_1$};
+    \draw[->] (0,0)--(0,4.3) node[above] {$x_2$};
+    \draw[thick] (-0.6,4.3)--(4.3,-0.5);
+    \node[font=\small,rotate=-40] at (3.6,0.8) {$w_1x_1+w_2x_2+b=0$};
+    \node[font=\small] at (3.45,3.5) {$w_1x_1+w_2x_2+b>0$};
+    \node[font=\small] at (1.1,-0.55) {$w_1x_1+w_2x_2+b<0$};
+    \node[left,font=\scriptsize] at (0,3.15) {$(0,-b/w_2)$};
+    \node[below,font=\scriptsize] at (3.15,0) {$(-b/w_1,0)$};
+    \foreach \p in {(0.45,1.05),(0.75,0.72),(1.1,1.35),(1.35,0.85),(1.7,1.25),(1.95,0.65)}
+      \fill[cyan!40!blue] \p circle (2.3pt);
+    \foreach \p in {(2.25,1.55),(2.55,2.1),(2.75,1.35),(3.05,2.5),(3.25,1.8),(3.5,2.2)}
+      \fill[blue!80] \p circle (2.3pt);
+    \node[align=left] at (7.8,2.4) {$y=\operatorname{sign}((w_1,w_2)\cdot(x_1,x_2)+b)$\\
+      $\phantom{y}=\operatorname{sign}(w_1x_1+w_2x_2+b)$};
+  \end{tikzpicture}
+  \caption{输入为二维向量的感知机线性分类器示例。依据原书图 B.1 重绘。}
+  \label{fig:b-1}
+\end{figure}
+
+图 \ref{fig:b-1} 给出输入为二维向量 $(x_1,x_2)$ 的感知机示例。模型 $\theta$ 由权重向量
+$(w_1,w_2)$ 和偏置常数 $b$ 组成。线性表达式 $w_1x_1+w_2x_2+b$ 在 $x_1$--$x_2$
+空间中定义一条直线，把空间分成两部分：一部分中的所有点使表达式大于 0，另一部分中的所有
+点使表达式小于 0，直线上的所有点使表达式等于 0。
+
+给定一组 $(w_1,w_2)$ 和 $b$，就能在 $x_1$--$x_2$ 空间画出图 \ref{fig:b-1} 所示直线。
+例如，对模型 $(w_1,w_2)=(2,3)$、$b=-6$ 的感知机，连接直线与 $x_1$ 轴的交点
+$(-b/w_1,0)=(3,0)$ 和与 $x_2$ 轴的交点 $(0,-b/w_2)=(0,2)$，即可画出直线。它对应
+方程 $2x_1+3x_2-6=0$。借助这幅图，可以直观看出输入点的分类结果：直线上方的点（图中
+深色点）分类为 1，直线上的点分类为 0，直线下方的点（浅色点）分类为 $-1$。
+
+计算某个输入映射结果的过程通常称为分类器的\textbf{推理（inference）}。对于感知机，只需
+把输入坐标代入 $y=\operatorname{sign}(W\cdot x+b)$。本例中，输入点为 $(5,-1)$ 时，
+推理过程为
+\begin{equation}
+  y=\operatorname{sign}(2\times5+3\times(-1)-6)=\operatorname{sign}(1)=1.
+  \label{eq:appb-4}
+\end{equation}
+所以，$(5,-1)$ 被分到类别 1，即属于图中的深色点。
+
+\subsection*{多层分类器}
+
+如果能够用超平面（二维空间中的直线、三维空间中的平面）把空间划分成区域，并以此定义数据点
+的各个类别，线性分类器就很有用。理想情况下，每类数据点恰好占据一个这样的区域。例如，在
+二维二分类器中，需要画一条直线，把一类点与另一类点分开。遗憾的是，这并不总能做到。
+
+考虑图 \ref{fig:b-2} 中的分类器。假设所有输入坐标都在 $[0,1]$ 范围内。分类器应把 $x_1$
+和 $x_2$ 都大于 0.5 的所有点，即落在定义域右上象限的点，分为类别 1，其余点分为类别 0
+或 $-1$。图 \ref{fig:b-2}(a) 所示的一条直线可以近似实现这一分类器。例如，直线
+$2x_1+2x_2-3=0$ 能正确分类大多数点；但某些 $x_1,x_2$ 都大于 0.5、二者之和却小于
+1.5 的浅色点，例如 $(0.55,0.65)$，会被错误地分到类别 $-1$（深色区域）。任何直线都必然
+切掉右上象限的一部分，或纳入定义域其余部分的一部分，所以不存在能正确分类所有可能输入的
+单条直线。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[>=Stealth,font=\scriptsize]
+    \begin{scope}[x=2.6cm,y=2.6cm]
+      \draw[->] (0,0)--(1.25,0) node[right] {$x_1$};
+      \draw[->] (0,0)--(0,1.25) node[above] {$x_2$};
+      \draw[blue!70,thick] (0,0) rectangle (1,1);
+      \fill[cyan!20] (0.5,0.5) rectangle (1,1);
+      \draw[thick] (0.3,1.2)--(1.2,0.3);
+      \node at (0.6,-0.22) {(a) 单层};
+    \end{scope}
+    \begin{scope}[shift={(5.1,0)}]
+      \node[draw,circle,fill=blue!20,minimum size=6mm] (p11) at (0,2.1) {$\operatorname{sign}$};
+      \node[draw,circle,fill=blue!20,minimum size=6mm] (p12) at (0,0.7) {$\operatorname{sign}$};
+      \node[draw,circle,fill=green!20,minimum size=6mm] (p2) at (3.0,1.4) {$\operatorname{sign}$};
+      \node[left] (x1) at (-1.4,2.1) {$x_1$};
+      \node[left] (x2) at (-1.4,0.7) {$x_2$};
+      \draw[->] (x1)--node[above] {$1$}(p11);
+      \draw[->] (x2)--node[above] {$1$}(p12);
+      \node[above] at (p11.north) {$b=-0.5$};
+      \node[below] at (p12.south) {$b=-0.5$};
+      \draw[->] (p11)--node[above] {$2$}(p2);
+      \draw[->] (p12)--node[below] {$2$}(p2);
+      \node[above] at (p2.north) {$b=-3$};
+      \draw[->] (p2)--+(1,0) node[right] {$z$};
+      \node at (1.1,-0.22) {(b) 两层};
+    \end{scope}
+  \end{tikzpicture}
+  \caption{多层感知机示例：（a）单条直线只能近似划分输入；（b）两层感知机精确实现所需
+  分类。依据原书图 B.2 重绘。}
+  \label{fig:b-2}
+\end{figure}
+
+\textbf{多层感知机（multi-layer perceptron，MLP）}允许使用多条直线实现更复杂的分类
+模式。多层感知机的每一层包含一个或多个感知机，某一层感知机的输出是下一层感知机的输入。
+它有一个有趣而实用的性质：第一层输入可能有无穷多个取值，第一层输出、也就是第二层输入却
+只能有较少的可能值。例如，把图 \ref{fig:b-1} 的感知机用作第一层时，其输出只可能是
+$-1,0,1$。
+
+图 \ref{fig:b-2}(b) 展示了能够精确实现所需分类模式的两层感知机。第一层包含两个感知机。
+第一个 $y_1=\operatorname{sign}(x_1-0.5)$ 把 $x_1>0.5$ 的所有点分为类别 1，其余点分为
+$-1$ 或 0。第二个 $y_2=\operatorname{sign}(x_2-0.5)$ 把 $x_2>0.5$ 的所有点分为类别 1，
+其余点分为 0 或 $-1$。
+
+因此，第一层输出 $(y_1,y_2)$ 只有九种可能：$(-1,-1)$、$(-1,0)$、$(-1,1)$、$(0,-1)$、
+$(0,0)$、$(0,1)$、$(1,-1)$、$(1,0)$ 和 $(1,1)$，也就是第二层只可能接收九种输入对。
+其中 $(1,1)$ 很特殊：原输入中浅色类别的所有点都被第一层映射到 $(1,1)$。因此，可以在
+第二层使用简单感知机，在 $y_1$--$y_2$ 空间中画一条直线，把 $(1,1)$ 与其余八个可能点
+分开，如图 \ref{fig:b-2}(b) 所示。直线 $2y_1+2y_2-3=0$ 或它的许多小幅变体都能做到。
+
+再看单层感知机错误分类的输入 $(0.55,0.65)$。两层感知机处理它时，第一层上方感知机产生
+$y_1=1$，下方感知机产生 $y_2=1$；第二层感知机根据这两个输入产生 $z=1$，这是该点的
+正确类别。
+
+两层感知机仍有显著局限。例如，假设要建立感知机，对图 \ref{fig:b-3}(a) 所示输入点分类。
+浅色输入点在第二层可能形成 $(-1,-1)$ 或 $(1,1)$，无法用一条直线正确分类第二层中的点。
+图 \ref{fig:b-3}(b) 在第二层增加一个感知机，从而增加另一条直线；其函数可以是
+$z_2=\operatorname{sign}(-2y_1-2y_2-3)$ 或它的小幅变体。读者可以验证，图
+\ref{fig:b-3}(b) 中所有深色点都会映射到 $z_1$--$z_2$ 空间的 $(-1,-1)$，而
+$y_1$--$y_2$ 空间中的 $(1,1)$ 和 $(-1,-1)$ 分别映射到 $z_1$--$z_2$ 空间的
+$(1,-1)$ 和 $(-1,1)$。现在可以画直线 $z_1+z_2+1=0$ 或它的小幅变体，正确分类这些点，
+如图 \ref{fig:b-3}(c) 所示。显然，如果需要把输入定义域分成更多区域，可能需要更多层。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[x=1.05cm,y=1.05cm,>=Stealth,font=\scriptsize]
+    \begin{scope}
+      \draw[->] (0,0)--(3.2,0) node[right] {$x_1$};
+      \draw[->] (0,0)--(0,3.2) node[above] {$x_2$};
+      \draw[blue!70,thick] (0,0) rectangle (2.7,2.7);
+      \foreach \p in {(0.3,0.3),(0.7,0.7),(1.1,0.35),(1.5,0.8),(2.2,0.35),(2.5,0.8),
+        (0.3,2.3),(0.8,2.0),(1.3,2.4),(1.8,2.0),(2.3,2.4),(2.55,1.9)}
+        \fill[cyan!35!blue] \p circle (2.4pt);
+      \foreach \p in {(0.45,1.25),(0.8,1.55),(1.25,1.25),(1.65,1.55),(2.05,1.2),(2.4,1.5)}
+        \fill[blue!80] \p circle (2.4pt);
+      \node at (1.35,-0.45) {(a) 输入空间};
+    \end{scope}
+    \begin{scope}[shift={(5.0,0)}]
+      \draw[->] (0,0)--(3.2,0) node[right] {$y_1$};
+      \draw[->] (0,0)--(0,3.2) node[above] {$y_2$};
+      \draw[blue!70,thick] (0.35,0.35) rectangle (2.65,2.65);
+      \foreach \p in {(0.35,0.35),(0.35,1.5),(0.35,2.65),(1.5,0.35),(1.5,1.5),(1.5,2.65),
+        (2.65,0.35),(2.65,1.5),(2.65,2.65)} \fill[blue!65] \p circle (2.5pt);
+      \draw[thick] (-0.2,1.0)--(2.6,3.8);
+      \draw[thick] (-0.2,2.0)--(2.6,-0.8);
+      \node at (1.35,-0.45) {(b) 两个第二层感知机};
+    \end{scope}
+    \begin{scope}[shift={(10.0,0)}]
+      \draw[->] (0,0)--(3.2,0) node[right] {$z_1$};
+      \draw[->] (0,0)--(0,3.2) node[above] {$z_2$};
+      \draw[blue!70,thick] (0.35,0.35) rectangle (2.65,2.65);
+      \fill[blue!80] (0.35,0.35) circle (2.7pt);
+      \fill[cyan!35!blue] (0.35,2.65) circle (2.7pt);
+      \fill[cyan!35!blue] (2.65,0.35) circle (2.7pt);
+      \draw[thick] (-0.1,1.2)--(1.8,-0.7);
+      \node at (1.35,-0.45) {(c) 最终分类};
+    \end{scope}
+  \end{tikzpicture}
+  \caption{需要两层以上感知机的分类模式。依据原书图 B.3 重绘。}
+  \label{fig:b-3}
+\end{figure}
+
+\section{全连接层与卷积层}
+\label{sec:appb-fc-conv}
+
+图 \ref{fig:b-2}(b) 的第一层是一个小型\textbf{全连接层（fully connected layer，FC）}
+示例，其中每个输出（$y_1,y_2$）都是每个输入（$x_1,x_2$）的函数。一般而言，全连接层的
+$m$ 个输出都分别是全部 $n$ 个输入的函数。全连接层的所有权重构成 $m\times n$ 权重矩阵
+$W$；$m$ 行中的每一行都是长度为 $n$ 的权重向量，将它应用于长度为 $n$ 的输入向量，产生
+$m$ 个输出之一。因此，从全连接层输入求全部输出的过程是矩阵--向量乘法。全连接层是包括
+大语言模型在内的多类神经网络的核心组件，后文还会研究其 GPU 实现。
+
+当 $m,n$ 很大时，全连接层会极其昂贵，主要原因是它需要 $m\times n$ 权重矩阵。例如，在
+图像识别应用中，$n$ 是输入图像的像素数，$m$ 是要对输入像素执行的分类器数量。高分辨率
+图像的 $n$ 可达数百万；根据需要识别的物体种类，$m$ 可达数百甚至更多。图中物体还可能具有
+不同尺度和方向，需要设置许多分类器来处理这些变化。让所有输入都送入所有分类器，既昂贵，
+也很可能造成浪费。
+
+卷积层通过减少每个分类器接收的输入数，并在分类器之间共享相同权重，降低全连接层的成本。
+卷积层中的每个分类器只接收输入向量的一部分，例如输入图像的一个图块，并根据权重对图块
+像素执行卷积。输出称为\textbf{输出特征图（output feature map）}，因为输出中的每个像素
+都是一个分类器的激活结果。分类器共享权重，使卷积层可以拥有大量分类器，即很大的 $m$，
+却不需要过多权重。从计算角度看，这可以实现为二维卷积；但这种做法实际上是在图像不同部分
+应用同一个分类器。也可以把不同权重集合应用于同一个输入，产生多幅输出特征图，本附录稍后
+会看到这种形式。
+
+\subsection{训练模型}
+\label{sec:appb-training-models}
+
+到目前为止，我们一直假定分类器的模型参数已经存在并可供使用。下面转向\textbf{训练
+（training）}，即用数据确定模型参数 $\theta$ 的取值。图 \ref{fig:b-1} 的二维向量分类器
+中，模型参数是权重 $(w_1,w_2)$ 和偏置 $b$。为简单起见，假设采用\textbf{监督训练
+（supervised training）}：使用标有预期输出值的输入数据确定权重和偏置。半监督学习、强化
+学习等其他训练形式也已得到发展，用来降低对标注数据的依赖；读者可以查阅相关文献，了解
+这些情形下如何完成训练。
+
+示例中的每个二维分类器都是输入向量和模型参数的数学表达式，因此可以用输入向量的值及其
+标签建立方程组。每个输入向量及其标签产生一个以模型参数为变量的方程。例如，若输入向量
+$(1,5)$ 的标签值为 1，可以建立方程
+\begin{equation}
+  \operatorname{sign}(w_1+5w_2+b)=1.
+  \label{eq:appb-5}
+\end{equation}
+由于存在 sign 函数，这不是线性方程。即使有三个这样的方程，也不会得到唯一一组同时满足
+它们的 $w_1,w_2,b$，而可能有无穷多个解，数学上称为欠定问题。事实上，给定数据集时，完全
+可能找不到能满足全部方程的 $w_1,w_2,b$，例如二维空间中的数据点无法用一条直线分类时，
+图 \ref{fig:b-2} 就是例子。因此，需要使用大量带标签输入数据迭代寻找参数，使分类器处理
+数据集时的错误数处于可接受范围。
+
+图 \ref{fig:b-1} 的感知机示例中，每个训练数据点都带有期望分类结果 $-1,0$ 或 1。训练从
+对 $(w_1,w_2),b$ 的初始猜测开始，对输入数据执行推理并产生分类结果；然后把分类结果与
+标签比较，用差异调整 $(w_1,w_2),b$，直至分类结果与标签的差异稳定在可接受水平。
+
+这种迭代方法需要一种度量输出值与给定标签值差异的方式，还需要一套调整模型参数的过程，
+使调整后的输出值更接近期望值。正如读者可能已经猜到的，差异度量和参数调整方法都有许多
+选择。下面各采用一种简单而常见的形式说明训练过程。
+
+\paragraph{误差函数。}
+\textbf{误差函数（error function）}有时也称成本函数，用于量化每个数据点的分类结果与
+相应标签之间的差异。假设 $y$ 是分类器输出类别，$t$ 是标签，一种误差函数为
+\begin{equation}
+  E=\frac{(y-t)^2}{2}.
+  \label{eq:appb-6}
+\end{equation}
+只要 $y,t$ 之间存在差异，无论差异为正还是为负，这一误差函数的值始终为正。因此，对许多
+输入数据点的误差求和时，正负差异都会对总误差作出贡献，而不会相互抵消。也可以把误差定义
+为差异的绝对值，还有许多其他选择。后文将看到，系数 $1/2$ 简化了求解模型参数时的计算。
+
+\paragraph{随机梯度下降。}
+训练过程试图找出模型参数值，使全部训练数据点的误差函数值之和最小。可以采用\textbf{随机
+梯度下降（stochastic gradient descent，SGD）}：反复把输入数据集的不同排列送入分类器，
+逐步改变参数值，并检查参数是否已经收敛，即参数值是否已经稳定，与上一次迭代相比变化小于
+阈值。参数收敛后，训练过程结束。如果训练数据集的成本函数值之和仍高于可接受水平，就以
+另一组模型参数初始猜测启动新的训练过程。在某些情况下，要让训练成功，还需要采用新的模型
+设计，例如增加层数。
+
+\paragraph{轮次。}
+训练过程的每次迭代称为一个\textbf{轮次（epoch）}。每个轮次先随机打乱训练输入数据集，
+也就是对其进行随机置换，再把它送入分类器。这种输入次序随机化有助于避免次优解。对每个
+输入数据元素，把分类器输出 $y$ 与标签数据比较，产生误差函数值。在感知机示例中，若数据
+标签为类别 1，而分类器输出为类别 $-1$，使用 $E=(y-t)^2/2$ 得到的误差函数值为 2。若
+误差函数值大于阈值，就激活反向传播操作，改变参数以减小推理误差。
+
+\paragraph{反向传播。}
+\textbf{反向传播（back-propagation）}从误差函数出发，反向考察分类器，确定每个参数如何
+影响误差函数值\cite{appb-lecun-handwritten}。对于某个数据元素，如果参数值增大时误差函数
+值也增大，就应减小该参数，使误差减小；反之则应增大参数。一个函数的输入变量发生变化时，
+函数值变化的方向和速率在数学上由函数对该变量的偏导数定义。对感知机而言，在计算误差函数
+偏导数时，模型参数和输入数据点都视为输入变量。因此，对触发反向传播的每个输入数据元素，
+反向传播都要推导误差函数对模型参数的偏导数。
+
+用感知机 $y=\operatorname{sign}(w_1x_1+w_2x_2+b)$ 说明反向传播。假设误差函数为
+$E=(y-t)^2/2$，训练输入数据元素 $(5,2)$ 的分类结果与标签不一致，触发反向传播。目标是
+修改 $w_1,w_2,b$，提高感知机正确分类 $(5,2)$ 的可能性；也就是需要求出
+$\partial E/\partial w_1$、$\partial E/\partial w_2$ 和 $\partial E/\partial b$，再改变
+相应参数。
+
+\paragraph{链式法则。}
+$E$ 是 $y$ 的函数，$y$ 又是 $w_1,w_2,b$ 的函数，因此可以用链式法则推导偏导数。对
+$w_1$ 有
+\begin{equation}
+  \frac{\partial E}{\partial w_1}=\frac{\partial E}{\partial y}
+    \frac{\partial y}{\partial w_1}.
+  \label{eq:appb-7}
+\end{equation}
+$\partial E/\partial y$ 很直接：
+\begin{equation}
+  \frac{\partial E}{\partial y}=\frac{\partial}{\partial y}
+    \frac{(y-t)^2}{2}=y-t.
+  \label{eq:appb-8}
+\end{equation}
+
+求 $\partial y/\partial w_1$ 时却会遇到困难：sign 函数在 0 处不连续，因此不可微。机器学习
+领域通常用更平滑的版本替代 sign，使它在 0 附近可微，而在远离 0 时取值接近 sign。一种
+简单的平滑版本是 sigmoid 函数
+$s=(1-e^{-x})/(1+e^{-x})$。当 $x$ 为绝对值很大的负数时，表达式由 $e^{-x}$ 项主导，
+函数值约为 $-1$；当 $x$ 为绝对值很大的正数时，$e^{-x}$ 项趋近于 0，函数值约为 1；
+当 $x$ 接近 0 时，函数值从接近 $-1$ 迅速增大到接近 1。因此，它近似 sign 的行为，同时
+对所有 $x$ 连续可微。
+
+把 sign 改成 sigmoid 后，感知机变为
+$y=\operatorname{sigmoid}(w_1x_1+w_2x_2+b)$。引入中间变量
+$k=w_1x_1+w_2x_2+b$，再用链式法则，可以把 $\partial y/\partial w_1$ 写成
+$(\partial\operatorname{sigmoid}(k)/\partial k)(\partial k/\partial w_1)$；其中
+$\partial k/\partial w_1=x_1$，而
+\begin{equation}
+  \frac{\partial\operatorname{sigmoid}(k)}{\partial k}
+  =\left(\frac{1-e^{-k}}{1+e^{-k}}\right)'=
+  \frac{2e^{-k}}{(1+e^{-k})^2}.
+  \label{eq:appb-9}
+\end{equation}
+把各项合在一起，得到
+\begin{equation}
+  \frac{\partial E}{\partial w_1}=(y-t)\frac{2e^{-k}}{(1+e^{-k})^2}x_1,
+  \label{eq:appb-10}
+\end{equation}
+\begin{equation}
+  \frac{\partial E}{\partial w_2}=(y-t)\frac{2e^{-k}}{(1+e^{-k})^2}x_2,
+  \label{eq:appb-11}
+\end{equation}
+\begin{equation}
+  \frac{\partial E}{\partial b}=(y-t)\frac{2e^{-k}}{(1+e^{-k})^2},
+  \label{eq:appb-12}
+\end{equation}
+其中
+\begin{equation}
+  k=w_1x_1+w_2x_2+b.
+  \label{eq:appb-13}
+\end{equation}
+三个偏导数值完全由输入数据 $(x_1,x_2,t)$ 和模型参数 $(w_1,w_2,b)$ 的当前值决定。本例中
+$x_1=5,x_2=2$，把这两个值和当前 $w_1,w_2,b$ 代入，就能计算 $k$ 和全部偏导数。
+
+反向传播的最后一步是修改参数。偏导数给出变量改变时函数值变化的方向和速率。如果给定输入
+数据和当前参数后，误差函数对某参数的偏导数为正，就应减小参数值，使误差函数值减小；如果
+偏导数为负，则应增大参数值，使误差减小。
+
+\paragraph{学习率。}
+从数值上说，误差函数对某参数的变化越敏感，即对该参数的偏导数绝对值越大，就应对参数作
+更大改动。因此，从每个参数中减去一个与误差函数对该参数的偏导数成正比的数值。具体做法是
+先把偏导数乘以常数 $\epsilon$，再从参数值中减去；$\epsilon$ 在机器学习中称为\textbf{学习率
+（learning rate）}。$\epsilon$ 越大，参数变化越快，可能以更少迭代得到解；但较大的
+$\epsilon$ 也增加不稳定风险，可能使参数无法收敛，因为某次改变会让其他输入数据点的分类
+结果由符合标签翻转为不符合标签。感知机示例中的参数更新为
+\begin{equation}
+  w_1\leftarrow w_1-\epsilon\frac{\partial E}{\partial w_1},
+  \label{eq:appb-14}
+\end{equation}
+\begin{equation}
+  w_2\leftarrow w_2-\epsilon\frac{\partial E}{\partial w_2},
+  \label{eq:appb-15}
+\end{equation}
+\begin{equation}
+  b\leftarrow b-\epsilon\frac{\partial E}{\partial b}.
+  \label{eq:appb-16}
+\end{equation}
+为简洁起见，下面用通用符号 $\theta$ 表示模型参数，把上述三个表达式统一写为
+\begin{equation}
+  \theta\leftarrow\theta-\epsilon\frac{\partial E}{\partial\theta}.
+  \label{eq:appb-17}
+\end{equation}
+每次使用这一通式时，都可以用任意具体参数替换 $\theta$，把表达式应用于该参数。
+
+\paragraph{批次。}
+实际中，训练数据可能很大，无法全部装入执行训练的计算设备内存。因此，每个轮次常把训练
+数据集划分成多个\textbf{批次（batch）}，使每批都能装入内存。反向传播十分昂贵，所以不会
+由推理结果与标签不同的单个数据点触发；训练过程会让整个批次完成推理，并累积其误差函数值。
+若批次总误差过大，就为这一批次触发反向传播。反向传播期间检查批次中每个数据点的推理结果；
+若结果不正确，就用该数据推导偏导数，并按照前述方法修改模型参数。
+
+\paragraph{小批量。}
+训练可能需要对大型数据集迭代很多次，因而常用多个计算设备加速。此时每个批次进一步划分为
+\textbf{小批量（mini-batch）}，每个小批量分配给一个计算设备。每台设备对自己的小批量执行
+前向传播；若小批量总误差过大，就触发自己的反向传播。当全部设备完成小批量后，它们共同
+求和各自对模型参数的改变量，生成更新版本，再进入下一个批次。这样，多设备训练更新模型参数
+的方式就近似于单台设备处理整个批次的训练过程。
+
+\paragraph{训练多层分类器。}
+多层分类器的反向传播从最后一层开始，按照前述方法修改该层参数。接下来的问题是如何修改
+前面各层的参数。我们已经说明，对最终层可以根据 $\partial E/\partial y$ 推导
+$\partial E/\partial\theta$；一旦得到前一层的 $\partial E/\partial y$，也就具备计算该层
+参数改变量所需的一切。
+
+一个简单而重要的观察是，前一层的输出也是最终层的输入。因此，前一层的
+$\partial E/\partial y$ 实际就是最终层的 $\partial E/\partial x$。关键在于修改最终层参数
+以后，继续推导最终层的 $\partial E/\partial x$。与 $\partial E/\partial\theta$ 相比，它
+没有太大不同：
+$\partial E/\partial x=(\partial E/\partial y)(\partial y/\partial x)$。
+
+推导最终层的 $\partial E/\partial\theta$ 时已经得到 $\partial E/\partial y$，可以直接
+复用。对于 $y$，输入与参数所扮演的角色相同，所以 $\partial y/\partial x$ 也很直接：只需
+对中间函数 $k=w_1x_1+w_2x_2+b$ 关于输入求偏导。感知机示例得到
+\begin{equation}
+  \frac{\partial E}{\partial x_1}=(y-t)\frac{2e^{-k}}{(1+e^{-k})^2}w_1,
+  \label{eq:appb-18}
+\end{equation}
+\begin{equation}
+  \frac{\partial E}{\partial x_2}=(y-t)\frac{2e^{-k}}{(1+e^{-k})^2}w_2,
+  \label{eq:appb-19}
+\end{equation}
+其中 $k=w_1x_1+w_2x_2+b$。在图 \ref{fig:b-2}(b) 的感知机示例中，最终层（第 2 层）
+的 $x_1$ 是第 1 层上方感知机的输出 $y_1$，$x_2$ 是第 1 层下方感知机的输出 $y_2$。现在
+可以继续为前一层的两个感知机计算 $\partial E/\partial\theta$，并调整它们的参数；若还有
+更多层，就重复这一过程。
+
+\paragraph{前馈网络。}
+把分类器逐层连接，让每层输出送入下一层，就构成\textbf{前馈网络（feed-forward network）}。
+图 \ref{fig:b-2}(b) 是两层前馈网络示例。前面对多层感知机推理和训练的讨论都假定这种性质。
+在前馈网络中，较早层的所有输出都送往一个或多个较晚层，不存在从较晚层输出返回较早层输入
+的连接。因此，反向传播可以从最后一层直接向前迭代，不会遇到反馈环造成的复杂情况。
+
+\section{卷积神经网络}
+\label{sec:appb-cnn}
+
+卷积神经网络（convolutional neural network，CNN）是一类更容易训练、而且比其他深度学习
+模型具有更好泛化能力的前馈网络。CNN 发明于 20 世纪 80 年代末\cite{appb-lecun-document}；
+到 20 世纪 90 年代初，它已经通过实验应用于自动语音识别、光学字符识别（OCR）、手写识别
+和人脸识别\cite{appb-lecun-handwritten}。
+
+不过，直到 20 世纪 90 年代末，计算机视觉和自动语音识别的主流方法仍建立在精心设计的特征
+之上。当时的标注数据量不足，无法训练出能与人类专家编写的识别和分类函数竞争的深度学习
+系统。此外，人们普遍认为，即使存在所需的标注数据集，要自动学习具有足够多层次的分层特征
+提取器参数，使其超越人工设计、面向具体应用的特征提取器，在计算上也是不可行的。
+
+大约在 2006 年，一组研究人员提出不需要标注数据就能建立多层分层特征检测器的无监督学习
+方法，重新激发了人们对深层前馈网络的兴趣\cite{appb-hinton,appb-raina}。这一方法首先取得
+重要应用的领域是语音识别。GPU 让研究人员训练网络的速度达到传统 CPU 的十倍，使突破成为
+可能；再加上互联网上可用的海量媒体数据，深度学习方法的地位大幅提升。尽管 CNN 在语音领域
+已经取得成功，计算机视觉领域在 2012 年以前仍基本忽视它。
+
+2012 年，多伦多大学的一组研究人员训练了一个卷积神经网络，在 ILSVRC 竞赛中分类 1,000 个
+不同类别\cite{appb-krizhevsky-imagenet}。按当时标准，这个网络规模巨大：约有 6,000 万个
+参数和 65 万个神经元，并在 ImageNet 数据库的 120 万幅高分辨率图像上训练。使用 Alex
+Krizhevsky 编写、基于 CUDA 的卷积神经网络库\cite{appb-cudaconvnet}，两块 GPU 只用一周
+就完成了训练。该网络取得突破性结果，以 15.3\% 的测试错误率获胜；相比之下，采用传统
+计算机视觉算法的第二名团队错误率为 26.2\%。这项成功触发了计算机视觉革命，CNN 随后成为
+计算机视觉、自然语言处理、强化学习和许多其他领域的主流工具。
+
+\section{CNN 推理与训练：顺序实现}
+\label{sec:appb-cnn-sequential}
+
+本节介绍 CNN 推理和训练的顺序实现，为后续 CUDA 实现作准备。这里采用 20 世纪 80 年代末
+为数字识别设计的 LeNet-5 网络\cite{appb-lecun-handwritten}。如图 \ref{fig:b-4} 所示，
+LeNet-5 由三类层组成：卷积层、下采样层和全连接层。这三类层至今仍是神经网络的关键组件。
+下面考察每类层的逻辑设计和顺序实现。网络输入是一幅灰度图像，其中手写数字表示成
+$32\times32$ 像素的二维数组。最后一层计算输出，即原图属于网络所识别 10 个类别（数字）
+中各类别的概率。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[x=0.64cm,y=0.64cm,>=Stealth,font=\scriptsize]
+    \node[draw,fill=gray!18,minimum width=1.5cm,minimum height=2.2cm,align=center] (in) at (0,1.4)
+      {输入\\$32\times32$\\\Large A};
+    \foreach \i in {0,...,5} {
+      \draw[fill=blue!12] (2.2+0.10*\i,0.35+0.13*\i) rectangle +(1.15,1.85);
+    }
+    \node[align=center] at (2.8,3.05) {C1：6 幅\\$28\times28$};
+    \foreach \i in {0,...,5} {
+      \draw[fill=green!12] (4.4+0.10*\i,0.65+0.13*\i) rectangle +(0.95,1.45);
+    }
+    \node[align=center] at (4.9,3.05) {S2：6 幅\\$14\times14$};
+    \foreach \i in {0,...,7} {
+      \draw[fill=blue!18] (6.45+0.09*\i,0.65+0.10*\i) rectangle +(0.78,1.25);
+    }
+    \node[align=center] at (6.9,3.05) {C3：16 幅\\$10\times10$};
+    \foreach \i in {0,...,7} {
+      \draw[fill=green!18] (8.45+0.08*\i,0.85+0.08*\i) rectangle +(0.60,0.92);
+    }
+    \node[align=center] at (8.9,3.05) {S4：16 幅\\$5\times5$};
+    \node[draw,fill=orange!15,minimum width=0.8cm,minimum height=1.65cm,align=center] (c5) at (10.7,1.45)
+      {C5\\120};
+    \node[draw,fill=orange!22,minimum width=0.8cm,minimum height=1.35cm,align=center] (f6) at (12.2,1.45)
+      {F6\\84};
+    \node[draw,fill=red!12,minimum width=0.8cm,minimum height=1.05cm,align=center] (out) at (13.7,1.45)
+      {输出\\10};
+    \draw[->] (in.east)--(2.1,1.45);
+    \draw[->] (3.55,1.45)--(4.3,1.45);
+    \draw[->] (5.55,1.45)--(6.35,1.45);
+    \draw[->] (7.55,1.45)--(8.35,1.45);
+    \draw[->] (9.55,1.45)--(c5);
+    \draw[->] (c5)--(f6);
+    \draw[->] (f6)--(out);
+    \node at (2.9,-0.15) {卷积};
+    \node at (4.9,-0.15) {下采样};
+    \node at (6.9,-0.15) {卷积};
+    \node at (8.9,-0.15) {下采样};
+    \node at (11.45,-0.15) {全连接};
+    \node at (13.7,-0.15) {高斯连接};
+  \end{tikzpicture}
+  \caption{用于手写数字识别的卷积神经网络 LeNet-5。输入字母 A 应被分类为 10 个类别
+  （数字）皆非。依据原书图 B.4 重绘。}
+  \label{fig:b-4}
+\end{figure}
+
+下面把 CNN 各层的输入和输出称为\textbf{特征图（feature map）}，简称特征。例如，图
+\ref{fig:b-4} 输入端的 C1 卷积层由 $32\times32$ 的 INPUT 像素数组生成 6 幅
+$28\times28$ 输出特征图。卷积层输出由像素组成；每个像素通过对前一层特征图中的小型局部
+像素图块（C1 中即 INPUT）和一组称为\textbf{滤波器组（filter bank）}的权重（即第 7 章
+定义的卷积滤波器）执行卷积得到。卷积结果再送入 sigmoid 等激活函数（第
+\ref{sec:appb-classifiers} 节），产生输出特征图中的一个输出像素。也可以把输出特征图每个
+像素对应的卷积层计算看作一个感知机，其输入是各幅输入特征图的相应像素图块。换言之，每个
+输出像素的值，是所有输入特征图相应图块的卷积结果之和。
+
+图 \ref{fig:b-5} 给出一个小型卷积层示例，其中有 3 幅输入特征图、2 幅输出特征图和 6 组
+滤波器。层中不同的输入/输出特征图对使用不同滤波器组，所以需要 $3\times2=6$ 组。图
+\ref{fig:b-4} 的 LeNet C3 层有 6 幅输入特征图和 16 幅输出特征图，总共使用
+$6\times16=96$ 组滤波器。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[x=0.72cm,y=0.72cm,>=Stealth,font=\scriptsize]
+    \foreach \i/\vals in {0/{1,2;1,1},1/{0,2;0,3},2/{1,2;0,1}} {
+      \node[draw,fill=orange!12,minimum width=1.25cm,minimum height=0.85cm,align=center]
+        (x\i) at (0,3.2-1.25*\i) {输入 $X_\i$\\$\vals$};
+    }
+    \foreach \j in {0,1} {
+      \node[draw,fill=green!15,minimum width=1.3cm,minimum height=0.85cm,align=center]
+        (y\j) at (8.2,2.55-1.4*\j) {输出 $Y_\j$\\卷积和};
+    }
+    \foreach \i in {0,1,2} {
+      \foreach \j in {0,1} {
+        \node[draw,fill=blue!10,minimum width=1.15cm,minimum height=0.65cm,align=center]
+          (w\i\j) at (3.5+1.65*\j,3.2-1.25*\i) {$W_{\j,\i}$\\$2\times2$};
+        \draw[->] (x\i)--(w\i\j);
+        \draw[->] (w\i\j)--(y\j);
+      }
+    }
+    \node[align=center] at (4.3,-0.75) {每个输入/输出特征图对使用一组滤波器；\\
+      同一输出特征图累加全部输入特征图的卷积。};
+  \end{tikzpicture}
+  \caption{卷积层的前向传播路径。依据原书图 B.5 重绘。}
+  \label{fig:b-5}
+\end{figure}
+
+为简单起见，图 \ref{fig:b-5} 省略了输出像素的激活函数。输出特征图 0 左上角元素（值为
+14），由三幅输入特征图圈定图块与相应滤波器组执行卷积得到：\footnote{为简单起见，图中
+特征图和滤波器组元素使用整数；实际中它们是浮点数。}
+\begin{equation}
+\begin{aligned}
+ &(1,2,1,1)\cdot(1,1,2,2)+(0,2,0,3)\cdot(1,1,1,1)\\
+ &\quad +(1,2,0,1)\cdot(0,1,1,0)\\
+ &=1+2+2+2+0+2+0+3+0+2+0+0=14.
+\end{aligned}
+\label{eq:appb-20}
+\end{equation}
+
+也可以把 3 幅二维输入图看成一幅三维输入特征图，把 3 组二维滤波器看成一组三维滤波器。图
+\ref{fig:b-5} 中，与左侧输出相连的 3 组二维滤波器形成第一组三维滤波器，与右侧输出相连
+的 3 组形成第二组。一般而言，卷积层有 $n$ 幅输入特征图和 $m$ 幅输出特征图时，使用
+$n\times m$ 组不同的二维滤波器；也可以把它们看作 $m$ 组三维滤波器。图 \ref{fig:b-4}
+虽然没有画出滤波器细节，但 LeNet-5 使用的全部二维滤波器都是 $5\times5$ 卷积滤波器。
+
+图 \ref{fig:b-6} 给出卷积层前向传播路径的顺序 C 函数 \code{convLayer_forward}。输入
+特征图存储在三维数组参数 \code{X[C,H,W]} 中；\code{C} 是第二个输入参数，指定输入特征图
+数量，\code{H} 是第三个参数，指定每幅输入图高度，\code{W} 是第四个参数，指定宽度（第
+1 行）。也就是说，\code{X} 最高维下标选择一幅特征图（通常称为通道），较低两维下标选择
+其中一个像素。例如，图 \ref{fig:b-4} 的 C1 层只有一幅 $32\times32$ 输入特征图，因而
+存储在 \code{X[1,32,32]} 中。这也反映出，可以把一层的多幅二维输入特征图合在一起看成
+一幅三维输入特征图，也称该层的输入张量。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1]
+void convLayer_forward(int M, int C, int H, int W, int K,
+                       float* X, float* F, float* Y) {
+    int H_out = H - K + 1;
+    int W_out = W - K + 1;
+    for(int m = 0; m < M; m++) // for each output feature map
+        for(int h = 0; h < H_out; h++) // for each output element
+            for(int w = 0; w < W_out; w++) {
+                Y[m, h, w] = 0;
+                for(int c = 0; c < C; c++) // sum over input maps
+                    for(int p = 0; p < K; p++) // KxK filter
+                        for(int q = 0; q < K; q++)
+                            Y[m,h,w] += X[c,h+p,w+q] * F[m,c,p,q];
+            }
+}
+  \end{lstlisting}
+  \caption{卷积层前向传播路径的 C 实现。依据原书图 B.6 逐字符重排；滤波器参数沿用第
+  19 章的 \code{F} 命名，以免与图像宽度 \code{W} 混淆。}
+  \label{fig:b-6}
+\end{figure}
+
+卷积层输出特征图存入三维数组参数
+\code{Y[M,H-K+1,W-K+1]}，其中 \code{M} 是输出特征图数量，\code{K} 是每个二维滤波器的
+高度和宽度。例如，图 \ref{fig:b-4} 的 C1 层用 $5\times5$ 滤波器生成 6 幅输出特征图，
+所以输出存储在 \code{Y[6,28,28]} 中。
+
+滤波器组存储在四维数组参数 \code{F[M,C,K,K]} 中。\footnote{底本代码用 \code{W} 同时
+表示图像宽度和滤波器组（权重）矩阵；本译稿与第 19 章一致，把后者改名为 \code{F}。除命名
+外，索引关系保持不变。}共有 $M\times C$ 组滤波器，每个输入/输出特征图对一组。用输入
+特征图 \code{X[c,_,_]} 计算输出特征图 \code{Y[m,_,_]} 时，使用滤波器组
+\code{F[m,c,_,_]}。回忆一下，每幅输出特征图都是全部输入特征图卷积结果之和。
+
+最外层 \code{m} 循环（第 5--13 行）的每次迭代生成一幅输出特征图。随后两层 \code{h,w}
+循环（第 6--13 行）的每次迭代生成当前输出特征图的一个像素。最内三层循环（第 9--12 行）
+在输入特征图与相应滤波器组之间执行卷积，并把每幅输入特征图的卷积结果累加到输出特征图
+（第 12 行）。
+
+卷积层的输出特征图通常会通过一个\textbf{下采样（subsampling）}层，也称池化层。图
+\ref{fig:b-4} 的 S2 和 S4 就是下采样层。下采样层通过合并像素来减小图像尺寸，使后续卷积
+层不必使用更大的卷积掩码，就能分类更大尺度的模式。例如，S2 接收 6 幅 $28\times28$ 输入
+特征图，生成 6 幅 $14\times14$ 特征图。下采样输出特征图的每个像素由相应输入特征图中的
+$2\times2$ 邻域产生：对 4 个像素值取平均，形成输出中的一个像素。也可以采用其他方式把
+邻域像素合成下采样像素。下采样层的输出特征图数量与前一层相同，但每幅图的行列数都减半。
+例如，S2 的 6 幅输出特征图与其输入特征图数量、也就是 C1 的输出特征图数量相同。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1]
+void subsamplingLayer_forward(int M, int H, int W, int K,
+                              float* Y, float* S, float* b) {
+    for(int m = 0; m < M; m++) // for each output feature map
+        for(int h = 0; h < H/K; h++) // for each output element
+            for(int w = 0; w < W/K; w++) {
+                S[m, h, w] = 0.;
+                for(int p = 0; p < K; p++) // KxK input samples
+                    for(int q = 0; q < K; q++)
+                        S[m,h,w] += Y[m,K*h+p,K*w+q] / (K*K);
+                S[m,h,w] = sigmoid(S[m,h,w] + b[m]);
+            }
+}
+  \end{lstlisting}
+  \caption{下采样层前向传播路径的顺序 C 实现；该层还包含激活函数。依据原书图 B.7
+  重排并作勘误。}
+  \label{fig:b-7}
+\end{figure}
+
+\noindent\textbf{译者注：}底本图 B.7 第 5 行写作 \code{S[m,x,y]=0.}，但函数没有定义
+\code{x} 或 \code{y}，当前输出元素的循环变量实际是 \code{h,w}。本译稿据此修正为
+\code{S[m,h,w]}。底本相邻正文还把 LeNet-5 下采样示例误指为“图 19.1”，实际应为本附录
+图 B.4；激活函数定义在 B.1 节，而不是正文所写的 B.2.1 节，本译稿均按实际结构修正。
+
+图 \ref{fig:b-7} 中，最外层 \code{m} 循环的每次迭代生成一幅输出特征图，随后两层
+\code{h,w} 循环生成当前输出图的各个像素，最内两层循环对邻域像素求和。图 \ref{fig:b-4}
+的 LeNet-5 下采样示例中 $K=2$。然后给每幅输出特征图加上专属偏置值 \code{b[m]}，再让
+结果通过 sigmoid 激活函数。读者应能看出，每个输出像素都相当于一个感知机的输出；该感知机
+接收相应输入特征图的 4 个像素，产生输出特征图中的一个像素。其他激活函数类型可参阅相关
+文献。
+
+本书重点讨论卷积层的 CUDA 实现，因为它通常占据 CNN 训练和推理的大部分执行时间。有兴趣
+的读者可以查阅文献，了解图 \ref{fig:b-4} 中全连接（Full Connection）层和高斯连接
+（Gaussian Connections）层的顺序实现。
+
+\subsection{CNN 训练}
+\label{sec:appb-cnn-training}
+
+CNN 的训练建立在第 \ref{sec:appb-training-models} 节讨论的随机梯度下降和反向传播过程之上
+\cite{appb-rumelhart}。训练数据集带有“正确答案”标签。在手写识别示例中，标签给出图像中
+正确的数字。标签信息可以用来生成最后一级的“正确”输出：一个 10 元素向量，正确数字对应
+的概率为 1.0，其他数字对应的概率均为 0.0。
+
+对每幅训练图像，网络最后一级计算损失（误差）函数，即生成的输出概率向量与“正确”输出
+向量各元素之差。给定一系列训练图像，可以用数值方法计算损失函数关于输出向量元素的梯度。
+直观地说，该梯度给出输出向量元素值变化时损失函数值的变化速率。
+
+反向传播从计算最后一层的损失梯度 $\partial E/\partial y$ 开始，然后让梯度从最后一层经过
+网络全部层向第一层传播。每一层接收关于自身输出特征图的梯度 $\partial E/\partial y$ 作为
+输入；它就是后一层的 $\partial E/\partial x$。随后，该层计算关于自身输入特征图的梯度
+$\partial E/\partial x$，如图 \ref{fig:b-8}(b) 所示。这一过程反复进行，直至完成对网络
+输入层的调整。
+
+如果一层具有学习得到的参数（权重）$w$，还要计算损失关于权重的梯度
+$\partial E/\partial w$，如图 \ref{fig:b-8}(a) 所示。例如，全连接层为 $y=w\cdot x$，
+对梯度 $\partial E/\partial y$ 的反向传播为
+\begin{equation}
+  \frac{\partial E}{\partial x}=w^T\frac{\partial E}{\partial y},
+  \qquad
+  \frac{\partial E}{\partial w}=\frac{\partial E}{\partial y}x^T.
+  \label{eq:appb-21}
+\end{equation}
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[x=1cm,y=1cm,>=Stealth,font=\small]
+    \begin{scope}
+      \node[draw,circle,fill=green!22,minimum size=2.0cm] (layer) at (3.3,1.4) {层};
+      \node[draw,fill=blue!12,align=center] (x) at (0.4,1.4) {输入特征\\$x$};
+      \node[draw,fill=blue!12,align=center] (y) at (6.2,1.4) {输出梯度\\$\partial E/\partial y$};
+      \node[draw,fill=gray!15,align=center] (w) at (3.3,3.8) {权重梯度\\$\partial E/\partial w$};
+      \draw[->] (x)--(layer);
+      \draw[->] (y)--(layer);
+      \draw[->] (layer)--(w);
+      \node at (3.3,-0.1) {(a) 计算权重梯度};
+    \end{scope}
+    \begin{scope}[shift={(8.0,0)}]
+      \node[draw,circle,fill=green!22,minimum size=2.0cm] (layer2) at (3.3,1.4) {层};
+      \node[draw,fill=blue!12,align=center] (dx) at (0.4,1.4) {输入梯度\\$\partial E/\partial x$};
+      \node[draw,fill=blue!12,align=center] (dy) at (6.2,1.4) {输出梯度\\$\partial E/\partial y$};
+      \node[draw,fill=gray!15,align=center] (ww) at (3.3,3.8) {权重\\$w$};
+      \draw[->] (dy)--(layer2);
+      \draw[->] (ww)--(layer2);
+      \draw[->] (layer2)--(dx);
+      \node at (3.3,-0.1) {(b) 计算输入梯度};
+    \end{scope}
+  \end{tikzpicture}
+  \caption{CNN 一层中（a）$\partial E/\partial w$ 和（b）$\partial E/\partial x$ 的
+  反向传播。依据原书图 B.8 重绘。}
+  \label{fig:b-8}
+\end{figure}
+
+这个公式可以像两层感知机示例一样，逐元素推导。回忆一下，全连接层的每个输出元素由一个
+感知机计算，该感知机接收输入特征图的各元素。第 \ref{sec:appb-training-models} 节说明，
+对一个输入 $x$，$\partial E/\partial x$ 是各输出 $y$ 的 $\partial E/\partial y$ 与 $x$
+向该 $y$ 作出贡献时所乘权重 $w$ 的乘积之和。全连接层中，$w$ 矩阵的每一行把全部 $x$
+元素（列）联系到一个 $y$ 元素（行）；转置会交换行列角色，所以 $w$ 的每一列，即 $w^T$
+的一行，把所有 $y$ 的梯度元素联系回一个 $x$ 的梯度元素。因此，矩阵--向量乘法
+$w^T(\partial E/\partial y)$ 得到包含所有输入元素 $\partial E/\partial x$ 的向量。
+
+类似地，每个 $w$ 元素与一个 $x$ 元素相乘，产生一个 $y$ 元素，所以每个 $w$ 元素的
+$\partial E/\partial w$ 可以由一个 $\partial E/\partial y$ 元素与一个 $x$ 元素相乘得到。
+因此，把作为单列矩阵的 $\partial E/\partial y$ 与作为单行矩阵的 $x^T$ 相乘，会得到包含
+全连接层全部 $w$ 元素梯度的矩阵。这也可以看作 $\partial E/\partial y$ 与 $x$ 向量的外积。
+
+下面考察卷积层的反向传播。先根据 $\partial E/\partial y$ 计算
+$\partial E/\partial x$，它最终用于计算前一层的梯度。输入 $x$ 的通道 $c$ 对应的梯度，
+等于全部 $M$ 幅输出中相应权重 $W(m,c)$ 所产生“反向卷积”之和：
+\begin{equation}
+  \frac{\partial E}{\partial x}(c,h,w)=
+  \sum_{m=0}^{M-1}\sum_{p=0}^{K-1}\sum_{q=0}^{K-1}
+  \frac{\partial E}{\partial y}(m,h-p,w-q)\,W(m,c,p,q),
+  \label{eq:appb-22}
+\end{equation}
+其中，输出下标超出范围的项不参与求和。
+
+\noindent\textbf{译者注：}底本公式 B.22 把权重下标写作 $W(m,c,k-p,k-q)$，但 $k$ 在
+该式中未定义，而且与图 B.9 给出的对应关系矛盾：$x_{h,w}$ 对 $y_{h-2,w-2}$ 的贡献乘
+$W_{2,2}$，对 $y_{h,w}$ 的贡献乘 $W_{0,0}$。按图 B.6 的前向索引
+$y_{a,b}\mathrel{+}=x_{a+p,b+q}W_{p,q}$ 反推，反向式应使用 $W(p,q)$。本译稿据此作最小
+修正；图 B.10 同步采用这一自洽索引。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[x=0.54cm,y=0.54cm,>=Stealth,font=\scriptsize]
+    \begin{scope}
+      \foreach \i in {0,...,6}{\draw (\i,0)--(\i,6);\draw (0,\i)--(6,\i);}
+      \fill[blue!55] (3,3) rectangle (4,4);
+      \node[white] at (3.5,3.5) {$x_{h,w}$};
+      \node[above] at (3,6.2) {$w=0$};
+      \node[above] at (6,6.2) {$w=W-1$};
+      \node[left] at (-0.1,5.5) {$h=0$};
+      \node[left] at (-0.1,0.5) {$h=H-1$};
+    \end{scope}
+    \begin{scope}[shift={(10,0.8)}]
+      \foreach \i in {0,...,5}{\draw (\i,0)--(\i,5);\draw (0,\i)--(5,\i);}
+      \foreach \a in {1,2,3}{\foreach \b in {1,2,3}{\fill[blue!35] (\a,\b) rectangle +(1,1);}}
+      \node[white] at (1.5,3.5) {$y_{h-2,w-2}$};
+      \node[white] at (3.5,1.5) {$y_{h,w}$};
+      \node[above] at (0,5.2) {$w=0$};
+      \node[above] at (5,5.2) {$w=W-3$};
+      \node[left] at (-0.1,4.5) {$h=0$};
+      \node[left] at (-0.1,0.5) {$h=H-3$};
+    \end{scope}
+    \draw[->,thick] (3.8,3.7)--node[above,sloped] {$\times W_{2,2}$}(11.2,4.3);
+    \draw[->,thick] (3.8,3.3)--node[below,sloped] {$\times W_{0,0}$}(13.2,2.3);
+  \end{tikzpicture}
+  \caption{卷积层反向传播的索引关系：输入 $x_{h,w}$ 在前向传播中影响的 9 个输出梯度，
+  在反向传播中通过相应权重汇入 $\partial E/\partial x_{h,w}$。依据原书图 B.9 重绘。}
+  \label{fig:b-9}
+\end{figure}
+
+通过 $h-p,w-q$ 下标执行“反向卷积”，可以让前向卷积中接受某个 $x$ 元素贡献的全部输出
+$y$ 元素的梯度，通过相同权重反过来贡献给该 $x$ 元素的梯度。原因是，在卷积层前向推理中，
+$x$ 元素的任何变化都会先乘这些 $W$ 元素，再通过相应 $y$ 元素影响损失函数。图
+\ref{fig:b-9} 用 $3\times3$ 滤波器组的小例子展示索引模式。输出特征图中 9 个着色 $y$
+元素都在前向推理时接受 $x_{h,w}$ 的贡献。例如，输入元素 $x_{h,w}$ 乘 $W_{2,2}$ 后贡献
+给 $y_{h-2,w-2}$，乘 $W_{0,0}$ 后贡献给 $y_{h,w}$。因此，反向传播时
+$\partial E/\partial x_{h,w}$ 应接收这 9 个元素的 $\partial E/\partial y$ 经相应权重加权
+后的贡献；这一计算等价于相应的反向卷积。
+
+图 \ref{fig:b-10} 给出为每幅输入特征图计算 $\partial E/\partial x$ 全部元素的 C 代码。
+代码假定该层所有输出特征图的 $\partial E/\partial y$ 已经算出，并由指针参数
+\code{dE_dY} 传入。这是合理的，因为当前层的 $\partial E/\partial y$ 就是紧随其后的层的
+$\partial E/\partial x$，而后者在反向传播到达当前层以前已经计算完毕。代码还假定调用者
+已经为 $\partial E/\partial x$ 分配空间，并通过指针 \code{dE_dX} 传入。函数会生成其中
+全部元素。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1]
+void convLayer_backward_X_grad(int M, int C, int H_in, int W_in,
+        int K, float* dE_dY, float* F, float* dE_dX) {
+    int H_out = H_in - K + 1;
+    int W_out = W_in - K + 1;
+    for(int c = 0; c < C; c++)
+        for(int h = 0; h < H_in; h++)
+            for(int w = 0; w < W_in; w++) {
+                dE_dX[c,h,w] = 0.;
+                for(int m = 0; m < M; m++)
+                    for(int p = 0; p < K; p++)
+                        for(int q = 0; q < K; q++)
+                            if(h-p >= 0 && w-q >= 0 &&
+                               h-p < H_out && w-q < W_out)
+                                dE_dX[c,h,w] += dE_dY[m,h-p,w-q]
+                                                   * F[m,c,p,q];
+            }
+}
+  \end{lstlisting}
+  \caption{卷积层反向路径中 $\partial E/\partial x$ 的计算。依据原书图 B.10 重排并作
+  勘误。}
+  \label{fig:b-10}
+\end{figure}
+
+\noindent\textbf{译者注：}底本图 B.10 先用一组 \code{c/h/w} 循环初始化
+\code{dE_dX}，随后又在累加循环中重复声明并遍历 \code{h/w/c}，使每个输入梯度被重复计算，
+并造成变量遮蔽；其中还把输出列下标写成 \code{w-p}（应为 \code{w-q}），把权重下标写成
+含未定义变量 \code{k} 的 \code{k-p,k-q}，且使用未定义的 \code{W_OUT}。本译稿按照公式
+\eqref{eq:appb-22} 和图 \ref{fig:b-9}，把初始化与累加合并到每个唯一的
+\code{(c,h,w)} 元素内，并修正相应下标和变量名。
+
+卷积层计算 $\partial E/\partial W$ 的顺序代码与 $\partial E/\partial x$ 类似，见图
+\ref{fig:b-11}。每组 $W(m,c)$ 会影响输出 $Y(m)$ 的全部元素，所以要对相应输出特征图中的
+所有像素累加每组 $W(m,c)$ 的梯度：
+\begin{equation}
+  \frac{\partial E}{\partial W}(m,c,p,q)=
+  \sum_{h=0}^{H_{\mathrm{out}}-1}\sum_{w=0}^{W_{\mathrm{out}}-1}
+  X(c,h+p,w+q)\frac{\partial E}{\partial Y}(m,h,w).
+  \label{eq:appb-23}
+\end{equation}
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1]
+void convLayer_backward_W_grad(int M, int C, int H, int W,
+        int K, float* dE_dY, float* X, float* dE_dW) {
+    int H_out = H - K + 1;
+    int W_out = W - K + 1;
+    for(int m = 0; m < M; m++)
+        for(int c = 0; c < C; c++)
+            for(int p = 0; p < K; p++)
+                for(int q = 0; q < K; q++) {
+                    dE_dW[m,c,p,q] = 0.;
+                    for(int h = 0; h < H_out; h++)
+                        for(int w = 0; w < W_out; w++)
+                            dE_dW[m,c,p,q] += X[c,h+p,w+q]
+                                                * dE_dY[m,h,w];
+                }
+}
+  \end{lstlisting}
+  \caption{卷积层反向路径中 $\partial E/\partial W$ 的计算。依据原书图 B.11 重排并作
+  勘误。}
+  \label{fig:b-11}
+\end{figure}
+
+\noindent\textbf{译者注：}底本图 B.11 第 15 行写作 \code{dE_dY[m,c,h,w]}，但当前层
+每个输出梯度只有 \code{(m,h,w)} 三个下标；输入通道 \code{c} 已通过
+\code{X[c,h+p,w+q]} 和权重梯度 \code{dE_dW[m,c,p,q]} 表达。底本还分别用两组重复的
+\code{m/c/p/q} 循环初始化和累加。本译稿按公式 B.23 改为 \code{dE_dY[m,h,w]}，并把
+每个权重元素的初始化与累加放入同一循环层级，避免重复遍历和变量遮蔽。
+
+计算出全部滤波器组元素位置的 $\partial E/\partial w$ 后，按照第
+\ref{sec:appb-training-models} 节的公式更新权重，使期望误差最小：
+$w\leftarrow w-\epsilon(\partial E/\partial w)$，其中 $\epsilon$ 是学习率。它的初值根据
+经验设定，再按用户定义的规则随轮次推进而减小。逐步降低 $\epsilon$ 有助于权重收敛到较小
+误差。回忆一下，调整项前的负号使变化方向与梯度相反，因而很可能降低误差。各层权重决定
+输入如何经过网络变换；调整所有层的权重，就会改变网络行为。也就是说，网络从一系列带标签
+训练数据中“学习”：对于推理结果错误并触发反向传播的输入，通过调整各层全部权重来适应。
+
+\section{小结}
+\label{sec:appb-summary}
+
+本附录介绍机器学习，为第 19 章和第 20 章提供必要背景。首先列举若干机器学习任务，然后聚焦
+分类器，介绍感知机这种线性分类器；它是理解 CNN 等现代神经网络的基础。我们讨论了单层和
+多层感知机的前向推理与反向传播训练如何实现，特别说明了为何需要可微激活函数，以及训练时
+如何用链式法则更新多层感知机网络的模型参数。
+
+在理解感知机的概念和数学基础后，我们介绍 CNN 及其推理阶段和训练阶段的顺序实现。推理阶段
+重点讨论卷积层和下采样层，这些都是 CNN 中常见的层类型；训练阶段则重点讨论如何计算反向
+传播更新神经网络各层权重所需的梯度。
+
+\begin{chapterbibliography}{9}
+  \bibitem{appb-samuel}
+  A. L. Samuel, Some studies in machine learning using the game of checkers,
+  \emph{IBM Journal of Research and Development} 3 (3) (1959) 210--229.
+
+  \bibitem{appb-rosenblatt}
+  F. Rosenblatt, \emph{The Perceptron, a Perceiving and Recognizing Automaton},
+  Tech. Rep. 85-460-1, Cornell Aeronautical Laboratory, 1957.
+
+  \bibitem{appb-lecun-handwritten}
+  Y. LeCun, B. Boser, J. Denker, D. Henderson, R. Howard, W. Hubbard, L. Jackel,
+  Handwritten digit recognition with a back-propagation network,
+  \emph{Advances in Neural Information Processing Systems} 2 (1989).
+
+  \bibitem{appb-lecun-document}
+  Y. LeCun, L. Bottou, Y. Bengio, P. Haffner, Gradient-based learning applied to
+  document recognition, \emph{Proceedings of the IEEE} 86 (11) (1998) 2278--2324.
+
+  \bibitem{appb-hinton}
+  G. E. Hinton, S. Osindero, Y.-W. Teh, A fast learning algorithm for deep belief
+  nets, \emph{Neural Computation} 18 (7) (2006) 1527--1554.
+
+  \bibitem{appb-raina}
+  R. Raina, A. Madhavan, A. Y. Ng, Large-scale deep unsupervised learning using
+  graphics processors, in: \emph{Proceedings of the 26th Annual International
+  Conference on Machine Learning}, 2009, pp.~873--880.
+
+  \bibitem{appb-krizhevsky-imagenet}
+  A. Krizhevsky, I. Sutskever, G. E. Hinton, ImageNet classification with deep
+  convolutional neural networks, \emph{Advances in Neural Information Processing
+  Systems} 25 (2012).
+
+  \bibitem{appb-cudaconvnet}
+  A. Krizhevsky, cuda-convnet, 2014,
+  \href{https://code.google.com/p/cuda-convnet/}{project page}.
+
+  \bibitem{appb-rumelhart}
+  D. E. Rumelhart, G. E. Hinton, R. J. Williams, Learning representations by
+  back-propagating errors, \emph{Nature} 323 (6088) (1986) 533--536.
+\end{chapterbibliography}
