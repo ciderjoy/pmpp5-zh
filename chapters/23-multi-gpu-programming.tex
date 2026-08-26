@@ -1,0 +1,1510 @@
+\chapter{多 GPU 编程}
+\label{chap:multi-gpu-programming}
+
+\setcounter{footnote}{0}
+
+\noindent\textit{并介绍 MPI、NCCL 和 NVSHMEM。Jiri Kraus 和 Isaac Gelado 特别参与撰写。}
+
+到目前为止，我们一直关注如何为一个主机和一个设备组成的异构计算系统编程。然而，许多
+应用需要汇集多个主机和设备的计算能力。如今，许多集群和数据中心的每个节点都包含一个或
+多个主机，并连接一个或多个设备。本章考察三种面向多 GPU 集群的编程模型：消息传递接口
+（Message Passing Interface，MPI）\cite{ch23-mpi}、NVIDIA 集体通信库（NVIDIA
+Collective Communications Library，NCCL）\cite{ch23-nccl}，以及 NVIDIA OpenSHMEM
+库（NVIDIA OpenSHMEM Library，NVSHMEM）\cite{ch23-nvshmem}。
+
+我们只介绍每种编程模型中，将异构应用扩展到集群内多个 GPU 和节点时必须理解的关键概念。
+具体来说，我们以跨多个 GPU 节点扩展 CUDA 模板计算为背景，重点讨论域分区、点对点通信、
+集体通信，以及计算与通信的重叠执行。本章给出的实现旨在说明每种编程模型背后的核心原则；
+在各自模型中，它们都还有进一步优化的空间。掌握本章概念以后，建议读者查阅三种编程模型
+各自的教程和应用案例，以便更全面地了解它们的全部能力。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1]
+__global__ void jacobi_kernel(float* out, float* in, float* l2norm,
+                              unsigned int ny, unsigned int nx) {
+    int y = blockIdx.y*blockDim.y + threadIdx.y + 1;
+    int x = blockIdx.x*blockDim.x + threadIdx.x + 1;
+    // Compute stencil and residue
+    float residue = 0.0f;
+    if(y < ny - 1 && x < nx - 1) {
+        float val = 0.25*(in[y*nx + (x + 1)]
+                        + in[y*nx + (x - 1)]
+                        + in[(y + 1)*nx + x]
+                        + in[(y - 1)*nx + x]);
+        out[y*nx + x] = val;
+        residue = val - in[y*nx + x];
+    }
+    // Reduce L2 norm
+    float blockL2norm = blockReduce(residue*residue);
+    if (threadIdx.y == 0 && threadIdx.x == 0) {
+        atomicAdd(l2norm, blockL2norm);
+    }
+}
+  \end{lstlisting}
+  \caption{二维 Jacobi 迭代法的修改版模板内核。依据原书图 23.1 逐字符重排。}
+  \label{fig:23-1}
+\end{figure}
+
+\section{作为贯穿示例的模板计算}
+\label{sec:multi-gpu-running-stencil}
+
+本章始终以第 8 章介绍的模板计算作为贯穿示例。具体而言，我们采用 Jacobi 迭代法：在每次
+迭代或每个时间步中，结构化网格\footnote{本章用“网格”表示第 \ref{sec:stencil-background}
+节所介绍的、建模系统中由数据值组成的结构化网格。为免混淆，GPU 线程组成的网格称为
+“线程网格”。}中一个点的值，等于上一时间步中其邻点值的加权和。模板内核会执行多次迭代，
+直到网格点值不再发生显著变化。为判断这些值是否已经停止变化，我们计算残差值的 $L_2$
+范数；每个网格点的残差，就是该点旧值与新值之差。
+
+图 \ref{fig:23-1} 的模板内核相对于第 8 章的版本有两处修改\cite{ch23-multigpu-models}。
+第一处修改是计算二维模板而不是三维模板，以便简化插图和代码示例。第二处修改是让模板内核
+同时计算残差及其 $L_2$ 范数。图中，每个线程首先确定自己负责计算的网格点的 $x$、$y$
+坐标（第 3--4 行）。边界检查保证只有负责界内网格点的线程保持活动（第 7 行）。注意，
+$x=0$、$x=nx-1$、$y=0$ 和 $y=ny-1$ 处的点会被跳过，因为它们是边界点，或者是后文
+将会看到的 halo 点。线程把相邻网格点的旧值取平均，得到自己负责网格点的新值（第 8--12
+行）。到此为止的代码应当与第 8 章的内核十分相似。
+
+计算出新值以后，每个线程用新值减去旧值，得到该网格点的残差（第 13 行）。计算 $L_2$
+范数时，需要把线程网格中所有线程的残差平方加在一起。代码使用第 10 章讨论过的块范围归约，
+求出整个块的残差平方和（第 16 行）；随后由块中的一个线程，以原子方式把块级平方和累加到
+线程网格范围的 $L_2$ 范数平方和中（第 17--19 行）。
+
+图 \ref{fig:23-1} 的内核还可以继续优化。例如，可以按照第 8 章的方法使用共享内存分块和
+线程粗化，减少全局内存访问；还可以采用第 10 章介绍的多种归约优化，或调用 CUB
+库\cite{ch23-cub}的块范围归约函数。不过，这些优化不是本章重点；本章关注如何把模板计算
+分布到多个 GPU 上。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[x=0.75cm,y=0.58cm,>=Stealth]
+    \foreach \y/\c/\g in {6.0/red!68/0,4.2/yellow!75/1,2.4/green!60/2,0.6/blue!55/3} {
+      \fill[\c] (0,\y) rectangle (7,\y+1.5);
+      \draw[thick] (0,\y) rectangle (7,\y+1.5);
+      \draw[dashed] (0,\y+0.18) -- (7,\y+0.18);
+      \draw[dashed] (0,\y+1.32) -- (7,\y+1.32);
+      \node[left,font=\small] at (0,\y+0.75) {GPU \g};
+    }
+    \draw[<->] (0,8.1) -- (7,8.1) node[midway,above] {$nx$};
+    \draw[<->] (7.35,4.2) -- (7.35,5.7) node[midway,right] {$ny$};
+  \end{tikzpicture}
+  \caption{跨 4 个 GPU 划分建模系统的二维网格数组。依据原书图 23.2 重绘；实线分隔各
+  GPU 负责的域分区，虚线标出 halo 行。}
+  \label{fig:23-2}
+\end{figure}
+
+图 \ref{fig:23-2} 展示了建模系统，以及如何把它划分到多个 GPU 上。假定系统由结构化
+网格建模，各方向上相邻网格点的间距分别保持不变。根据这一假设，可以像第 8 章那样用二维
+数组表示系统，每个元素保存一个网格点的状态；每个维度上相邻元素的物理距离可以用一个网格
+间距变量表示。我们还假定二维数组在内存空间中采用行主序布局，$x$ 是最低维度，随后是
+$y$。也就是说，所有 $y=0$ 的元素按照 $x$ 坐标放入连续内存位置，接着存放所有 $y=1$
+的元素，依此类推。
+
+使用多个 GPU 时，通常把输入数据划分成若干称为\textbf{域分区（domain partition）}的
+部分，再把每个分区分配给集群中的不同 GPU。采用行主序布局时，沿 $y$ 维在 GPU 之间划分
+系统很自然，因为每个 GPU 都会得到一组连续的行。图 \ref{fig:23-2} 用不同颜色表示各 GPU
+负责计算的网格点，并用实线分隔各分区。这样划分以后，每个 GPU 的分区在行主序内存布局中
+都是连续的。
+
+回忆一下，计算每个网格点的新值时，需要相邻点的旧值。因此，一个 GPU 要计算其分区边缘
+网格点的新值，就必须取得相邻分区边缘网格点的旧值。这些网格点称为\textbf{halo 点
+（halo point）}，在图 \ref{fig:23-2} 中以虚线标出。例如，GPU 1 要计算自己分区内网格点
+的新值，除了需要这些点的旧值，还需要 GPU 0 分区最底一行和 GPU 2 分区最顶一行的旧值。
+GPU 1 所需的输入行跨度用 $ny$ 表示；其中第一行和最后一行是只作输入的 halo 点，中间的
+$ny-2$ 行既是输入，也是输出。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[x=0.54cm,y=0.48cm,>=Stealth]
+    \node[font=\small\bfseries] at (3.5,7.9) {(a) 计算前可用的旧值};
+    \node[font=\small\bfseries] at (12.5,7.9) {(b) 计算后可用的新值};
+    \foreach \base/\panel in {0/0,9/1} {
+      \foreach \y/\c/\g in {5.8/red!68/0,3.3/yellow!75/1,0.8/green!60/2} {
+        \fill[\c] (\base,\y) rectangle +(7,1.7);
+        \draw[thick] (\base,\y) rectangle +(7,1.7);
+        \draw[dashed] (\base,\y+0.17) -- +(7,0);
+        \draw[dashed] (\base,\y+1.53) -- +(7,0);
+        \node[left,font=\scriptsize] at (\base,\y+0.85) {GPU \g};
+      }
+    }
+    \foreach \y in {5.8,3.3} {
+      \draw[<->,orange!80!black] (16.2,\y-0.03) .. controls (16.8,\y-0.35) and
+        (16.8,\y-0.65) .. (16.2,\y-0.87);
+      \node[right,font=\scriptsize,align=left] at (16.55,\y-0.45) {halo\\交换};
+    }
+    \node[font=\scriptsize,align=center] at (3.5,-0.15) {各 GPU 已取得相邻分区的 halo 行};
+    \node[font=\scriptsize,align=center] at (12.5,-0.15) {本地 halo 行已过期，必须重新交换};
+  \end{tikzpicture}
+  \caption{各 GPU 在计算前后可用的值。依据原书图 23.3 重绘。}
+  \label{fig:23-3}
+\end{figure}
+
+图 \ref{fig:23-3} 进一步说明每个 GPU 在计算其分区网格点之前和之后分别拥有哪些值。计算
+之前，GPU 需要图 \ref{fig:23-3}(a) 所示的 halo 行值。计算结束后，其 halo 行值会像图
+\ref{fig:23-3}(b) 那样变得过期，因为这些行的新值由负责相应行的其他 GPU 计算。因此，
+进入下一次迭代之前，GPU 必须从计算相邻分区的 GPU 取得更新后的 halo 行。例如，GPU 1
+需要从 GPU 0 复制顶部 halo 行，从 GPU 2 复制底部 halo 行；与此同时，GPU 1 还要把自己
+的顶部边界行发送给 GPU 0，把底部边界行发送给 GPU 2。相邻 GPU 之间这样发送和接收 halo
+行，称为\textbf{halo 交换（halo exchange）}。
+
+这里还能看到，在行主序布局下沿 $y$ 维进行一维域分解的另一项好处：GPU 之间需要复制的
+halo 行在内存中连续，从而简化 halo 交换期间的复制操作。这种一维域分解也有缺点：根据域的
+形状和 GPU 数量，GPU 之间可能需要传输大量数据。例如，如果域很宽，每个 GPU 都必须传输
+完整的一行，代价可能很高。另一种选择是采用二维域分解，让每个 GPU 负责域中的一个二维
+瓦片。二维域分解可以降低表面积体积比，从而减少需要传输的数据量；但它会要求每个 GPU 与
+四个相邻 GPU 通信，而不再只是两个，并且部分通信数据在内存中并不连续。为保持本章示例
+简单，下面只讨论所述的一维域分解。
+
+总之，多 GPU Jacobi 迭代法的每次迭代包含两个阶段：一是计算阶段，求出网格点的新值；
+二是通信阶段，在负责相邻分区的 GPU 之间交换新的 halo 行值。由于 $L_2$ 范数必须覆盖所有
+分区内的全部网格点，通信阶段还包含一次归约操作，用来归约各 GPU 计算出的线程网格范围
+$L_2$ 范数平方和。MPI、NCCL 和 NVSHMEM 分别提供了自己的 GPU 间数据交换机制；本章后续
+将依次说明如何用这三种编程模型完成这些操作。
+
+\section{使用 MPI 的多 GPU 模板计算}
+\label{sec:multi-gpu-mpi}
+
+并行编程模型主要分为两类：共享内存模型和分布式内存模型。在共享内存模型中，不同线程或
+进程可以访问同一个内存空间，因而数据共享较为简单。例如，CUDA 内核采用共享内存模型，
+不同 CUDA 线程可以用同一个指针访问同一个全局内存变量。在分布式内存模型中，不同线程或
+进程访问各自独立的内存空间；此时必须通过消息传递等方式显式共享数据。
+
+当今计算集群中占主导地位的编程接口是 MPI\cite{ch23-mpi}。MPI 是一组 API 函数，用于在
+计算集群中运行的进程之间通信。它假定分布式内存模型，各进程通过相互发送消息交换信息。
+应用使用这些通信 API 时，无须处理互连网络的具体细节。MPI 实现允许进程用逻辑编号彼此
+寻址，很像电话系统使用电话号码：电话用户可以拨号联系对方，无须知道对方实际位于何处，
+也无须知道通话经过怎样的路由。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[>=Stealth,node distance=0.35cm]
+    \foreach \n in {0,...,3} {
+      \begin{scope}[shift={(\n*3.4,0)}]
+        \draw[rounded corners=3pt,thick,blue!60!black] (0,0) rectangle (2.8,2.15);
+        \node[font=\small\bfseries] at (1.4,0.28) {节点 \n};
+        \foreach \x/\y/\r in {0.65/1.55/0,1.55/1.55/1,0.65/0.85/2,1.55/0.85/3} {
+          \node[draw,ellipse,fill=red!18,minimum width=0.82cm,minimum height=0.48cm,
+                font=\scriptsize] at (\x,\y) {进程};
+        }
+      \end{scope}
+    }
+    \draw[thick] (1.4,-0.25) -- (11.6,-0.25);
+    \foreach \x in {1.4,4.8,8.2,11.6} {\draw[thick] (\x,0) -- (\x,-0.25);}
+    \node[below,font=\small] at (6.5,-0.25) {互连网络};
+  \end{tikzpicture}
+  \caption{程序员看到的 MPI 进程。依据原书图 23.4 重绘；每个节点可以包含一个或多个进程。}
+  \label{fig:23-4}
+\end{figure}
+
+典型 MPI 应用会在进程之间划分数据和工作。如图 \ref{fig:23-4} 所示，每个节点可以包含
+一个或多个进程，图中以节点内部的椭圆表示。进程向前执行时，可能需要其他进程的数据，例如
+Jacobi 迭代法执行 halo 交换时就是如此；这种需求通过发送和接收消息满足。有时，进程还需要
+彼此同步并产生集体结果，例如归约 $L_2$ 范数；这类操作由集体通信 API 函数完成。
+
+MPI 程序与 CUDA 一样，都建立在 SPMD 并行编程模型之上：所有 MPI 进程执行同一个程序。
+MPI 系统提供一组 API，用来建立允许进程相互通信的通信系统。图 \ref{fig:23-5} 列出为 MPI
+应用建立和关闭通信系统所需的四类基本操作，图 \ref{fig:23-6} 则展示 MPI 应用通常如何
+使用这些函数。
+
+\noindent\textbf{译者注：}底本正文将图 \ref{fig:23-5} 概括为“five essential MPI
+functions”，但原图只列出 \code{MPI_Init()}、\code{MPI_Comm_rank()}、
+\code{MPI_Comm_size()} 和 \code{MPI_Finalize()} 四个函数；译稿依照原图和后续示例改为
+“四类基本操作”。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C,numbers=none,basicstyle=\ttfamily\scriptsize]
+int MPI_Init(int *argc, char ***argv)              // 初始化 MPI
+int MPI_Comm_rank(MPI_Comm comm, int *rank)       // 返回 comm 中调用进程的秩
+int MPI_Comm_size(MPI_Comm comm, int *size)       // 返回 comm 中的进程数
+int MPI_Finalize()                                // 结束 MPI 应用并释放资源
+  \end{lstlisting}
+  \caption{建立和关闭通信系统所用的基本 MPI API 函数。依据原书图 23.5 逐字符重排，
+  说明文字译为中文。}
+  \label{fig:23-5}
+\end{figure}
+
+MPI 应用由 \code{mpirun} 或 \code{mpiexec} 启动。用户把程序的可执行文件交给命令，
+命令再创建执行这一文件的进程。\footnote{MPI 标准建议把 \code{mpiexec} 作为启动 MPI
+进程的标准命令名；Open MPI 等实现同时提供含义相同的 \code{mpirun}。}每个进程首先调用
+\code{MPI_Init()} 初始化 MPI
+运行时（图 \ref{fig:23-6} 第 3 行）；该调用为运行应用的所有进程初始化通信系统。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C,basicstyle=\ttfamily\scriptsize,firstnumber=1]
+#include "mpi.h"
+int main(int argc, char *argv[]) {
+    MPI_Init(&argc, &argv);
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    int numRanks;
+    MPI_Comm_size(MPI_COMM_WORLD, &numRanks);
+    ...
+    MPI_Finalize();
+    return 0;
+}
+  \end{lstlisting}
+  \caption{一个简单的 MPI 主程序。依据原书图 23.6 逐字符重排。}
+  \label{fig:23-6}
+\end{figure}
+
+接下来调用 \code{MPI_Comm_rank()}（第 5 行），它向每个调用进程返回一个唯一编号，称为
+进程的 \textbf{MPI 秩（MPI rank）}。进程得到的编号范围是 0 到进程数减 1。MPI 秩在通信
+中唯一标识一个进程，相当于电话系统中的电话号码；对于 CUDA 线程，它类似表达式
+\code{blockIdx.x*blockDim.x + threadIdx.x}。CUDA 线程最多可以组织成三个维度；同样，
+MPI 秩也可以用 MPI 笛卡尔通信器组织成多个维度。
+
+\code{MPI_Comm_rank()} 接收两个参数。第一个参数的 MPI 内置类型为 \code{MPI_Comm}，
+它指定请求的范围，也就是由一个 \code{MPI_Comm} 变量标识的进程集合。\code{MPI_Comm}
+类型的变量通常称为\textbf{通信器（communicator）}。\code{MPI_Comm} 和其他 MPI 内置
+类型都定义在 \code{mpi.h} 头文件中（第 1 行）；所有使用 MPI 的程序文件都应包含该头文件。
+MPI 应用可以创建一个或多个通信器，每个通信器都指定调用通信函数时应包含的 MPI 进程组。
+调用 \code{MPI_Comm_rank()} 时，它在通信器参数指定的组内为每个进程分配唯一 ID。图
+\ref{fig:23-6} 传入 \code{MPI_COMM_WORLD}；这是默认使用的通信器，表示包含运行应用的
+全部 MPI 进程。\footnote{关于在应用中创建并使用多个通信器的细节，尤其是组内通信器
+（intracommunicator）与组间通信器（intercommunicator）的定义和用法，请参阅 MPI
+参考手册\cite{ch23-mpi}。}
+
+\code{MPI_Comm_rank()} 的第二个参数是整数变量的指针，函数把返回的秩写入该变量。图
+\ref{fig:23-6} 为此声明了变量 \code{rank}。函数返回后，\code{rank} 保存调用进程在给定
+通信器所指定进程组中的唯一 ID。MPI 文献经常交替使用“MPI 进程”和“MPI 秩”两个说法。
+
+随后调用 \code{MPI_Comm_size()}（第 7 行），返回通信器中运行的 MPI 进程总数。一个
+通信器指定的 MPI 进程总数称为该通信器的\textbf{秩数（number of ranks）}。
+\code{MPI_Comm_size()} 同样接收两个参数：第一个是指定请求范围的 \code{MPI_Comm}；图
+\ref{fig:23-6} 传入 \code{MPI_COMM_WORLD}，因而范围是应用的全部进程。第二个参数是整数
+变量的指针，函数把返回值写入该变量；图中为此声明了 \code{numRanks}。函数返回后，
+\code{numRanks} 就是运行应用的 MPI 进程数。这个数值由用户执行 \code{mpirun} 或
+\code{mpiexec} 时配置。通过 \code{MPI_Comm_size()} 查询 MPI 运行时，可以在确定应创建
+多少个分区时避免对应用的启动方式作隐含假设。
+
+然后，应用执行主要计算（第 8 行），本节后续将展开这部分代码。主要计算结束后，应用调用
+\code{MPI_Finalize()} 通知 MPI 运行时，并释放分配给应用的全部 MPI 通信资源（第 9 行）。
+最后，应用以 0 为返回值退出，表示没有发生错误（第 10 行）。
+
+现在考察各进程执行的主要计算。每个进程知道自己的秩和应用的秩数，因此可以确定自己负责
+建模系统的哪一个分区。接着，进程用熟悉的 \code{cudaMalloc} 为该分区分配 GPU 内存，用
+\code{cudaMemset} 初始化内存，并启动一个简单内核，依据被建模系统的边界条件初始化分区的
+边界元素。
+
+下面省略这些初始化代码，重点考察反复执行模板计算、halo 交换和 $L_2$ 范数归约的主机端
+主要计算代码。假设进程 $P$ 在主机 CPU 上执行图 \ref{fig:23-7} 的代码，并在连接该主机的
+GPU 全局内存中分配输出数组和输入数组。两个数组都包含 $ny\times nx$ 个元素，如图
+\ref{fig:23-3} 所示。数组的第一行，也就是元素 0 到 $nx-1$，由顶部邻居提供的 halo 元素
+组成；类似地，最后一行，即元素 $(ny-1)nx$ 到 $ny\,nx-1$，由底部邻居提供的 halo 元素
+组成。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1]
+for(unsigned int iter = 0; l2norm > tol && iter < iter_max; ++iter) {
+
+    // Reset L2 norm
+    cudaMemset(l2norm_d, 0, sizeof(float));
+
+    // Compute stencil
+    launch_jacobi_kernel(output, input, l2norm_d, ny, nx);
+    cudaDeviceSynchronize();
+
+    // Halo exchange
+    const int top = rank > 0 ? rank - 1 : (numRanks - 1);
+    const int bottom = (rank + 1) % numRanks;
+    MPI_Sendrecv(output + nx, nx, MPI_FLOAT, top, 0,
+                 output + (ny - 1)*nx, nx, MPI_FLOAT, bottom, 0,
+                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    MPI_Sendrecv(output + (ny - 2)*nx, nx, MPI_FLOAT, bottom, 0,
+                 output, nx, MPI_FLOAT, top, 0,
+                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+    // Copy L2 norm to host
+    cudaMemcpy(l2norm_h, l2norm_d, sizeof(float), cudaMemcpyDeviceToHost);
+
+    // Reduce L2 norm
+    MPI_Allreduce(l2norm_h, &l2norm, 1, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
+    l2norm = std::sqrt(l2norm);
+
+    std::swap(output, input);
+
+}
+  \end{lstlisting}
+  \caption{基于 MPI 的多 GPU Jacobi 迭代法主机代码。依据原书图 23.7 逐字符重排。}
+  \label{fig:23-7}
+\end{figure}
+
+图 \ref{fig:23-7} 给出基于 MPI 的多 GPU 主机代码主循环。只要 $L_2$ 范数仍高于最小
+容差阈值，并且迭代次数没有超过允许的最大值，循环就会继续（第 1 行）。每次迭代首先调用
+\code{cudaMemset} 把 $L_2$ 范数平方和初始化为 0（第 4 行）。随后调用一个函数（第 7 行），
+启动图 \ref{fig:23-1} 实现的 Jacobi 内核。该内核执行一次模板计算：从输入数组读取网格点
+旧值，把新值写入输出数组，同时更新 $L_2$ 范数平方和。每次迭代都以双缓冲方式交换这两个
+数组（第 27 行）。代码等待 Jacobi 内核执行完毕（第 8 行），以保证开始 halo 交换前，新网格
+点值已经计算完成。
+
+下一步执行 halo 交换。MPI 进程需要与邻居通信，彼此发送新的边界网格点值。这样的通信可以
+用 MPI \textbf{点对点通信（point-to-point communication）}完成，它在两个通信进程之间
+交换消息。MPI 提供许多点对点通信例程；本例采用 \code{MPI_Sendrecv()}。理解该函数以前，
+先考察 MPI 提供的更基础点对点通信例程。
+
+最基本的点对点通信例程是 \code{MPI_Send()} 和 \code{MPI_Recv()}：源进程调用前者向目标
+进程发送数据，目标进程调用后者从源进程接收数据。这类似电话系统中一方拨号、另一方接听。
+由于通信双方都必须参与，通信才能发生，这种点对点通信称为\textbf{双边通信（two-sided
+communication）}。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C,numbers=none,basicstyle=\ttfamily\scriptsize]
+int MPI_Send(void *buf, int count, MPI_Datatype datatype,
+             int dest, int tag, MPI_Comm comm)
+// buf: 发送缓冲区起始地址（指针）
+// count: 发送缓冲区中的元素数（非负整数）
+// datatype: 每个发送元素的数据类型（MPI_Datatype）
+// dest: 目标进程的秩（整数）
+// tag: 消息标签（整数）
+// comm: 通信器（句柄）
+  \end{lstlisting}
+  \caption{\code{MPI_Send()} 函数的签名。依据原书图 23.8 逐字符重排，参数说明译为中文。}
+  \label{fig:23-8}
+\end{figure}
+
+图 \ref{fig:23-8} 给出 \code{MPI_Send()} 的签名。第一个参数指向要发送数据所在内存区域的
+起始位置；第二个整数参数给出要发送的数据元素数；第三个参数是 MPI 内置类型
+\code{MPI_Datatype}，表示 MPI 库所看到的各数据元素类型。\code{mpi.h} 定义了这一类型
+可以保存的值，包括 \code{MPI_DOUBLE}（双精度浮点数）、\code{MPI_FLOAT}（单精度浮点数）、
+\code{MPI_INT}（整数）和 \code{MPI_CHAR}（字符）。这些类型的确切大小取决于主机处理器上
+相应 C 类型的大小；关于 MPI 类型更复杂的用法，请参阅 MPI 参考手册\cite{ch23-mpi}。
+第四个参数给出目标进程的 MPI 秩；第五个参数提供标签，可以把同一进程发送的消息分类；
+第六个参数是通信器，指定定义目标 MPI 秩的进程组。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C,numbers=none,basicstyle=\ttfamily\scriptsize]
+int MPI_Recv(void *buf, int count, MPI_Datatype datatype,
+             int source, int tag, MPI_Comm comm, MPI_Status *status)
+// buf: 接收缓冲区起始地址（指针）
+// count: 接收缓冲区允许接收的最大元素数（整数）
+// datatype: 每个接收元素的数据类型（MPI_Datatype）
+// source: 源进程的秩（整数）
+// tag: 消息标签（整数）
+// comm: 通信器（句柄）
+// status: 状态对象（MPI_Status）
+  \end{lstlisting}
+  \caption{\code{MPI_Recv()} 函数的签名。依据原书图 23.9 逐字符重排，参数说明译为中文。}
+  \label{fig:23-9}
+\end{figure}
+
+图 \ref{fig:23-9} 给出 \code{MPI_Recv()} 的签名。第一个参数指向接收数据应写入的内存区域；
+第二个整数参数给出该函数允许接收的最大元素数；第三个参数指定各接收元素的
+\code{MPI_Datatype}；第四个参数给出消息源的秩；第五个参数指定目标进程期望的标签值。
+如果目标进程不想限定某个特定标签，可以使用 \code{MPI_ANY_TAG}，表示接收方愿意接受来自
+该源进程、具有任意标签值的消息。
+
+执行 halo 交换时，一个进程把自己的边界数据发送给一个邻居，同时还要从另一个邻居接收
+halo 数据。例如，在图 \ref{fig:23-3} 中，当进程 1（即控制 GPU 1 的进程）把顶部边界
+网格点值发送给进程 0 时，进程 2 也会把自己的顶部边界网格点值发送给进程 1。所有进程都要
+同时把边界数据发送给顶部邻居，并从底部邻居接收 halo 数据。为此，MPI 提供
+\code{MPI_Sendrecv()}，它同时向一个目标发送数据，并从一个源接收数据。该函数签名见图
+\ref{fig:23-10}；它结合了 \code{MPI_Send()} 与 \code{MPI_Recv()}，因此不再逐一解释参数。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C,numbers=none,basicstyle=\ttfamily\scriptsize]
+int MPI_Sendrecv(void *sendbuf, int sendcount, MPI_Datatype sendtype,
+                 int dest, int sendtag, void *recvbuf, int recvcount,
+                 MPI_Datatype recvtype, int source, int recvtag,
+                 MPI_Comm comm, MPI_Status *status)
+// sendbuf/sendcount/sendtype: 发送缓冲区、元素数和元素类型
+// dest/sendtag: 目标进程的秩和发送标签
+// recvbuf/recvcount/recvtype: 接收缓冲区、最大元素数和元素类型
+// source/recvtag: 源进程的秩和接收标签
+// comm: 通信器；status: 接收操作的状态对象
+  \end{lstlisting}
+  \caption{\code{MPI_Sendrecv()} 函数的签名。依据原书图 23.10 逐字符重排，参数说明译为中文。}
+  \label{fig:23-10}
+\end{figure}
+
+也可以用 MPI 非阻塞通信达到同一目的：通过 \code{MPI_Isend} 发起非阻塞发送，通过
+\code{MPI_Irecv} 发起非阻塞接收，再用 \code{MPI_Wait} 等待两项操作完成。这些非阻塞通信
+函数能够表达更复杂的模式，例如同时向不同邻居发送数据并从它们接收数据。不过，对于本例
+所需的并发通信模式，\code{MPI_Sendrecv()} 只需一次 API 调用，表达起来更方便。关于非阻塞
+通信函数的详细用法，请参阅 MPI 文档\cite{ch23-mpi}。
+
+回到图 \ref{fig:23-7}，特别考察执行 halo 交换的第 11--18 行。首先，各进程确定顶部邻居
+（第 11 行）和底部邻居（第 12 行）。代码没有简单地计算 \code{rank - 1} 和
+\code{rank + 1}，而是采用回绕策略：最顶端的秩把最底端的秩视为顶部邻居，反之亦然。
+这种回绕策略常称为\textbf{周期边界条件（periodic boundary condition）}。它只模拟大型
+系统的一小部分，却不会引入比例过高的边缘效应。周期边界条件需要对最顶端和最底端的秩作
+特殊处理，因为它们本来分别没有可通信的顶部邻居和底部邻居。
+
+接下来，两次 \code{MPI_Sendrecv} 调用完成 halo 交换。第一次调用（第 13--15 行）把从
+\code{output + nx} 开始的顶部边界行发送给顶部邻居，并从底部邻居接收从
+\code{output + (ny - 1)*nx} 开始的底部 halo 行。第二次调用（第 16--18 行）把从
+\code{output + (ny - 2)*nx} 开始的底部边界行发送给底部邻居，并从顶部邻居接收从
+\code{output} 开始的顶部 halo 行。所有情况下，通信元素数都是一行的大小 $nx$，数据类型
+都是 \code{MPI_FLOAT}，它对应 C 和 C++ 的 \code{float} 类型。
+
+需要特别注意，传给 \code{MPI_Sendrecv} 的输出和输入指针都指向 GPU 设备内存。CUDA 感知
+MPI 允许把 GPU 设备内存指针传给 MPI 函数。如果 MPI 实现不具备 CUDA 感知能力，程序员就
+必须先把数据从设备内存复制到主机内存，再对主机内存数组调用 MPI 通信函数。相比之下，
+CUDA 感知 MPI 实现理解 CUDA 编程模型，允许通信函数直接作用于 CUDA 全局内存数组。让
+发送和接收函数直接处理设备数组，可以消除源代码中的 \code{cudaMemcpy} 调用，从而减少
+主机代码膨胀和额外通信延迟。大多数 MPI 实现，如 MPICH\cite{ch23-mpich}、Open
+MPI\cite{ch23-openmpi} 和 MVAPICH2\cite{ch23-mvapich}，都支持 CUDA 感知并可在构建时启用。
+
+halo 交换结束后，主机代码需要计算 $L_2$ 范数，判断系统是否仍有显著变化、是否需要继续
+迭代。每个 GPU 已经计算了自己分区残差的 $L_2$ 范数平方和；现在还要跨所有分区把这些值
+相加。换句话说，需要跨全部 MPI 秩执行归约，每个秩贡献自己分区的 $L_2$ 范数平方和。
+这样的跨秩归约可以用 MPI 集体通信完成。
+
+MPI 点对点通信只涉及两个秩之间的通信；与之不同，\textbf{MPI 集体通信（collective
+communication）}涉及通信器中的全部秩。常用集体通信类型包括屏障、广播、归约、聚集和
+散布。本章不逐一展开这些函数；细节请参阅 MPI 编程指南\cite{ch23-mpi}。一般来说，MPI
+运行时开发者和系统供应商会高度优化集体通信函数。与自行组合多次发送和接收调用实现同一
+功能相比，使用集体通信函数通常性能更好，代码也更易读、开发效率更高。
+
+计算 $L_2$ 范数时，我们需要的 MPI 集体通信函数是 \code{MPI_Allreduce}。该函数从每个秩
+取得一份数值缓冲区，把这些缓冲区归约成一个缓冲区，再把结果缓冲区的副本交给每个秩。图
+\ref{fig:23-11} 给出函数签名。第一个参数 \code{sendbuf} 指定各秩贡献给归约操作的输入
+缓冲区；第二个参数 \code{recvbuf} 指定最终结果缓冲区的存放位置。也就是说，接收缓冲区的
+每个元素，都是所有秩发送缓冲区同一下标元素的归约结果。第三个参数 \code{count} 指定发送
+缓冲区的元素数，也等于接收缓冲区的元素数；第四个参数 \code{datatype} 指定整数、浮点数
+等被归约元素的类型；第五个参数 \code{op} 指定归约操作。MPI 内置许多归约操作，包括求和、
+求积、最小值、最大值和逻辑运算等。最后一个参数 \code{comm} 指定参与归约的通信器。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C,numbers=none,basicstyle=\ttfamily\scriptsize]
+int MPI_Allreduce(const void *sendbuf, void *recvbuf, int count,
+                  MPI_Datatype datatype, MPI_Op op, MPI_Comm comm)
+// sendbuf: 发送缓冲区起始地址
+// recvbuf: 接收缓冲区起始地址
+// count: 发送缓冲区中的元素数
+// datatype: 发送缓冲区元素的数据类型
+// op: 归约操作；comm: 通信器
+  \end{lstlisting}
+  \caption{\code{MPI_Allreduce()} 函数的签名。依据原书图 23.11 逐字符重排，参数说明译为中文。}
+  \label{fig:23-11}
+\end{figure}
+
+再次回到图 \ref{fig:23-7}，考察归约 $L_2$ 范数的第 20--25 行。代码先把本分区的 $L_2$
+范数平方和从设备复制到主机（第 21 行），再用 \code{MPI_Allreduce} 跨所有秩归约这些平方和
+（第 24 行）。这里缓冲区中的元素数是 1，因为每个秩只贡献一个数值，即本分区的 $L_2$
+范数平方和。归约操作是 \code{MPI_SUM}，表示求所有秩贡献值之和。\code{MPI_Allreduce}
+返回后，每个秩都得到全部 $L_2$ 范数平方和的总和；代码对它开平方，得到整个系统最终的
+$L_2$ 范数（第 25 行），并用它判断循环是否应继续（第 1 行）。
+
+读者可能会问，为什么要在调用 \code{MPI_Allreduce} 以前，把 $L_2$ 范数平方和从设备复制
+到主机。既然 MPI 具备 CUDA 感知能力，原本可以直接对 GPU 缓冲区调用
+\code{MPI_Allreduce}。原因在于，主机需要归约结果来检查是否收敛，所以无论如何都必须把
+结果复制到主机。在这种情况下，先复制到主机，再调用 \code{MPI_Allreduce} 更高效。
+
+\section{重叠计算与通信}
+\label{sec:overlap-computation-communication}
+
+第 \ref{sec:multi-gpu-mpi} 节的多 GPU 模板实现中，每个进程先计算整个分区的新值，再与顶部
+和底部邻居交换 halo 数据，然后重复这一过程。这种策略十分简单，却不够高效，因为它迫使
+系统在两种模式之间切换，而每种模式只利用系统的一部分资源。第一种模式下，所有进程都用
+GPU 执行计算，通信网络闲置；第二种模式下，所有进程都通过通信网络与顶部、底部邻居交换
+halo 数据，GPU 计算硬件利用不足。理想情况下，应当让通信网络与 GPU 计算硬件始终同时工作。
+如图 \ref{fig:23-12} 所示，把每个进程的计算任务分成两个阶段，就可以提高利用率。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[x=0.50cm,y=0.46cm,>=Stealth]
+    \node[font=\small\bfseries] at (3.5,9.0) {(a) 阶段 1：计算边界值};
+    \node[font=\small\bfseries,align=center] at (13,9.0) {(b) 阶段 2：计算内部值，\\同时执行 halo 交换};
+    \foreach \base in {0,9.5} {
+      \foreach \y/\c/\g in {5.8/red!68/0,3.3/yellow!75/1,0.8/green!60/2} {
+        \draw[thick] (\base,\y) rectangle +(7,1.7);
+        \draw[dashed] (\base,\y+0.17) -- +(7,0);
+        \draw[dashed] (\base,\y+1.53) -- +(7,0);
+        \node[left,font=\scriptsize] at (\base,\y+0.85) {GPU \g};
+      }
+    }
+    \fill[red!68] (0,5.97) rectangle +(7,0.2);
+    \fill[yellow!75] (0,3.47) rectangle +(7,0.2);
+    \fill[yellow!75] (0,4.83) rectangle +(7,0.2);
+    \fill[green!60] (0,0.97) rectangle +(7,0.2);
+    \fill[green!60] (0,2.33) rectangle +(7,0.2);
+    \foreach \y/\c in {5.8/red!68,3.3/yellow!75,0.8/green!60}
+      \fill[\c] (9.5,\y) rectangle +(7,1.7);
+    \foreach \y in {5.8,3.3} {
+      \draw[<->,orange!80!black] (16.7,\y-0.03) .. controls (17.3,\y-0.35) and
+        (17.3,\y-0.65) .. (16.7,\y-0.87);
+      \node[right,font=\scriptsize,align=left] at (17.05,\y-0.45) {halo\\交换};
+    }
+  \end{tikzpicture}
+  \caption{让计算与通信重叠的两阶段策略。依据原书图 23.12 重绘。}
+  \label{fig:23-12}
+\end{figure}
+
+第一阶段中，每个进程计算下一次迭代时相邻进程需要作为 halo 点的边界行。图
+\ref{fig:23-12} 用着色行表示本阶段计算的边界行。例如，GPU 1 计算自己的顶部和底部边界
+行，它们分别是 GPU 0 与 GPU 2 的 halo 行。之所以先计算这些边界行，是因为相邻进程在下次
+迭代中需要它们；这样，第二阶段就可以一边把边界行传给邻居，一边计算其余内部网格点。
+
+第二阶段中，每个进程并行执行两项活动。第一项是把新边界值传给相邻进程；第二项是计算分区
+中的其余数据。如果通信时间短于计算时间，就可以隐藏通信延迟，并在绝大多数时间内充分利用
+计算硬件。通常，只要每个分区的内部部分有足够多的行，使各进程能执行足够多的计算来遮蔽
+通信，就可以做到这一点。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[x=0.72cm,y=0.72cm,>=Stealth,font=\scriptsize]
+    \draw[->] (0,6.4) -- (12.4,6.4) node[above left] {时间};
+    \node[left,align=right] at (0,5.75) {计算硬件\\（GPU）};
+    \node[left,align=right] at (0,4.65) {通信网络};
+    \draw[fill=blue!30] (0,5.35) rectangle (6.9,6.05) node[midway] {计算全部网格点};
+    \draw[fill=orange!28] (7.0,4.25) rectangle (9.25,5.0) node[midway,align=center] {顶部 halo\\交换};
+    \draw[fill=green!25] (9.25,4.25) rectangle (11.5,5.0) node[midway,align=center] {底部 halo\\交换};
+    \draw[fill=blue!25] (11.5,4.25) rectangle (12.35,5.0) node[midway,align=center] {归约\\$L_2$};
+    \node[align=center] at (6.2,3.75) {(a) 计算与通信不重叠};
+
+    \draw[->] (0,3.1) -- (12.4,3.1) node[above left] {时间};
+    \node[left,align=right] at (0,2.25) {计算硬件\\（GPU）};
+    \node[left,align=right] at (0,0.85) {通信网络};
+    \draw[fill=blue!30] (0,2.35) rectangle (7.0,2.95) node[midway] {计算内部网格点};
+    \draw[fill=orange!35] (0,1.75) rectangle (1.75,2.35) node[midway,font=\tiny] {顶部边界};
+    \draw[fill=green!35] (0,1.15) rectangle (1.75,1.75) node[midway,font=\tiny] {底部边界};
+    \draw[fill=orange!28] (1.75,0.45) rectangle (4.5,1.1) node[midway,align=center] {顶部 halo 交换};
+    \draw[fill=green!25] (4.5,0.45) rectangle (7.0,1.1) node[midway,align=center] {底部 halo 交换};
+    \draw[fill=blue!25] (7.0,0.45) rectangle (8.0,1.1) node[midway,align=center] {归约\\$L_2$};
+    \draw[->,orange!80!black] (1.75,2.05) -- (1.75,1.1);
+    \draw[->,green!60!black] (1.75,1.45) -- (4.5,1.1);
+    \node[align=center] at (6.2,-0.05) {(b) 计算与通信重叠};
+  \end{tikzpicture}
+  \caption{计算与通信不重叠和重叠时的执行时间线比较。依据原书图 23.13 重绘。}
+  \label{fig:23-13}
+\end{figure}
+
+图 \ref{fig:23-13} 比较计算与通信不重叠和重叠时的执行时间线。在图
+\ref{fig:23-13}(a) 中，计算不与通信重叠：计算硬件执行全部计算时通信网络闲置；随后通信
+网络完成顶部和底部 halo 交换时，计算硬件闲置；最后还要执行 $L_2$ 范数归约。图
+\ref{fig:23-13}(b) 则把顶部、底部网格点与内部网格点分开计算，相应边界点一旦算出，就立即
+发起顶部或底部 halo 交换。GPU 计算资源足够时，三类网格点可以并发计算，但应优先计算边界
+网格点，以便尽早发起 halo 交换。关键在于，halo 交换期间仍继续计算内部网格点；计算硬件与
+通信网络因而同时得到利用，总执行时间缩短。不可避免的是，归约 $L_2$ 范数依赖所有网格点
+都已算完，因此无法与这些计算重叠。
+
+实现这种重叠，需要把一次 Jacobi 内核调用拆成分别处理边界元素和内部元素的多个内核调用。
+例如，可以拆成三个调用：一个计算顶部边界行，一个计算底部边界行，另一个计算内部元素。
+相应边界行内核一结束，就可以发起 halo 交换。为了让三个内核并发执行，并分别让通信活动与
+各内核独立同步，需要使用 CUDA 编程模型的重要特性：\textbf{CUDA stream}。
+
+CUDA stream 是按顺序排列的 CUDA 操作序列，操作可以包括内核调用、内存复制等。同一
+stream 中的全部操作严格按照放入顺序依次执行；不同 stream 中的操作则没有彼此之间的顺序
+约束，可以并发执行。因此，要让上述三个 Jacobi 内核并发执行，应把它们放入三个不同的
+stream。首先创建 stream 对象：
+
+\begin{lstlisting}[language=C++,numbers=none]
+cudaStream_t topStream, bottomStream, internalStream;
+cudaStreamCreate(&internalStream);
+cudaStreamCreate(&topStream);
+cudaStreamCreate(&bottomStream);
+\end{lstlisting}
+
+第一行声明三个 \code{cudaStream_t} 类型的 stream 对象，分别命名为 \code{topStream}、
+\code{bottomStream} 和 \code{internalStream}，对应处理顶部边界行、底部边界行和内部行的
+内核调用。接下来三行分别调用 \code{cudaStreamCreate}，传入 stream 对象的指针；每次调用
+都会创建一个新 stream，并初始化它的状态。
+
+要把内核调用放入某个 stream，可以把 stream 对象作为内核调用的执行配置参数。第 2 章已经
+介绍，内核调用的尖括号中有两个必需的执行配置参数：线程网格维度和线程块维度。第 5 章还
+介绍了可选的第三个参数，它指定动态分配的共享内存大小，省略时默认为 0。类似地，内核调用
+还接受可选的第四个参数，指定应把调用放入哪个 stream；省略时调用会进入默认 stream。例如：
+
+\begin{lstlisting}[language=C++,numbers=none]
+kernelName<<<dimGrid, dimBlock, 0, myStream>>>(...)
+\end{lstlisting}
+
+这段代码调用内核 \code{kernelName}，线程网格维度由 \code{dimGrid} 指定，线程块维度由
+\code{dimBlock} 指定，动态分配的共享内存为 0，并把调用放入 \code{myStream}。注意，
+调用返回并不表示内核已经执行，只表示内核已经放入指定 stream。内核一进入 stream，主机
+代码就会继续执行后面的语句。CUDA 内核调用之所以是异步的，正是因为主机端调用只是把内核
+放入 stream，而不是亲自执行内核。主机代码继续执行也不表示相应线程网格已经完成内核，
+甚至不表示线程网格已经开始执行；它只表示内核已经进入指定 stream，等该 stream 中所有
+先前操作执行完毕后，最终会启动线程网格执行内核。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1]
+for(unsigned int iter = 0; l2norm > tol && iter < iter_max; ++iter) {
+
+    // Reset L2 norm
+    cudaMemsetAsync(l2norm_d, 0, sizeof(float), internalStream);
+    cudaEventRecord(resetL2, internalStream);
+    cudaStreamWaitEvent(topStream, resetL2, 0);
+    cudaStreamWaitEvent(bottomStream, resetL2, 0);
+
+    // Compute stencil
+    launch_jacobi_kernel(output, input, l2norm_d, 3, nx, topStream);
+    cudaEventRecord(computeTop, topStream);
+    launch_jacobi_kernel(output + (ny - 3)*nx, input + (ny - 3)*nx, l2norm_d, 3,
+                         nx, bottomStream);
+    cudaEventRecord(computeBottom, bottomStream);
+    launch_jacobi_kernel(output + nx, input + nx, l2norm_d, ny - 2, nx,
+                         internalStream);
+
+    // Copy L2 norm to host
+    cudaStreamWaitEvent(internalStream, computeTop, 0);
+    cudaStreamWaitEvent(internalStream, computeBottom, 0);
+    cudaMemcpyAsync(l2norm_h, l2norm_d, sizeof(float), cudaMemcpyDeviceToHost,
+                    internalStream);
+
+    // Halo exchange
+    const int top = rank > 0 ? rank - 1 : (numRanks - 1);
+    const int bottom = (rank + 1) % numRanks;
+    cudaStreamSynchronize(topStream);
+    MPI_Sendrecv(output + nx, nx, MPI_FLOAT, top, 0,
+                 output + (ny - 1)*nx, nx, MPI_FLOAT, bottom, 0,
+                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    cudaStreamSynchronize(bottomStream);
+    MPI_Sendrecv(output + (ny - 2)*nx, nx, MPI_FLOAT, bottom, 0,
+                 output, nx, MPI_FLOAT, top, 0,
+                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+    // Reduce L2 norm
+    cudaStreamSynchronize(internalStream);
+    MPI_Allreduce(l2norm_h, &l2norm, 1, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
+    l2norm = std::sqrt(l2norm);
+
+    std::swap(output, input);
+
+}
+  \end{lstlisting}
+  \caption{基于 MPI、重叠计算与通信的多 GPU Jacobi 迭代法主机代码。依据原书图 23.14
+  逐字符重排。}
+  \label{fig:23-14}
+\end{figure}
+
+了解如何创建 stream 并把内核调用放入其中以后，现在把 Jacobi 内核拆成三个调用，分别放入
+三个 stream。图 \ref{fig:23-14} 给出基于 MPI、重叠计算与通信的多 GPU Jacobi 迭代法
+主机代码。图 \ref{fig:23-7} 每次迭代只调用一次 \code{launch_jacobi_kernel}、启动一个内核；
+相比之下，图 \ref{fig:23-14} 分别调用它计算顶部边界行（第 10 行）、底部边界行（第 12--13
+行）和内部网格点（第 15--16 行）。
+
+计算顶部边界行时（第 10 行），函数需要前三行作为输入，也就是顶部 halo 行、顶部边界行和
+顶部内部行。因此，代码原样传入 \code{output} 与 \code{input} 指针，并以 3 作为第 4 个参数，
+表示关心三行输入。重要的是，还要传入 \code{topStream}，\code{launch_jacobi_kernel} 会把
+内核调用放入这一 stream。
+
+计算底部边界行时（第 12--13 行），函数需要最后三行作为输入，也就是底部 halo 行、底部边界
+行和底部内部行。因此，代码传入指向最后三行开头的 \code{output + (ny - 3)*nx} 与
+\code{input + (ny - 3)*nx}，并以 3 作为第 4 个参数；还传入 \code{bottomStream}，作为
+内核调用所在的 stream。
+
+最后，计算内部网格点时（第 15--16 行），函数需要除顶部和底部 halo 行以外的所有行，因此
+传入跳过第一行的 \code{output + nx} 与 \code{input + nx}，并传入 \code{ny - 2}，排除两条
+halo 行；还传入 \code{internalStream}，作为内核调用所在的 stream。
+
+在三个 stream 中并发执行三个内核时，有一点非常重要：这些内核可能以任意顺序执行。最可能
+的情况是，计算边界网格点的内核因为先被调用而先执行，但不能保证这一顺序。计算内部网格点
+的内核可能抢先执行并占满 GPU 资源，使计算边界点的内核及随后的 halo 交换无法执行，从而
+达不到重叠计算与通信的目的。为避免这种情况，需要让计算边界点的内核具有比计算内部点的
+内核更高的优先级；也就是让 \code{topStream} 和 \code{bottomStream} 的优先级高于
+\code{internalStream}。
+
+默认情况下，\code{cudaStreamCreate} 创建的 stream 优先级相同。要为不同 stream 指定不同
+优先级，需要使用其他 CUDA API：
+
+\begin{lstlisting}[language=C++,numbers=none]
+int low, high;
+cudaDeviceGetStreamPriorityRange(&low, &high);
+cudaStreamCreateWithPriority(&internalStream, cudaStreamDefault, low);
+cudaStreamCreateWithPriority(&topStream, cudaStreamDefault, high);
+cudaStreamCreateWithPriority(&bottomStream, cudaStreamDefault, high);
+\end{lstlisting}
+
+第二行查询 CUDA 运行时支持的 stream 优先级范围，也就是最高值和最低值；所用函数为
+\texttt{cudaDeviceGetStream\allowbreak PriorityRange}。随后三行调用
+\texttt{cudaStreamCreate\allowbreak WithPriority}。代码以最低优先级创建
+\code{internalStream}，再以最高
+优先级分别创建 \code{topStream} 和 \code{bottomStream}。本例只需区分两类 stream，因此
+两个优先级值就足够；其他场景可能需要
+两个以上的优先级层次，也可以使用中间值。优先级的绝对数值并不重要，只有相对关系有意义。
+
+把三个 Jacobi 内核调用放入不同 stream 以后，它们可以并发执行。下面考察如何等待某个特定
+内核结束，再发起 halo 交换等后续任务。为此，CUDA 提供
+\code{cudaStreamSynchronize}。该函数会等待某个特定 stream 中此前已有的全部任务执行完毕。
+如图 \ref{fig:23-14} 所示，代码先等待顶部边界行内核在 \code{topStream} 中结束（第 27 行），
+再调用 \code{MPI_Sendrecv} 交换顶部边界行。类似地，代码等待底部边界行内核在
+\code{bottomStream} 中结束（第 31 行），再调用 \code{MPI_Sendrecv} 交换底部边界行。
+在此期间，由于没有对包含内部行内核的
+\code{internalStream} 执行同步，该内核可以在两次 MPI halo 交换期间继续执行。这样就让
+内部行计算与 halo 行通信重叠起来。
+
+\noindent\textbf{译者注：}底本在解释底部边界同步时写作“第 32 行”，但图
+\ref{fig:23-14} 第 31 行才是对 \code{bottomStream} 的同步调用；第 32 行已经是
+\code{MPI_Sendrecv}。译稿按代码实际行号作最小修正。
+
+虽然把一次内核调用拆成三个调用，可以为 halo 交换分别同步各个调用，但这也给 $L_2$ 范数
+计算带来挑战。三个内核都会更新同一个 $L_2$ 范数平方和，所以它们都必须等这个值初始化为
+0 后才能执行，并且复制到主机、跨秩归约之前，三个内核又必须全部完成。然而，三个内核调用
+位于三个不同的 stream，而初始化与复制 $L_2$ 范数平方和的调用只能放入一个 stream。要解决
+这一问题，必须让一个 stream 中的操作等待另一个 stream 中的操作完成；这种 stream 间交互
+可以用 CUDA 事件实现。
+
+CUDA \textbf{事件（event）}是标记 stream 中某个位置的标记。CUDA 允许程序员对特定事件
+执行同步，也就是等待 stream 的执行到达事件所标记的位置。主机线程可以执行这种同步，也
+可以把对某个事件的等待操作放入另一个 stream。初始化和复制 $L_2$ 范数时，需要的是后者。
+
+图 \ref{fig:23-7} 使用阻塞函数 \code{cudaMemset} 把 GPU 全局内存中的 $L_2$ 范数平方和
+初始化为 0；只有初始化完成，该函数才返回。图 \ref{fig:23-14} 改用非阻塞变体
+\code{cudaMemsetAsync}（第 4 行），它与内核调用一样，接收额外参数并把初始化操作放入指定
+stream。本例把它放入 \code{internalStream}，从而保证该 stream 中后续的内部行内核调用不会
+在初始化结束前执行。
+
+不过，另外两个计算顶部、底部边界行的内核也必须等 \code{cudaMemsetAsync} 完成。为此，
+可以在 \code{internalStream} 的 \code{cudaMemsetAsync} 之后放入事件，再在
+\code{topStream} 和 \code{bottomStream} 中、两个内核之前放入等待这一事件的同步操作。
+下面的代码创建用于这种同步的事件：
+
+\begin{lstlisting}[language=C++,numbers=none]
+cudaEvent_t resetL2;
+cudaEventCreateWithFlags(&resetL2, cudaEventDisableTiming);
+\end{lstlisting}
+
+第一行声明 \code{cudaEvent_t} 类型的事件对象，第二行创建该事件。第一个参数是事件对象的
+指针；第二个参数
+\texttt{cudaEventDisable\allowbreak Timing} 是编译期常量，表示不把
+该事件用于计时；运行时因而可以更高效地实现基于事件的同步。事件创建以后，图
+\ref{fig:23-14} 第 5 行调用 \code{cudaEventRecord}，把它放在 \code{internalStream} 的
+\code{cudaMemsetAsync} 之后。此时，事件 \code{resetL2} 标记初始化操作的完成位置。
+
+要在另一条 stream 中插入对该事件的等待操作，可以像图 \ref{fig:23-14} 第 6--7 行那样调用
+\code{cudaStreamWaitEvent}。第一个参数指定插入等待操作的 stream，即第 6 行的
+\code{topStream} 和第 7 行的 \code{bottomStream}；第二个参数指定等待的事件，二者都是
+\code{resetL2}；第三个参数决定是否使用特殊选项，取 0 表示采用默认选项。
+
+接着考察三个内核都结束以后，如何复制 $L_2$ 范数平方和。图 \ref{fig:23-7} 使用阻塞的
+\code{cudaMemcpy}；图 \ref{fig:23-14} 改用非阻塞变体 \code{cudaMemcpyAsync}（第 21 行），
+后者还接受指定目标 stream 的额外参数。本例把它放入 \code{internalStream}，因此它会等待
+该 stream 中先前的内部行内核。
+
+复制还必须等待另外两个边界行内核。为此，可以在 \code{topStream} 和
+\code{bottomStream} 的内核调用后记录事件，再在 \code{internalStream} 的
+\code{cudaMemcpyAsync} 之前插入对这些事件的等待操作。图 \ref{fig:23-14} 正是如此：第 11
+行和第 14 行调用 \code{cudaEventRecord}，分别在 \code{topStream} 与 \code{bottomStream}
+中记录事件；第 19--20 行在内存复制操作前，把等待两个事件的操作放入
+\code{internalStream}。
+
+图 \ref{fig:23-14} 还利用 \code{cudaMemcpyAsync} 非阻塞这一事实作了进一步优化：如图中
+所示，在调用 \code{MPI_Sendrecv} 以前，就把从全局内存向主机内存复制 \code{l2norm} 的
+操作放入 stream。如果计算内部网格点的内核比 halo 交换先结束，这会使 GPU 到主机 CPU 的
+内存复制与网络 halo 交换重叠。不过，在调用 \code{MPI_Allreduce} 以前，必须保证内存复制
+已经完成；第 37 行调用 \code{cudaStreamSynchronize}，等待执行 \code{cudaMemcpyAsync}
+的 \code{internalStream}，从而提供这一保证。
+
+\begin{figure}[htbp]
+  \centering
+  \resizebox{\linewidth}{!}{%
+  \begin{tikzpicture}[x=1cm,y=1cm,>=Stealth,font=\scriptsize]
+    \draw[->] (0,6.4) -- (16.8,6.4) node[above left] {时间};
+    \foreach \y/\name in {5.5/{主机},4.0/{顶部 stream},2.5/{底部 stream},1.0/{内部 stream}}
+      \node[left,align=right] at (0,\y) {\name};
+    \foreach \x/\n in {0/04,0.7/05,1.4/06,2.1/07,2.8/10,3.5/11,4.2/12,4.9/14,5.6/15,6.3/19,7/20,7.7/21}
+      \node[draw,minimum width=0.7cm,minimum height=0.5cm] at (\x+0.35,5.5) {\n};
+    \node[draw,minimum width=3.2cm,minimum height=0.65cm] at (10.0,5.5) {MPI 交换顶部};
+    \node[draw,minimum width=3.2cm,minimum height=0.65cm] at (13.3,5.5) {MPI 交换底部};
+    \node[draw,minimum width=2.2cm,minimum height=0.65cm] at (16.1,5.5) {MPI 全归约};
+    \node[draw,dotted,minimum width=1.7cm] at (2.1,4.0) {等待 resetL2};
+    \node[draw,minimum width=2.0cm] at (4.0,4.0) {Jacobi（顶部）};
+    \node[draw,dotted,minimum width=1.2cm] at (6.0,4.0) {computeTop};
+    \node[draw,dotted,minimum width=1.7cm] at (2.1,2.5) {等待 resetL2};
+    \node[draw,minimum width=2.0cm] at (4.0,2.5) {Jacobi（底部）};
+    \node[draw,dotted,minimum width=1.5cm] at (6.2,2.5) {computeBottom};
+    \node[draw,minimum width=1.7cm] at (1.0,1.0) {memset};
+    \node[draw,dotted,minimum width=1.2cm] at (2.55,1.0) {resetL2};
+    \node[draw,minimum width=6.0cm] at (7.1,1.0) {Jacobi（内部）};
+    \node[draw,dotted,minimum width=0.8cm] at (10.75,1.0) {等待顶};
+    \node[draw,dotted,minimum width=0.8cm] at (12.0,1.0) {等待底};
+    \node[draw,minimum width=1.4cm] at (13.4,1.0) {memcpy};
+    \draw[dotted,->] (2.55,1.35) -- (2.1,3.65);
+    \draw[dotted,->] (2.55,1.35) -- (2.1,2.85);
+    \draw[dotted,->] (6.0,3.65) -- (10.75,1.35);
+    \draw[dotted,->] (6.2,2.15) -- (12.0,1.35);
+    \draw[dashed,thick,->] (6.0,4.35) -- (8.4,5.15);
+    \draw[dashed,thick,->] (6.2,2.85) -- (11.7,5.15);
+    \draw[dashed,thick,->] (13.4,1.35) -- (15.2,5.15);
+  \end{tikzpicture}
+  }
+  \caption{使用 CUDA stream 和事件重叠计算与 MPI 通信的示例时间线。依据原书图 23.15
+  重绘；实线框为计算或复制操作，点线框为事件与等待，粗虚线连接 stream 进度与主机同步。}
+  \label{fig:23-15}
+\end{figure}
+
+图 \ref{fig:23-15} 说明图 \ref{fig:23-14} 的主机代码如何在 Jacobi 求解器每次迭代的第
+4--41 行中，重叠内部网格点计算与 halo 交换。四条时间线分别表示主机 CPU、
+\code{topStream}、\code{bottomStream} 和 \code{internalStream} 的活动。主机 CPU 时间线
+中的每个方格，要么是向某条 stream 插入操作（用图 \ref{fig:23-14} 的主机代码行号标记），
+要么表示主机 CPU 自己执行的活动。
+
+对于某条 stream 中的每个操作，主机时间线上的方格表示插入时刻，stream 时间线上的方格表示
+GPU 执行时段；实线把插入动作与执行动作关联起来。例如，主机时间线上第 10 行的方格把计算
+顶部网格点的 Jacobi 内核放入 \code{topStream}。这个内核必须等待 \code{resetL2} 事件，
+所以执行会被推迟；如果复位 \code{l2norm} 所需时间更短或更长，Jacobi 内核就会相应地更早
+或更晚执行。
+
+点线箭头表示事件如何允许某个等待操作完成。例如，\code{resetL2} 事件有一条点线箭头指向
+\code{topStream} 中对它的等待操作。\code{cudaMemset} 一结束，stream 就到达
+\code{resetL2} 事件，等待操作随之完成，并允许同一 stream 中计算顶部网格点的 Jacobi 内核
+继续执行。
+
+粗虚线表示某条 stream 到达一个位置以后，主机上相应的同步调用便可以返回，主机因而能够
+继续后续活动；这里的同步函数是 \code{cudaStreamSynchronize}。例如，图中
+\code{bottomStream} 的
+\code{computeBottom} 事件之后有一条粗虚线，表示主机何时可以从针对 \code{bottomStream}
+的同步调用返回。由于该同步函数在此位置之后才开始执行，它会立即返回，解除对底部网格点
+halo 交换的阻塞。
+
+\noindent\textbf{译者注：}底本本段把 API 名写作 \code{cudaStreamsynchronize}；图
+\ref{fig:23-14} 的代码及 CUDA API 正确名称均为 \code{cudaStreamSynchronize}。译稿按正确
+符号作最小修正。
+
+图 \ref{fig:23-15} 还揭示了一个重要现象：主机同步可能在计算操作完成（例如顶部 stream 的
+Jacobi 内核）与依赖它的数据传输操作开始（例如主机执行的顶部 MPI 交换）之间引入显著延迟。
+这项额外延迟通常称为\textbf{同步开销（synchronization overhead）}，它会显著影响操作之间
+实际获得的重叠程度，例如内部 stream 的 Jacobi 内核与主机 MPI 交换之间的重叠。由于 MPI
+交换调用是阻塞的，主机只有等顶部 MPI 交换完成以后，才能开始同步底部 stream 并执行底部
+MPI 交换。这会在底部 stream 的 Jacobi 内核结束与底部单元的 MPI 交换开始之间增加延迟，
+减少 MPI 交换与内部 stream Jacobi 内核的重叠。降低这种同步开销，是第
+\ref{sec:multi-gpu-nccl} 节 NCCL 和第 \ref{sec:multi-gpu-nvshmem} 节 NVSHMEM 的重要设计目标。
+
+还有一个重要细节：\code{l2norm_h} 指向的主机内存参与 \code{cudaMemcpyAsync} 等异步内存
+操作，因此不能用 \code{malloc()} 等普通主机内存分配方法取得，而必须分配为
+\textbf{固定页内存（pinned memory）}，有时也称为页锁定内存（page-locked memory）。
+可以用 \code{cudaMallocHost} 分配固定页内存：
+
+\begin{lstlisting}[language=C++,numbers=none]
+float* l2norm_h;
+cudaMallocHost(&l2norm_h, sizeof(float));
+\end{lstlisting}
+
+要完整理解固定页内存及异步复制为何需要它，先补充一些操作系统内存管理背景。现代计算机
+系统中，操作系统同时管理许多应用的内存地址空间。每个应用都能访问一个庞大、逻辑上连续的
+\textbf{虚拟地址空间（virtual address space）}。实际上，系统的物理内存容量有限，必须由
+所有运行中的应用共享。为实现这种共享，操作系统把应用的虚拟地址空间划分成虚拟页，再把
+这些虚拟页映射到物理内存中的物理页。
+
+虚拟页到物理页的映射实现了多个目标。其一是保证进程若未作显式共享安排，就不能访问其他
+进程在物理内存中的页面；进程只能访问映射到自己虚拟地址空间的物理页。其二是在内存需求
+超过可用物理内存时仍能运行应用：只有最活跃的虚拟页映射到物理页，其余虚拟页放在磁盘上。
+在这一过程中，操作系统可能需要把物理内存中的某些页面“换出（page out）”到磁盘等大容量
+存储，为其他页面腾出空间。因此，应用的数据在执行期间随时可能被换出物理内存。
+
+\code{cudaMemcpy()} 的实现会使用一种称为\textbf{直接内存访问（Direct Memory Access，
+DMA）}设备的硬件。在主机与设备内存之间复制时，\code{cudaMemcpy()} 利用 DMA 完成任务。
+在主机内存一侧，DMA 硬件使用物理地址，所以操作系统必须向 DMA 提供转换后的物理地址。
+然而，DMA 操作结束前，数据有可能被换出；相应物理内存位置可能重新分配给另一虚拟内存位置
+的数据。这样，分页活动就可能覆盖 DMA 正在处理的数据，使复制损坏。
+
+常见的解决办法是让 CUDA 运行时分两步执行复制。对于主机到设备复制，运行时先把源主机
+内存数据复制到“固定”的内存缓冲区，也就是把这些内存位置标记为分页机制不得换出；然后由
+DMA 设备把固定页缓冲区复制到设备内存。对于设备到主机复制，运行时先由 DMA 设备把数据
+从设备内存复制到固定页缓冲区，再把缓冲区复制到目标主机内存位置。借助额外的固定页内存
+缓冲区，DMA 复制不会受到分页活动干扰。
+
+这种方法有两个问题。第一，额外一次复制会增加 \code{cudaMemcpy()} 的延迟。第二，增加的
+复杂性会使 \code{cudaMemcpy()} 以同步方式实现：只有函数完成并返回以后，主机才能继续执行，
+因为主机必须参与内存复制。为了支持 \code{cudaMemcpyAsync()} 这样的异步复制，需要消除
+主机把数据从普通缓冲区复制到固定页缓冲区的步骤。因此，\code{cudaMemcpyAsync()} 要求传入
+的主机内存缓冲区本身就已经分配为固定页内存。
+
+\section{使用 NCCL 的多 GPU 模板计算}
+\label{sec:multi-gpu-nccl}
+
+第 \ref{sec:overlap-computation-communication} 节的多 GPU Jacobi 迭代法通过并发的异步内核
+调用、内存复制和 CUDA stream，有效重叠了计算与通信。不过，实现中仍有一些同步点会造成
+低效。回看图 \ref{fig:23-14}，可以看到主机线程在调用 \code{MPI_Sendrecv} 前先调用
+\code{cudaStreamSynchronize}（第 27、31 行），以保证计算顶部、底部边界行的内核已经完成，
+然后才发起 halo 交换的网络通信。等待期间，\code{cudaStreamSynchronize} 会阻塞主机线程，
+使其无法执行后续主机代码；同步必须由主机参与，也就意味着主机不能去完成其他有用工作。
+
+如果通信操作本身可以放入 stream，就能摆脱这种低效：stream 机制会在通信所依赖的操作完成
+后自动发起通信，无须主机线程充当同步中介。希望在 CUDA stream 的上下文中执行通信操作，
+正是 NVIDIA 集体通信库（NCCL）\cite{ch23-nccl} 的设计动机之一。
+
+NCCL 提供多种 GPU 间通信原语，既支持发送、接收等点对点通信，也支持归约、广播、散布和
+聚集等集体通信。NCCL 的通信原语虽然与 MPI 相似，但有一项重要区别：NCCL 原语在 GPU
+而不是主机 CPU 上运行，并且可以放入 CUDA stream。因此，使用 NCCL 后，主机线程不再需要
+在内核调用与通信原语之间充当同步中介。NCCL 通信原语的另一项优势，是会感知拓扑，并针对
+节点内和跨节点多 GPU 通信作高度优化。开发者因而无须为具体系统和互连自行优化通信例程。
+NCCL 支持 PCIe、NVLINK、InfiniBand Verbs 和套接字等多种互连技术。
+
+NCCL 并不能完整取代 MPI，而是可以与 MPI 结合使用、增强多 GPU 通信的库。二者结合时，
+需要像建立和关闭 MPI 通信系统一样建立和关闭 NCCL 通信系统。为此，需要了解三个重要的
+NCCL API：\code{ncclGetUniqueId}、\code{ncclCommInitRank} 和
+\code{ncclCommDestroy}。图 \ref{fig:23-16} 给出它们的签名和作用。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,numbers=none,basicstyle=\ttfamily\scriptsize]
+ncclResult_t ncclGetUniqueId(ncclUniqueId *uniqueId)
+// 创建一个 ncclCommInitRank 所需的唯一 ID；只由一个秩调用并分发给所有秩
+
+ncclResult_t ncclCommInitRank(ncclComm_t *comm, int nranks,
+                              ncclUniqueId commId, int rank)
+// 创建新通信器；comm 返回句柄，nranks 指定秩数，commId 指定唯一 ID，rank 指定调用者
+
+ncclResult_t ncclCommDestroy(ncclComm_t comm)
+// 销毁 comm 指定的通信器对象
+  \end{lstlisting}
+  \caption{建立和关闭通信系统所用的基本 NCCL API 函数。依据原书图 23.16 逐字符重排，
+  参数说明译为中文。}
+  \label{fig:23-16}
+\end{figure}
+
+图 \ref{fig:23-17} 展示把 NCCL 与 MPI 结合使用时，通常如何用图 \ref{fig:23-16} 的 API
+建立和关闭 NCCL 通信系统。建立和关闭 MPI 通信系统的代码与图 \ref{fig:23-6} 相同；新增
+部分包括访问 NCCL API 的头文件（第 2 行），以及建立（第 9--14 行）和关闭（第 16 行）
+NCCL 通信系统的 API 调用。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1]
+#include "mpi.h"
+#include <nccl.h>
+int main(int argc, char *argv[]) {
+    MPI_Init(&argc, &argv);
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    int numRanks;
+    MPI_Comm_size(MPI_COMM_WORLD, &numRanks);
+    ncclUniqueId ncclID;
+    if(rank == 0) ncclGetUniqueId(&ncclID);
+    MPI_Bcast(&ncclID, sizeof(ncclUniqueId), MPI_BYTE, 0, MPI_COMM_WORLD);
+    MPI_Barrier(MPI_COMM_WORLD);
+    ncclComm_t ncclComm;
+    ncclCommInitRank(&ncclComm, numRanks, ncclID, rank);
+    ...
+    ncclCommDestroy(ncclComm);
+    MPI_Finalize();
+    return 0;
+}
+  \end{lstlisting}
+  \caption{一个简单的 MPI + NCCL 主程序。依据原书图 23.17 逐字符重排。}
+  \label{fig:23-17}
+\end{figure}
+
+NCCL 通信操作与 MPI 类似，同样以通信器为基础，由通信器指定参与每次操作的所有实体。因此，
+一组 $n$ 个 CUDA 设备用 NCCL 相互通信以前，必须创建 NCCL 通信器。创建时，需要为通信器
+中的每个 CUDA 设备分配 0 到 $n-1$ 之间的唯一秩。如果应用中的 MPI 进程或线程与 CUDA
+设备一一对应，就可以直接把 MPI 秩作为 NCCL 秩，图 \ref{fig:23-17} 的主机代码正是如此。
+
+秩分配以后，下一步是创建一个唯一对象，所有进程和线程用它同步，并确认自己属于同一个
+通信器。只能由一个秩调用 \code{ncclGetUniqueId} 完成这一步。图 \ref{fig:23-17} 中，秩 0
+调用该函数创建唯一 ID（第 10 行），再用 \code{MPI_Bcast} 把唯一对象从秩 0 发送给所有其他
+MPI 秩（第 11 行）。注意，所有接收秩也必须执行 \code{MPI_Bcast}，才能接收广播对象。关于
+\code{MPI_Bcast} 的细节，请参阅 MPI 用户指南。简而言之，它的参数依次指定被广播数据的
+地址、大小和类型，执行广播的秩（本例为秩 0），以及广播范围（本例为应用的全部 MPI 秩）。
+第 12 行调用 \code{MPI_Barrier}，强制所有秩相互等待，直到全部收到 ID 对象，才创建通信器。
+
+接着，所有秩都调用 \code{ncclCommInitRank}，初始化每个秩中的 NCCL 通信器对象及通信系统
+（第 14 行）。所有秩向该函数传入同一个 \code{ncclID}，从而把参与秩注册为同一个通信器的
+成员；通信器在每个秩中都有一份副本。最后，主函数结束时调用 \code{ncclCommDestroy}，关闭
+NCCL 通信系统（第 16 行）。本例只需一个通信器；关于在应用中使用多个 NCCL 通信器和多个
+NCCL 通信系统的细节，请参阅 NCCL 用户指南\cite{ch23-nccl}。
+
+建立好 NCCL 通信系统后，下面考察如何用 NCCL 原语替代 \code{MPI_Sendrecv} 执行 halo
+交换。我们特别关心的通信原语是 \code{ncclSend} 和 \code{ncclRecv}，二者的签名与说明见图
+\ref{fig:23-18}。它们与 \code{MPI_Send} 和 \code{MPI_Recv} 相似，但有一项主要区别：
+二者是异步函数，并且接收 CUDA stream 对象，指定自己应在哪条 stream 中执行。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,numbers=none,basicstyle=\ttfamily\scriptsize]
+ncclResult_t ncclSend(const void *sendbuff, size_t count,
+                      ncclDataType_t datatype, int peer,
+                      ncclComm_t comm, cudaStream_t stream)
+// 向另一个秩发送数据；参数给出缓冲区、元素数、类型、目标秩、通信器和执行 stream
+
+ncclResult_t ncclRecv(void *recvbuff, size_t count,
+                      ncclDataType_t datatype, int peer,
+                      ncclComm_t comm, cudaStream_t stream)
+// 从另一个秩接收数据；参数给出缓冲区、元素数、类型、源秩、通信器和执行 stream
+  \end{lstlisting}
+  \caption{发送和接收数据的 NCCL API 函数。依据原书图 23.18 逐字符重排，参数说明译为中文。}
+  \label{fig:23-18}
+\end{figure}
+
+第 \ref{sec:multi-gpu-mpi} 节已经说明，不能简单地用 \code{MPI_Send} 和 \code{MPI_Recv}
+执行 halo 交换，因为每个秩都需要同时向一个秩发送数据、从另一个秩接收数据；为此，我们
+改用把两个操作融合起来的 \code{MPI_Sendrecv}。NCCL 没有提供相应的融合发送接收函数，而是
+提供了用于融合通信原语的\textbf{组调用（group call）}。NCCL 可以把一组通信原语夹在两个
+API 调用之间，即 \code{ncclGroupStart} 和 \code{ncclGroupEnd}；它们的作用见图
+\ref{fig:23-19}。因此，把 \code{ncclSend} 和 \code{ncclRecv} 放在两者之间，就能得到融合的
+发送接收操作。NCCL 原语会在每个 CUDA 设备上并发运行，使各设备可以把边界网格点发送给
+一个邻居，同时从另一个邻居接收 halo 网格点。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,numbers=none,basicstyle=\ttfamily\scriptsize]
+ncclResult_t ncclGroupStart()
+// 后续 NCCL 通信原语进入组调用，直到 ncclGroupEnd
+
+ncclResult_t ncclGroupEnd()
+// 等待自 ncclGroupStart 后的全部通信原语都已提交到指定 stream
+  \end{lstlisting}
+  \caption{把通信原语组织在一起的 NCCL API 函数。依据原书图 23.19 逐字符重排，
+  说明文字译为中文。}
+  \label{fig:23-19}
+\end{figure}
+
+现在可以用 NCCL 实现 halo 交换，并重叠计算与通信。图 \ref{fig:23-20} 给出基于 NCCL 的
+主机代码。与图 \ref{fig:23-14} 的 MPI 代码相比，主要变化位于 halo 交换（第 25--36 行）。
+这里，每个 \code{MPI_Sendrecv} 都替换为一组夹在 \code{ncclGroupStart} 与
+\code{ncclGroupEnd} 之间的 \code{ncclSend} 和 \code{ncclRecv} 调用。更重要的是，代码不再
+调用 \code{cudaStreamSynchronize()}。原先对 \code{topStream} 与 \code{bottomStream} 的
+同步改为把这两条 stream 作为最后一个参数传给 \code{ncclSend} 和 \code{ncclRecv}。
+CUDA 运行时保证，
+只有相应 stream 中先前的内核算完 halo 行，这些通信原语才会发起。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1]
+for(unsigned int iter = 0; l2norm > tol && iter < iter_max; ++iter) {
+
+    // Reset L2 norm
+    cudaMemsetAsync(l2norm_d, 0, sizeof(float), internalStream);
+    cudaEventRecord(resetL2, internalStream);
+    cudaStreamWaitEvent(topStream, resetL2, 0);
+    cudaStreamWaitEvent(bottomStream, resetL2, 0);
+
+    // Compute stencil
+    launch_jacobi_kernel(output, input, l2norm_d, 3, nx, topStream);
+    cudaEventRecord(computeTop, topStream);
+    launch_jacobi_kernel(output + (ny - 3)*nx, input + (ny - 3)*nx, l2norm_d, 3,
+                         nx, bottomStream);
+    cudaEventRecord(computeBottom, bottomStream);
+    launch_jacobi_kernel(output + nx, input + nx, l2norm_d, ny - 2, nx,
+                         internalStream);
+
+    // Copy L2 norm to host
+    cudaStreamWaitEvent(internalStream, computeTop, 0);
+    cudaStreamWaitEvent(internalStream, computeBottom, 0);
+    cudaMemcpyAsync(l2norm_h, l2norm_d, sizeof(float), cudaMemcpyDeviceToHost,
+                    internalStream);
+
+    // Halo exchange
+    const int top = rank > 0 ? rank - 1 : (numRanks - 1);
+    const int bottom = (rank + 1) % numRanks;
+    ncclGroupStart();
+    ncclSend(output + nx, nx, ncclFloat, top, nccl_comm, topStream);
+    ncclRecv(output + (ny - 1)*nx, nx, ncclFloat, bottom, nccl_comm, topStream);
+    ncclGroupEnd();
+    cudaEventRecord(exchangeTop, topStream);
+    ncclGroupStart();
+    ncclSend(output + (ny - 2)*nx, nx, ncclFloat, bottom, nccl_comm, bottomStream);
+    ncclRecv(output, nx, ncclFloat, top, nccl_comm, bottomStream);
+    ncclGroupEnd();
+    cudaEventRecord(exchangeBottom, bottomStream);
+
+    // Reduce L2 norm
+    cudaStreamSynchronize(internalStream);
+    MPI_Allreduce(l2norm_h, &l2norm, 1, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
+    l2norm = std::sqrt(l2norm);
+
+    cudaStreamWaitEvent(internalStream, exchangeTop, 0);
+    cudaStreamWaitEvent(internalStream, exchangeBottom, 0);
+
+    std::swap(output, input);
+
+}
+  \end{lstlisting}
+  \caption{基于 NCCL、重叠计算与通信的多 GPU Jacobi 迭代法主机代码。依据原书图 23.20
+  逐字符重排。}
+  \label{fig:23-20}
+\end{figure}
+
+\code{MPI_Sendrecv} 与 \code{ncclSend}/\code{ncclRecv} 组调用有一项重要区别：前者是阻塞
+调用，在通信完成前不会返回；后者是非阻塞调用，即使 \code{ncclGroupEnd} 已经返回，也只能
+保证 \code{ncclSend} 和 \code{ncclRecv} 已经放入指定 stream。因此，必须进一步保证 halo
+交换真正完成以后才开始下一次迭代。图 \ref{fig:23-20} 在 \code{topStream} 和
+\code{bottomStream} 各自的 \code{ncclSend}/\code{ncclRecv} 调用后，分别记录
+\code{exchangeTop} 与 \code{exchangeBottom} 事件（第 31、36 行）；进入下一次迭代以前，再
+让 \code{internalStream} 等待这些事件（第 43--44 行），从而提供这项保证。
+
+\begin{figure}[htbp]
+  \centering
+  \resizebox{\linewidth}{!}{%
+  \begin{tikzpicture}[x=1cm,y=1cm,>=Stealth,font=\scriptsize]
+    \draw[->] (0,6.4) -- (18.2,6.4) node[above left] {时间};
+    \foreach \y/\name in {5.5/{主机},4.0/{顶部 stream},2.5/{底部 stream},1.0/{内部 stream}}
+      \node[left,align=right] at (0,\y) {\name};
+    \foreach \x/\n in {0/04,0.7/05,1.4/06,2.1/07,2.8/10,3.5/11,4.2/12,4.9/14,5.6/15,6.3/19,7/20,7.7/21,8.4/27,9.1/31,9.8/32,10.5/36}
+      \node[draw,minimum width=0.7cm,minimum height=0.5cm] at (\x+0.35,5.5) {\n};
+    \node[draw,minimum width=2.5cm,minimum height=0.65cm] at (14.0,5.5) {同步内部 stream};
+    \node[draw,minimum width=2.2cm,minimum height=0.65cm] at (16.5,5.5) {MPI 全归约};
+    \node[draw,dotted,minimum width=1.6cm] at (2.1,4.0) {等待 resetL2};
+    \node[draw,minimum width=1.9cm] at (4.0,4.0) {Jacobi（顶部）};
+    \node[draw,dotted,minimum width=1.0cm] at (5.55,4.0) {完成};
+    \node[draw,minimum width=3.3cm] at (8.2,4.0) {NCCL 组调用：发送、接收};
+    \node[draw,dotted,minimum width=1.3cm] at (11.1,4.0) {exchangeTop};
+    \node[draw,dotted,minimum width=1.6cm] at (2.1,2.5) {等待 resetL2};
+    \node[draw,minimum width=1.9cm] at (4.0,2.5) {Jacobi（底部）};
+    \node[draw,dotted,minimum width=1.0cm] at (5.55,2.5) {完成};
+    \node[draw,minimum width=3.3cm] at (8.2,2.5) {NCCL 组调用：发送、接收};
+    \node[draw,dotted,minimum width=1.5cm] at (11.2,2.5) {exchangeBottom};
+    \node[draw,minimum width=1.6cm] at (0.9,1.0) {memset};
+    \node[draw,dotted,minimum width=1.2cm] at (2.4,1.0) {resetL2};
+    \node[draw,minimum width=5.8cm] at (6.4,1.0) {Jacobi（内部）};
+    \node[draw,dotted,minimum width=0.8cm] at (9.9,1.0) {等待顶};
+    \node[draw,dotted,minimum width=0.8cm] at (11.1,1.0) {等待底};
+    \node[draw,minimum width=1.3cm] at (12.45,1.0) {memcpy};
+    \node[draw,dotted,minimum width=1.2cm] at (15.1,1.0) {等待交换顶};
+    \node[draw,dotted,minimum width=1.2cm] at (17.2,1.0) {等待交换底};
+    \draw[dotted,->] (2.4,1.35) -- (2.1,3.65);
+    \draw[dotted,->] (2.4,1.35) -- (2.1,2.85);
+    \draw[dotted,->] (11.1,3.65) -- (15.1,1.35);
+    \draw[dotted,->] (11.2,2.15) -- (17.2,1.35);
+    \draw[dashed,thick,->] (12.45,1.35) -- (14.0,5.15);
+  \end{tikzpicture}
+  }
+  \caption{使用 CUDA stream 和事件重叠计算与 NCCL 通信的示例时间线。依据原书图 23.21
+  重绘。}
+  \label{fig:23-21}
+\end{figure}
+
+图 \ref{fig:23-21} 展示图 \ref{fig:23-20} 主机代码用 NCCL 重叠计算与通信时得到的时间线。
+与图 \ref{fig:23-15} 相比，关键区别是 halo 交换不再是主机时间线中的 MPI 调用，而变成
+\code{topStream} 和 \code{bottomStream} 时间线中的 NCCL 组调用；对两条 stream 的同步也
+从主机时间线中的 stream 同步，变成 \code{internalStream} 时间线中的事件同步。因此，除在
+\code{MPI_Allreduce} 前同步 \code{internalStream} 以外，主机已经摆脱通信和同步操作。
+
+\section{使用 NVSHMEM 的多 GPU 模板计算}
+\label{sec:multi-gpu-nvshmem}
+
+前面已经说明如何用 MPI 和 NCCL 为 halo 交换执行数据通信。两者采用的通信风格都称为双边
+通信。之所以称为“双边”，是因为一个进程向另一个进程发送数据或从中接收数据时，两个进程
+都必须执行相互对应的原语。对于 MPI，发送进程的 \code{MPI_Sendrecv} 必须与接收进程的
+\code{MPI_Sendrecv} 相对应；对于 NCCL，发送进程的 \code{ncclSend} 必须与接收进程的
+\code{ncclRecv} 相对应。双方都要参与，是因为发送进程指定通信数据来自何处，接收进程则指定
+收到的数据应放到何处。实际执行时，发送和接收进程必须等待彼此都到达这些调用以后才能发起
+通信，这会产生额外延迟。
+
+并行计算中另一种常见通信形式是\textbf{单边通信（one-sided communication）}。在单边通信
+中，一个进程无须另一个进程参与，就能向它发送数据或从中接收数据。进程通过 put 操作直接
+访问另一进程的地址空间，把数据存入其中；也可以通过 get 操作从另一进程的地址空间加载数据。
+直接访问另一进程地址空间的一部分，无须等待对方进程就绪，可以降低数据通信延迟。单边通信
+还允许在设备上执行的线程发起通信：对于设备上运行的数十万线程，配对的发送和接收调用无法
+扩展，而单边 put 与 get 操作可以扩展。
+
+OpenSHMEM\cite{ch23-openshmem} 是一种常用的单边通信库。NVIDIA 为 GPU 集群提供了
+OpenSHMEM 实现，即 NVIDIA OpenSHMEM 库（NVSHMEM）\cite{ch23-nvshmem}。NVSHMEM 允许
+主机线程或内核中的单个设备线程发起 put 和 get 操作。换句话说，一个进程中在 CPU 或 GPU
+上运行的任何线程，都可以直接向另一个进程中另一个 GPU 的部分内存空间加载或存储数据。
+在 NVSHMEM 术语中，进程或秩称为\textbf{处理元素（processing element，PE）}。
+
+读者可能会问，发起 put 或 get 的进程中，线程如何得知目标进程地址空间里被访问数据对象的
+地址。在双边通信中，这个地址由目标进程执行的配对调用指定；而在单边通信中，发起进程必须
+自己指定它。为此，需要使用\textbf{对称堆（symmetric heap）}。每个进程都划出自己地址空间
+的一部分，在本地容纳对称堆；所有进程都在各自对称堆本地实例的同一偏移处，分配相互对应的
+内存对象。因此，发起进程要访问目标进程地址空间中的对象时，只需给出自己地址空间内对应
+对象的地址。运行时可以推导对象的偏移，进而得到它在目标进程地址空间中的地址。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,numbers=none,basicstyle=\ttfamily\scriptsize]
+void* nvshmem_malloc(size_t size)
+// 在对称堆中分配至少 size 字节，返回所分配字节的地址
+
+void nvshmem_free(void *ptr)
+// 从对称堆释放 ptr 指向的数据
+
+__device__ float nvshmem_float_g(const float* source, int pe)
+// 从 PE pe 的内存中、对称地址 source 处取得一个值并返回
+
+__device__ void nvshmem_float_p(float* dest, float val, int pe)
+// 把 val 存入 PE pe 的内存中、对称地址 dest 处
+  \end{lstlisting}
+  \caption{为对称堆分配、释放、put 和 get 数据的 NVSHMEM API 函数。依据原书图 23.22
+  逐字符重排，说明文字译为中文。}
+  \label{fig:23-22}
+\end{figure}
+
+\noindent\begin{minipage}{\linewidth}
+图 \ref{fig:23-22} 列出在对称堆中分配、释放以及从内核读写对象的四个 NVSHMEM API。
+下面的代码用 \code{nvshmem_malloc} 对称分配保存输入、输出网格点值的数组：
+
+\begin{lstlisting}[language=C++,numbers=none]
+input = (float*) nvshmem_malloc(nx*ny*sizeof(float));
+output = (float*) nvshmem_malloc(nx*ny*sizeof(float));
+\end{lstlisting}
+\end{minipage}
+
+随后可以用 \code{nvshmem_free} 释放这些数组：
+
+\begin{lstlisting}[language=C++,numbers=none]
+nvshmem_free(input);
+nvshmem_free(output);
+\end{lstlisting}
+
+调用这些例程时，所有 PE 都必须参与。注意，每个 PE 只为输入和输出网格分配自己的分区。
+这里假定所有分区具有对称的，也就是完全相同的布局，包括顶部、底部网格点的偏移。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1]
+#include <nvshmem.h>
+__global__ void jacobi_kernel(float* out, float* in, float* l2norm,
+                              unsigned int ny, unsigned int nx, int top, int bottom) {
+    int y = blockIdx.y*blockDim.y + threadIdx.y + 1;
+    int x = blockIdx.x*blockDim.x + threadIdx.x + 1;
+    // Compute stencil and residue
+    float residue = 0.0f;
+    if (y < ny - 1 && x < nx - 1) {
+        float val = 0.25*(in[y*nx + (x + 1)]
+                        + in[y*nx + (x - 1)]
+                        + in[(y + 1)*nx + x]
+                        + in[(y - 1)*nx + x]);
+        out[y*nx + x] = val;
+        residue = val - in[y*nx + x];
+        if (y == 1) {
+            nvshmem_float_p(out + (ny - 1)*nx + x, val, top);
+        }
+        if (y == ny - 2) {
+            nvshmem_float_p(out + x, val, bottom);
+        }
+    }
+    // Reduce L2 norm
+    float blockL2norm = blockReduce(residue*residue);
+    if (threadIdx.y == 0 && threadIdx.x == 0) {
+        atomicAdd(l2norm, blockL2norm);
+    }
+}
+  \end{lstlisting}
+  \caption{使用 NVSHMEM put 函数执行 halo 交换的 Jacobi 迭代模板内核。依据原书图 23.23
+  逐字符重排。}
+  \label{fig:23-23}
+\end{figure}
+
+图 \ref{fig:23-23} 展示如何修改图 \ref{fig:23-1} 的内核，在内核内部用 NVSHMEM 交换
+halo 值。主要变化是包含 NVSHMEM 库头文件（第 1 行），把顶部和底部 PE 的 ID 作为内核参数
+传入（第 3 行），以及调用 \code{nvshmem_float_p} 向顶部、底部 PE 发送边界值（第 15--20 行）。
+
+具体而言，每个线程检查自己是否在计算本 PE 顶部边界行中的值，即检查 $y=1$（第 15 行）。
+若是，线程调用 \code{nvshmem_float_p} 把该值发给顶部 PE：第二个参数传入数值，第三个参数
+传入顶部 PE 的 ID（第 16 行）。由于该值需要放入顶部 PE 的底部 halo 行，线程把自己底部
+halo 行中相应对称元素的地址作为第一个参数传入。类似地，每个线程还检查自己是否在计算本
+PE 底部边界行中的值，即检查 $y=ny-2$（第 18 行）。若是，线程调用
+\code{nvshmem_float_p} 把值发给底部 PE，第二个参数是数值，第三个参数是底部 PE 的 ID
+（第 19 行）。由于该值需要放入底部 PE 的顶部 halo 行，线程把自己顶部 halo 行中相应对称
+元素的地址作为第一个参数传入。
+
+实现使用 NVSHMEM 的内核以后，下面考察调用该内核的主机代码。NVSHMEM 与 NCCL 类似，
+可以和 MPI 结合使用。图 \ref{fig:23-24} 展示通常如何结合 MPI 建立 NVSHMEM。建立和关闭
+MPI 通信系统的代码与图 \ref{fig:23-6} 相同；新增部分包括访问 NVSHMEM API 的头文件
+（第 2--3 行），以及分配、初始化（第 10--13 行）和释放（第 15 行）NVSHMEM 库资源的 API。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1]
+#include "mpi.h"
+#include <nvshmem.h>
+#include <nvshmemx.h>
+int main(int argc, char *argv[]) {
+    MPI_Init(&argc, &argv);
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    int numRanks;
+    MPI_Comm_size(MPI_COMM_WORLD, &numRanks);
+    nvshmemx_init_attr_t attr;
+    MPI_Comm mpi_comm = MPI_COMM_WORLD;
+    attr.mpi_comm = &mpi_comm;
+    nvshmemx_init_attr(NVSHMEMX_INIT_WITH_MPI_COMM, &attr);
+    ...
+    nvshmem_finalize();
+    MPI_Finalize();
+    return 0;
+}
+  \end{lstlisting}
+  \caption{一个简单的 MPI + NVSHMEM 主程序。依据原书图 23.24 逐字符重排。}
+  \label{fig:23-24}
+\end{figure}
+
+具体来说，代码创建 \code{nvshmemx_init_attr_t} 类型的对象（第 10 行），为初始化 NVSHMEM
+通信系统提供配置细节。关于该类型支持的全部配置属性字段，请参阅 NVSHMEM 用户指南。本例
+只使用属性字段 \code{mpi_comm}，它指向一个 MPI 通信器对象，指定参与 NVSHMEM 通信的进程
+范围；模板示例的范围是 MPI 通信系统中的全部秩（第 11--12 行）。随后调用
+\code{nvshmemx_init_attr}，用作为第二个参数传入的对象初始化 NVSHMEM 库资源（第 13 行）。
+第一个参数 \code{NVSHMEMX_INIT_WITH_MPI_COMM} 表示通过 MPI 通信器初始化 NVSHMEM。最后，
+主机代码完成 Jacobi 计算后，调用 \code{nvshmem_finalize} 释放 NVSHMEM 库资源（第 15 行）。
+NVSHMEM 也可以在没有 MPI 通信器的情况下初始化；关于不与 MPI 结合时的初始化方法，请参阅
+NVSHMEM 文档\cite{ch23-nvshmem}。
+
+图 \ref{fig:23-25} 给出使用 NVSHMEM 内核执行 Jacobi 迭代法的主循环。复位 $L_2$ 范数平方
+和（第 4 行）与归约它（第 12--16 行）的代码与前面的示例相同，主要区别在启动计算内核和
+执行 halo 交换的第 7--9 行。MPI 示例图 \ref{fig:23-14} 与 NCCL 示例图 \ref{fig:23-20}
+把三个内核放入三个 stream；这里则只把一个内核放入名为 \code{stream} 的一条 stream，用来
+计算整个分区（第 9 行）。内核新增 \code{top} 和 \code{bottom} 两个参数，告诉它应把边界值
+发送给哪些 PE。这两个值的计算方式与前面的示例相同（第 7--8 行）。本节稍后会讨论，每次
+Jacobi 迭代只启动一个内核，同时执行计算和通信，有什么影响。
+
+\begin{figure}[htbp]
+  \centering
+  \begin{lstlisting}[language=C++,basicstyle=\ttfamily\scriptsize,firstnumber=1]
+for(unsigned int iter = 0; l2norm > tol && iter < iter_max; ++iter) {
+
+    // Reset L2 norm
+    cudaMemsetAsync(l2norm_d, 0, sizeof(float), stream);
+
+    // Compute stencil and exchange halos
+    const int top = PE > 0 ? PE - 1 : (numPEs - 1);
+    const int bottom = (PE + 1) % numPEs;
+    launch_jacobi_kernel(output, input, l2norm_d, ny, nx, top, bottom, stream);
+
+    // Copy and reduce L2 norm
+    cudaMemcpyAsync(l2norm_h, l2norm_d, sizeof(float), cudaMemcpyDeviceToHost,
+                    stream);
+    cudaStreamSynchronize(stream);
+    MPI_Allreduce(l2norm_h, &l2norm, 1, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
+    l2norm = std::sqrt(l2norm);
+
+    nvshmemx_barrier_all_on_stream(stream);
+
+    std::swap(output, input);
+
+}
+  \end{lstlisting}
+  \caption{基于 NVSHMEM、重叠计算与通信的多 GPU Jacobi 迭代法主机代码。依据原书图 23.25
+  逐字符重排。}
+  \label{fig:23-25}
+\end{figure}
+
+把同时执行计算和 halo 交换的内核放入 stream 后，必须保证边界值已经到达目标进程，才能
+进入下一次迭代。图 \ref{fig:23-14} 的 MPI 实现由 \code{MPI_Sendrecv} 的阻塞性质提供保证：
+数据到达前调用不会返回。因此，图 \ref{fig:23-15} 时间线中的所有进程到达
+\code{MPI_Allreduce} 时，可以确信全部 halo 交换数据都已收到。
+
+图 \ref{fig:23-20} 的 NCCL 实现通过在相应 stream 中同步 \code{ncclSend} 和
+\code{ncclRecv} 事件提供保证。迭代结束前的 \code{cudaStreamWaitEvent()} 调用保证每个进程
+都已收到 halo 交换数据，随后才为下一次迭代复位 $L_2$ 范数平方和。
+
+图 \ref{fig:23-25} 的 NVSHMEM 实现则由计算网格点的同一个内核发送边界值。所有已启动线程
+完成网格点计算和 halo 数据发送后，内核就会结束。同步 stream 只能保证内核已经完成计算并
+发出了数据，不能保证数据已经收到。为保证接收完成，需要在同一条 stream 上调用 NVSHMEM
+API \code{nvshmemx_barrier_all_on_stream}（第 18 行）。这个调用让所有 PE 都在屏障处等待，
+直到 stream 中任何先前内核所发起的全部 NVSHMEM 内存访问操作都已经完成。因此，所有进程
+进入下一次迭代时，可以确信全部 halo 交换数据都已收到，能够安全地继续。
+
+用 NVSHMEM 在内核中直接对 halo 值执行 put 操作有两项主要优势。第一，它自动重叠计算与
+通信。采用 MPI 和 NCCL 时，必须先让内核结束才能开始通信，因此需要用不同内核分别计算
+边界值与内部值：只等待边界值内核，然后发起通信，并与内部值内核并行执行。NVSHMEM 不必
+启动多个内核，也不必协调它们之间的并发。部分 GPU 线程一算出 halo 值，就能在内核内部用
+put 操作发送；put 发起的通信在后台进行时，其他线程继续计算内部网格点值。
+
+第二项优势是，在内核内直接执行 put 和 get 可以把多项操作融合进一个内核。在 Jacobi 迭代法
+示例中，这项优势不太明显，因为只有一种操作，也就是模板操作。然而，如果计算包含多项计算，
+而且各项计算之间还会发生通信，MPI 和 NCCL 就要求用独立内核执行每项计算；NVSHMEM 则
+允许把这些操作融合进同一个内核，并从内核内部通信。对于较小的内核，这种\textbf{内核融合
+（kernel fusion）}可以减少内核启动开销；如果被融合的不同操作会复用数据，还可以把数据
+一直保留在共享内存和寄存器中。
+
+一个值得继续研究的主题是，图 \ref{fig:23-23} 在内核中以细粒度方式使用 put 操作。对于通过
+NVLINK 连接的 GPU，这种方法性能尚可，因为 NVLINK 能提供低延迟、高带宽通信；但对于速度
+更慢的互连和跨网络通信，执行更少、更粗粒度的 put 操作会更高效。NVSHMEM 提供另一函数
+\code{nvshmemx_float_put_block}，同一个线程块中的线程可以协作执行一次粗粒度 put。关于这些
+高级技术的用法，请参阅 NVSHMEM 文档\cite{ch23-nvshmem}。
+
+\section{小结}
+\label{sec:multi-gpu-summary}
+
+本章介绍了使用 MPI、NCCL 和 NVSHMEM 三种编程模型，为 GPU 集群编写多 GPU 程序的基本
+模式。我们以模板模式说明多个进程如何在执行期间持续交换数据。第一个实现只使用 MPI：每个
+进程先计算自己分区中的所有网格点值，全部计算结束后，再把边界值发送给相邻进程。随后我们
+改进 MPI 实现，先计算边界值，再把边界值发送给相邻进程，同时计算内部网格点，从而重叠
+计算与通信。要实现这种重叠，需要使用 CUDA stream 并发执行多个内核。
+
+接下来，我们考察如何把 NCCL 与 MPI 结合起来，实现同样的计算通信重叠。NCCL 的优势在于，
+它允许把通信操作放入 CUDA stream，使主机无须在 GPU 内核与 MPI 通信原语之间执行同步。
+此外，NCCL 库已经针对多 GPU 通信作了高度优化，程序员无须为底层系统组织和网络拓扑自行
+定制通信原语。
+
+随后，我们考察如何用 NVSHMEM 实现相同的重叠。MPI 和 NCCL 依赖双边通信，NVSHMEM 则
+依赖单边通信，免除了发送操作必须与相应接收操作配对的等待延迟。此外，NVSHMEM 的 put 和
+get 可以从 GPU 内核内部执行，从而允许内核融合，并透明地重叠计算与通信。
+
+本章比较 NCCL 与 NVSHMEM 时，重点对照了 NCCL 由主机发起的双边通信和 NVSHMEM 由设备
+发起的单边通信。不过，多 GPU 编程 API 仍在不断演进，彼此共有的特性也越来越多。例如，
+NCCL 最近已经增加对称内存和设备发起通信的支持，将来还可能支持单边通信。另一方面，
+NVSHMEM 不仅支持设备发起通信，也支持主机发起通信。通信数据粒度较粗，而且可以独立于与
+通信重叠的计算来确定时，主机发起通信的效果很好；通信数据粒度较细，并且是在与通信重叠的
+计算过程中才确定时，则更适合设备发起通信。
+
+多 GPU 编程虽然与 GPU 内核编程很不相同，但本章介绍的主要编程概念，如 SPMD、秩和屏障，
+在 CUDA 编程模型中都有对应概念。这印证了我们的看法：扎实掌握一种模型的并行编程以后，
+学生就能快速、轻松地学习其他模型。建议读者以本章为基础，继续研究 MPI、NCCL 和 NVSHMEM
+的高级功能，并把它们应用到其他重要模式中。
+
+\section{练习}
+\label{sec:multi-gpu-exercises}
+
+\begin{enumerate}[label=\arabic*.,leftmargin=2.7em]
+  \item 假设把本章的五点模板应用于一个网格，其 $x$ 维包含 64 个网格点，$y$ 维包含 512 个
+  网格点；计算划分到 16 个 MPI 秩。
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item 每个进程计算多少个输出网格点值？
+    \item 每个进程需要多少个 halo 网格点？
+    \item 图 \ref{fig:23-12} 阶段 1 中，每个进程计算多少个边界网格点？
+    \item 图 \ref{fig:23-12} 阶段 2 中，每个进程计算多少个内部网格点？
+    \item 图 \ref{fig:23-12} 阶段 2 中，每个进程发送多少字节？
+  \end{enumerate}
+
+  \item 如果以下 MPI 调用传输了 4000 字节：
+  \begin{center}
+    \small\code{MPI_Send(ptr_a, 1000, MPI_FLOAT, 2000, 4, MPI_COMM_WORLD)}
+  \end{center}
+  每个被发送数据元素的大小是多少？
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item 1 字节
+    \item 2 字节
+    \item 4 字节
+    \item 8 字节
+  \end{enumerate}
+
+  \item 下列哪些说法正确？
+  \begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+    \item \code{MPI_Send()} 默认是阻塞的。
+    \item \code{MPI_Recv()} 默认是阻塞的。
+    \item MPI 消息必须至少有 128 字节。
+  \end{enumerate}
+  \par\noindent\textbf{译者注：}底本将本题写成单数问法“Which of the following
+  statements is true?”，但 \code{MPI_Send()} 和 \code{MPI_Recv()} 默认均为阻塞调用，
+  因而 a、b 同时正确；译稿相应改为复数问法。
+\end{enumerate}
+
+\begin{chapterbibliography}{9}
+  \bibitem{ch23-mpi}
+  W. Gropp, E. Lusk, A. Skjellum, \emph{Using MPI: Portable Parallel Programming
+  with the Message-Passing Interface}, vol.~1, MIT Press, 1999.
+
+  \bibitem{ch23-nccl}
+  NVIDIA, Overview of NCCL, \url{https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/overview.html},
+  2024.
+
+  \bibitem{ch23-nvshmem}
+  NVIDIA, NVIDIA OpenSHMEM library (NVSHMEM) documentation,
+  \url{https://docs.nvidia.com/nvshmem/api/index.html}, 2024.
+
+  \bibitem{ch23-multigpu-models}
+  NVIDIA, Multi GPU programming models, 2025.\newline
+  \url{https://github.com/NVIDIA/multi-gpu-programming-models}.
+
+  \bibitem{ch23-cub}
+  NVIDIA, CUB, \url{https://nvidia.github.io/cccl/cub/index.html}, 2025.
+
+  \bibitem{ch23-mpich}
+  MPICH, MPICH, \url{https://www.mpich.org}, 2025.
+
+  \bibitem{ch23-openmpi}
+  OpenMPI, Open MPI: open source high performance computing,
+  \url{https://www.open-mpi.org}, 2025.
+
+  \bibitem{ch23-mvapich}
+  MVAPICH, MVAPICH: MPI over InfiniBand, omni-path, Ethernet/iWARP, RoCE, and
+  slingshot, \url{https://mvapich.cse.ohio-state.edu}, 2025.
+
+  \bibitem{ch23-openshmem}
+  B. Chapman, T. Curtis, S. Pophale, S. Poole, J. Kuehn, C. Koelbel, L. Smith,
+  Introducing openshmem: shmem for the pgas community, in: \emph{Proceedings of
+  the Fourth Conference on Partitioned Global Address Space Programming Model},
+  2010, pp.~1--3.
+\end{chapterbibliography}
