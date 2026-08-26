@@ -35,7 +35,7 @@
 - [x] 第 21 章：Electrostatic potential map —— 静电势图（全章翻译，已完成逐页底本对照、代码核对、图示重绘和编译/视觉验收）
 - [x] 第 22 章：Algorithm selection, problem decomposition, and problem formulation —— 算法选择、问题分解与问题表述（全章翻译，已完成逐页底本对照、图示重绘和编译/视觉验收）
 - [x] 第 23 章：Multi-GPU programming —— 多 GPU 编程（全章翻译，已完成逐页底本对照、代码/API 核对、图示重绘和编译/视觉验收）
-- [ ] 第 24 章：Conclusion and future outlook —— 总结与未来展望
+- [x] 第 24 章：Conclusion and future outlook —— 总结与未来展望（全章翻译，已完成逐页底本对照、性能对比表重绘、数值一致性核对和编译/视觉验收）
 
 ### 附录
 
