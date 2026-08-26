@@ -13,6 +13,23 @@
 \usepackage{listings}
 \usepackage{hyperref}
 \usepackage{bookmark}
+\usepackage{mdframed}
+
+\renewenvironment{quote}{%
+  \begin{mdframed}[
+    backgroundcolor=gray!12,
+    linecolor=gray!45,
+    linewidth=0.4pt,
+    skipabove=0.8em,
+    skipbelow=0.8em,
+    innertopmargin=0.7em,
+    innerbottommargin=0.7em,
+    innerleftmargin=1em,
+    innerrightmargin=1em
+  ]%
+}{%
+  \end{mdframed}%
+}
 
 \hypersetup{
   colorlinks=true,

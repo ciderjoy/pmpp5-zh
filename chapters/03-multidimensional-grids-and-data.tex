@@ -130,42 +130,8 @@ KernelFunction<<<dimGrid, dimBlock>>>(...);
 
 \begin{figure}[htbp]
   \centering
-  \begingroup
-  \scriptsize
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{c@{\hspace{0.8em}}c}
-    \fbox{\begin{minipage}{0.23\textwidth}
-      \centering
-      \textbf{主机}\\[0.3em]
-      \fbox{\code{Kernel 1}}\\[0.8em]
-      \fbox{\code{Kernel 2}}
-    \end{minipage}}
-    &
-    \fbox{\begin{minipage}{0.58\textwidth}
-      \centering
-      \textbf{设备}\\[0.2em]
-      \fbox{\begin{minipage}{0.45\textwidth}
-        \centering
-        \textbf{网格 1（Grid 1）}\\[0.2em]
-        \begin{tabular}{cc}
-          \fbox{块 $(0,0)$} & \fbox{块 $(0,1)$}\\
-          \fbox{块 $(1,0)$} & \fbox{块 $(1,1)$}
-        \end{tabular}
-      \end{minipage}}\\[0.6em]
-      \fbox{\begin{minipage}{0.45\textwidth}
-        \centering
-        \textbf{网格 2（Grid 2）}\\[0.2em]
-        \fbox{\begin{minipage}{0.9\textwidth}
-          \centering
-          \textbf{块 $(1,1)$ 展开}\\
-          $4\times2\times2=16$ 个线程\\
-          \code{threadIdx=(z,y,x)}
-        \end{minipage}}
-      \end{minipage}}
-    \end{minipage}}
-  \end{tabular}
-  \endgroup
-  \caption{CUDA 多维网格组织示例（依据原书图 3.1 重绘的概念示意）}
+  \includegraphics[width=\textwidth]{figs/ch3/3-1.png}
+  \caption{CUDA 多维网格组织示例}
   \label{fig:3-1}
 \end{figure}
 

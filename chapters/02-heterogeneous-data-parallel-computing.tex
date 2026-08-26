@@ -35,21 +35,8 @@
 
 \begin{figure}[htbp]
   \centering
-  \fbox{%
-    \begin{minipage}{0.82\textwidth}
-      \centering
-      \vspace{0.4em}
-      \textbf{彩色图像}\quad
-      $\xrightarrow{\text{对每个像素独立计算 }L}$
-      \quad\textbf{灰度图像}
-      \par
-      \smallskip
-      \small 每个输入像素的 $(r,g,b)$ 三个分量分别参与同一个亮度公式；
-      不同像素之间的计算互不依赖。
-      \vspace{0.4em}
-    \end{minipage}%
-  }
-  \caption{彩色图像转换为灰度图像的概念示意（依据原书图 2.1 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch2/2-1.png}
+  \caption{彩色图像转换为灰度图像}
   \label{fig:2-1}
 \end{figure}
 
@@ -57,13 +44,12 @@
 \textbf{RGB 彩色图像表示}
 
 在 RGB 表示中，图像的每个像素都表示为一个 $(r,g,b)$ 值元组。一行图像的格式
-可以写成
-\[
-  (r\ g\ b)\ (r\ g\ b)\ \cdots\ (r\ g\ b).
-\]
-每个元组表示红光（R）、绿光（G）和蓝光（B）的混合。也就是说，渲染像素时，
-每个像素的 $r$、$g$ 和 $b$ 值分别表示红、绿、蓝光源的强度，其中 0 表示暗，
-1 表示满强度。
+可以写成$(r\ g\ b)\ (r\ g\ b)\ \cdots\ (r\ g\ b)$.每个元组表示红光（R）、绿光（G）和蓝光（B）的混合。
+也就是说，渲染像素时，每个像素的 $r$、$g$ 和 $b$ 值分别表示红、绿、蓝光源的强度，其中 0 表示暗，1 表示满强度。
+\begin{center}
+  \includegraphics[width=0.5\textwidth]{figs/ch2/RGB.png}
+\end{center}
+
 \end{quote}
 
 如果把输入看作由 RGB 值组成的数组 $I$，把输出看作对应的亮度值数组 $O$，就能
@@ -76,13 +62,8 @@ $I[0]$ 中的 RGB 值求加权和得到的；$O[1]$ 由 $I[1]$ 中的 RGB 值得
 
 \begin{figure}[htbp]
   \centering
-  \begin{tabular}{c@{\qquad}c@{\qquad}c}
-    $I[0]$ & $I[1]$ & $I[2]$ \\
-    $\downarrow$ & $\downarrow$ & $\downarrow$ \\
-    $O[0]$ & $O[1]$ & $O[2]$ \\
-    \multicolumn{3}{c}{$\cdots$；每一列都可独立执行}
-  \end{tabular}
-  \caption{彩色转灰度中的数据并行性：像素可以独立计算（依据原书图 2.2 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch2/2-2.png}
+  \caption{彩色转灰度中的数据并行性：像素可以独立计算}
   \label{fig:2-2}
 \end{figure}
 
@@ -136,34 +117,8 @@ CPU 和 GPU 的重叠执行，从而同时利用二者。
 
 \begin{figure}[htbp]
   \centering
-  \begingroup
-  \setlength{\tabcolsep}{3pt}
-  \renewcommand{\arraystretch}{1.15}
-  \scriptsize
-  \begin{tabular}{
-      >{\raggedright\arraybackslash}p{0.12\textwidth}
-      >{\centering\arraybackslash}p{0.16\textwidth}
-      >{\centering\arraybackslash}p{0.18\textwidth}
-      >{\centering\arraybackslash}p{0.18\textwidth}
-      >{\centering\arraybackslash}p{0.18\textwidth}}
-    & \multicolumn{4}{c}{\textbf{时间向右推进}\hspace{0.6em}$\longrightarrow$}\\[0.3em]
-    \textbf{主机（CPU）}
-      & \fbox{\parbox[c][1.35cm][c]{0.13\textwidth}{\centering 串行代码}}
-      & \fbox{\parbox[c][1.35cm][c]{0.15\textwidth}{\centering 启动 Grid 1\\Kernel A}}
-      & \fbox{\parbox[c][1.35cm][c]{0.15\textwidth}{\centering 主机代码继续\\与设备重叠}}
-      & \fbox{\parbox[c][1.35cm][c]{0.15\textwidth}{\centering 启动 Grid 2\\并继续执行}}\\[0.5em]
-    \textbf{设备（GPU）}
-      & \textcolor{gray}{空闲}
-      & \multicolumn{2}{c}{
-          \fbox{\parbox[c][1.35cm][c]{0.31\textwidth}{\centering
-            \textbf{Grid 1：Kernel A}\\
-            线程块 0\hspace{0.4em}线程块 1\hspace{0.4em}$\cdots$
-            \hspace{0.4em}线程块 $N-1$}}}
-      & \fbox{\parbox[c][1.35cm][c]{0.15\textwidth}{\centering
-          \textbf{Grid 2：Kernel B}\\多个线程块}}\\
-  \end{tabular}
-  \endgroup
-  \caption{CUDA 程序的执行过程（依据原书图 2.3 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch2/2-3.png}
+  \caption{CUDA 程序的执行过程}
   \label{fig:2-3}
 \end{figure}
 
@@ -270,57 +225,8 @@ C 或 C++ 程序中的数组可以通过指向其第 0 个元素的指针访问�
 
 \begin{figure}[htbp]
   \centering
-  \begin{lstlisting}[language=C++]
-void vecAdd(float* A_h, float* B_h, float* C_h, int n) {
-    int size = n * sizeof(float);
-    float *A_d, *B_d, *C_d;
-
-    // Part 1: allocate device memory for A, B, and C and copy the inputs
-    ...
-
-    // Part 2: invoke the kernel to launch a thread grid on the device
-    // and perform the actual vector addition
-    ...
-
-    // Part 3: copy C back from the device and free the device vectors
-    ...
-}
-  \end{lstlisting}
-  \smallskip
-  \begingroup
-  \setlength{\tabcolsep}{3pt}
-  \renewcommand{\arraystretch}{1.1}
-  \scriptsize
-  \begin{tabular}{
-      >{\centering\arraybackslash}p{0.28\textwidth}
-      >{\centering\arraybackslash}p{0.28\textwidth}
-      >{\centering\arraybackslash}p{0.28\textwidth}}
-    \textbf{第 1 部分：准备数据}
-      & \textbf{第 2 部分：执行内核}
-      & \textbf{第 3 部分：取回结果}\\[0.3em]
-    \fbox{\parbox[c][2.7cm][c]{0.245\textwidth}{\centering
-      \textbf{主机内存}\\
-      $A_h,\ B_h,\ C_h$\\[0.2em]
-      $\Downarrow$\ \code{cudaMemcpy}\\[0.2em]
-      \textbf{设备全局内存}\\
-      分配 $A_d,\ B_d,\ C_d$}}
-      &
-    \fbox{\parbox[c][2.7cm][c]{0.245\textwidth}{\centering
-      \textbf{设备全局内存}\\[0.2em]
-      $A_d,\ B_d \xrightarrow{\text{内核}} C_d$\\[0.4em]
-      启动线程网格\\
-      并行执行向量加法}}
-      &
-    \fbox{\parbox[c][2.7cm][c]{0.245\textwidth}{\centering
-      \textbf{设备全局内存}\\
-      $C_d$\\[0.2em]
-      $\Downarrow$\ \code{cudaMemcpy}\\[0.2em]
-      \textbf{主机内存}\ $C_h$\\
-      释放 $A_d,\ B_d,\ C_d$}}\\
-  \end{tabular}
-  \endgroup
-  \caption{把工作移到设备上的 \code{vecAdd}（主机代码）函数概要及数据流
-  （依据原书图 2.5 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch2/2-5.png}
+  \caption{把工作移到设备上的 \code{vecAdd}（主机代码）函数概要及数据流}
   \label{fig:2-5}
 \end{figure}
 
@@ -355,9 +261,11 @@ global memory），通常简称全局内存。例如，NVIDIA Hopper H100 GPU �
   \centering
   \begin{tabular}{>{\ttfamily}p{0.22\textwidth} p{0.65\textwidth}}
     \toprule
-    \code{cudaMalloc()} & 在设备全局内存中分配对象；需要两个参数：指向所分配对象
-    的指针地址，以及以字节数表示的分配大小。\\
-    \code{cudaFree()} & 从设备全局内存释放对象；需要一个参数，即待释放对象的指针。\\
+    \code{cudaMalloc()} & 在设备全局内存中分配对象且需要两个参数。\\
+    {\normalfont\bfseries 指针的地址：} & 该指针指向所分配对象。\\
+    {\normalfont\bfseries 大小：} & 该分配对象以字节数表示的分配大小。\\
+    \code{cudaFree()} & 从设备全局内存释放对象且需要一个参数。\\
+    {\normalfont\bfseries 指针：} & 指向待释放对象。\\
     \bottomrule
   \end{tabular}
   \caption{管理设备全局内存的 CUDA API 函数（依据原书图 2.6 重绘）}
@@ -442,11 +350,14 @@ cudaFree(A_d);
   \centering
   \begin{tabular}{>{\ttfamily}p{0.25\textwidth} p{0.62\textwidth}}
     \toprule
-    \code{cudaMemcpy()} & 执行内存数据传送，需要四个参数：目标指针、源指针、
-    要复制的字节数，以及传送类型/方向。\\
+    \code{cudaMemcpy()} & 执行内存数据传送，需要四个参数。 \\
+    {\normalfont \bfseries 目标指针} & 指向目标内存地址的指针。 \\
+    {\normalfont \bfseries 源指针} & 指向源内存地址的指针。\\ 
+    {\normalfont \bfseries 大小} & 要复制的字节数。\\
+    {\normalfont \bfseries 传输类型} & 即传送方向。\\
     \bottomrule
   \end{tabular}
-  \caption{在主机与设备之间传送数据的 CUDA API 函数（依据原书图 2.7 重绘）}
+  \caption{在主机与设备之间传送数据的 CUDA API 函数}
   \label{fig:2-7}
 \end{figure}
 
@@ -569,17 +480,8 @@ SPMD）\cite{atallah1998} 并行编程风格的一个实例；SPMD 是并行计�
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\quad}c@{\quad}c}
-    \textbf{块 0} & \textbf{块 1} & \textbf{块 $N-1$} \\
-    \texttt{0, 1, 2, \ldots, 254, 255}
-      & \texttt{0, 1, 2, \ldots, 254, 255}
-      & \texttt{0, 1, 2, \ldots, 254, 255} \\
-    \multicolumn{3}{c}{每个线程执行相同的内核代码：}\\
-    \multicolumn{3}{c}{\code{i = blockIdx.x * blockDim.x + threadIdx.x}}\\
-    \multicolumn{3}{c}{\code{C[i] = A[i] + B[i]}}
-  \end{tabular}
-  \caption{网格中的所有线程执行相同的内核代码（依据原书图 2.9 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch2/2-9.png}
+  \caption{网格中的所有线程执行相同的内核代码}
   \label{fig:2-9}
 \end{figure}
 
@@ -680,7 +582,7 @@ Kepler 架构开始），也可以从设备调用。重要特征是，调用这�
     \code{__device__} & 设备 & 设备 & 调用者设备线程 \\
     \bottomrule
   \end{tabular}
-  \caption{CUDA C++ 函数声明关键字（依据原书图 2.11 重绘）}
+  \caption{CUDA C++ 函数声明关键字}
   \label{fig:2-11}
 \end{figure}
 
@@ -847,7 +749,7 @@ NVCC 的运行时组件会进一步把这些 PTX 文件编译为真正的目标�
     \end{tabular}\\[0.4em]
     \fbox{\parbox{0.65\textwidth}{\centering 包含 CPU 和 GPU 的异构计算平台}}
   \end{tabular}
-  \caption{CUDA C++ 程序的编译过程概览（依据原书图 2.14 重绘）}
+  \caption{CUDA C++ 程序的编译过程概览}
   \label{fig:2-14}
 \end{figure}
 

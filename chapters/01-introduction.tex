@@ -121,36 +121,8 @@ x86 指令集的处理器，并支持两个硬件线程的超线程技术，目�
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \renewcommand{\arraystretch}{1.35}
-  \begin{tabularx}{0.95\textwidth}{%
-    >{\raggedright\arraybackslash\bfseries}p{0.18\textwidth}
-    >{\raggedright\arraybackslash}X
-    >{\raggedright\arraybackslash}X}
-    \toprule
-    & CPU & GPU \\
-    \midrule
-    设计取向
-      & 面向延迟：尽量降低单个线程的操作延迟
-      & 面向吞吐量：最大化大量线程的总体执行吞吐量 \\
-    控制逻辑
-      & 复杂的控制逻辑和分支预测，减少控制与分支延迟
-      & 控制逻辑相对简化，通过大量可运行线程隐藏延迟 \\
-    算术单元
-      & 较少但较大的算术单元
-      & 更多但较小的算术单元 \\
-    缓存层次
-      & 靠近计算单元的小缓存，以及用于捕获频繁访问数据的较大末级缓存
-      & 较小的缓存，用于控制带宽需求并减少对 DRAM 的重复访问 \\
-    片外内存
-      & 较少的内存通道连接 DRAM
-      & 较多的内存通道连接高带宽 DRAM \\
-    适合的工作
-      & 一个或少量线程的顺序工作
-      & 大量线程可协作的数据并行工作 \\
-    \bottomrule
-  \end{tabularx}
-  \caption{CPU 与 GPU 的基本设计理念（依据原书图 1.1 重绘的概念示意）}
+  \includegraphics[width=\textwidth]{figs/ch1/1-1.png}
+  \caption{CPU 与 GPU 的基本设计理念}
   \label{fig:1-1}
 \end{figure}
 
@@ -332,30 +304,8 @@ $10\times$ 加速。诀窍在于设法绕过内存带宽限制：通过某种变
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \renewcommand{\arraystretch}{1.35}
-  \begin{tabularx}{0.95\textwidth}{%
-    >{\raggedright\arraybackslash\bfseries}p{0.23\textwidth}
-    >{\raggedright\arraybackslash}X}
-    \toprule
-    应用结构或覆盖范围 & 中文概念示意 \\
-    \midrule
-    顺序部分（“桃核”）
-      & 难以并行化；传统单核 CPU 通常能够很好地处理这部分。它可能占据大量代码，
-        但往往只占超级应用执行时间的一小部分。 \\
-    数据并行部分（“桃肉”）
-      & 容易在数据的不同部分上并行执行，是 GPU 加速最有价值的区域。 \\
-    传统 CPU 覆盖
-      & 与顺序部分有较大重叠，但对大规模数据并行部分的覆盖有限。 \\
-    早期 GPGPU 覆盖
-      & 只能覆盖可表达为“绘制像素”的数据并行部分中的一小部分。 \\
-    CUDA/GPU 覆盖
-      & 面向吞吐量的 GPU 和 CUDA 旨在覆盖更大范围的“桃肉”区域。 \\
-    障碍
-      & 功耗约束使得单核 CPU 难以继续扩展，以覆盖更多数据并行工作。 \\
-    \bottomrule
-  \end{tabularx}
-  \caption{顺序部分与数据并行部分的应用结构（依据原书图 1.2 重绘的概念示意）}
+  \includegraphics[width=\textwidth]{figs/ch1/1-2.png}
+  \caption{顺序部分与数据并行部分的应用结构}
   \label{fig:1-2}
 \end{figure}
 
