@@ -1,0 +1,240 @@
+\chapter{矩阵乘法的高级优化}
+
+\begin{solutionexercise}{1}
+\problemheading 修改原书图 15.5 的设备函数，用向量加载替代标量加载。原
+\code{loadTile} 依次接收全局 tile 指针 \code{T}、主维度 \code{lda}、有效边界
+\code{maxRow/maxCol}、共享 tile 指针 \code{T_s}、共享主维度 \code{ldas} 以及
+\code{height/width}。块内线程遍历 \code{height}\,$\times$\,\code{width} 输入 tile，
+把合法的
+\code{T[row*lda+col]} 写入共享内存
+\code{T_s[row*ldas+col]}，越界项填 0。向量版本须保持这些边界语义，并处理向量宽度、
+源地址对齐和不足一个向量的行尾。
+
+\approachheading 把 tile 每行按四个 \code{float} 分组；线程遍历向量任务而非标量任务。
+只有源地址 16 字节对齐且四项均在矩阵边界内时才解引用 \code{float4}，否则逐项加载并
+为边界外位置填 0。
+
+\answerheading
+\begin{lstlisting}[language=C++]
+__device__ __forceinline__ void loadTileVec4(
+    const float* T,unsigned lda,unsigned maxRow,unsigned maxCol,
+    float* S,unsigned ldas,unsigned height,unsigned width) {
+  unsigned vecCols=(width+3)/4;
+  unsigned tasks=height*vecCols;
+  for(unsigned v=threadIdx.x;v<tasks;v+=blockDim.x) {
+    unsigned row=v/vecCols, col=4*(v%vecCols);
+    float a[4]={0,0,0,0};
+    bool full=row<maxRow && col+3<maxCol && col+3<width;
+    const float* src=full ? T+size_t(row)*lda+col : nullptr;
+    if(full && ((reinterpret_cast<size_t>(src)&15)==0)) {
+      float4 x=*reinterpret_cast<const float4*>(src);
+      a[0]=x.x;a[1]=x.y;a[2]=x.z;a[3]=x.w;
+    } else {
+#pragma unroll
+      for(unsigned j=0;j<4;++j)
+        if(row<maxRow && col+j<maxCol && col+j<width)
+          a[j]=T[size_t(row)*lda+col+j];
+    }
+#pragma unroll
+    for(unsigned j=0;j<4;++j)
+      if(col+j<width) S[row*ldas+col+j]=a[j];
+  }
+}
+\end{lstlisting}
+线性向量任务覆盖 tile 中每个逻辑元素恰好一次；完整向量与标量回退写入相同共享下标，
+所以转换不改变数值。函数不含屏障，调用者必须在所有线程调用后执行一次
+\code{__syncthreads()} 才能使用 tile。
+
+\complexity{$O(hw)$ 总搬运工作，每线程约 $hw/B$ 项}{$O(1)$ 每线程寄存器；共享 tile 由调用方提供}{$B$ 线程合作加载}
+\conclusionheading 内部完整区域使用一条 128 位加载搬运四个标量，边缘和未对齐行保持正确。
+\discussionheading
+\discussionpoint{向量指令减少发射，不保证减少内存事务。}一次 \code{float4} 可以替代四条标量加载，少做地址计算并降低指令发射压力；但 DRAM 看到的是整个 warp 覆盖的地址扇区，而不是 C++ 类型名称。若相邻线程的标量访问本来连续且对齐，四轮标量加载也可能完全合并；反之，各线程向量起点分散时，一条 \code{float4} 仍会触及许多扇区。性能验证必须同时看 load instructions 和 global sectors，再结合时间判断瓶颈在指令前端还是内存系统。这个区分也适用于 CPU SIMD、网络 scatter-gather 与存储批量 I/O。
+
+\discussionpoint{二维 pitch 不能替子视图证明向量对齐。}行首 pitch 可能按 128 字节对齐，但子矩阵从列 1 开始时，\code{float} 地址只偏移 4 字节，已经不满足 \code{float4} 的 16 字节要求。实现应先用基矩阵尺寸验证绝对行、列以及后续四项都在对象内，再计算地址并选择向量或标量路径；不能先形成越界派生指针，期待条件为假时不解引用便自动合法。还要遵守 C++ 对齐与别名规则，可使用正确向量类型或受支持的拷贝原语。类似风险广泛存在于张量 view、图像 ROI 和带 leading dimension 的 BLAS 接口。
+
+\discussionpoint{异步 tile 搬运把边界正确性扩展为流水协议。}协作线程可在计算当前共享 tile 时预取下一 tile，用双缓冲隐藏全局延迟；异步拷贝需要提交组、等待点和复用屏障，确保消费者只读取已经完成的数据。边缘 tile 的越界位置仍要显式填零或掩蔽，不能因为拷贝异步便省略容量检查。若第 $k+1$ 轮过早复用仍被第 $k-1$ 轮消费者读取的缓冲，即使拷贝本身不越界，也会出现跨迭代数据竞态。较新的 bulk 或 tensor memory copy 还依赖布局描述和对齐契约，描述符错误可能让整个 tile 错位。这个机制与软件流水、DMA 双缓冲和网络收发环相同：性能来自重叠，正确性来自每一级缓冲的所有权与完成事件。
+
+\discussionpoint{矩阵内核应把主区域与边界路径分别验收。}GEMM、卷积和注意力通常让完整对齐 tile 走快速向量路径，不完整边缘用谓词、标量回退或专门 kernel；若只测尺寸恰为 tile 倍数，最危险路径从未执行。以 $128\times128$ tile 为例，$256\times256$ 只覆盖主路径，而 $257\times129$ 会同时触发右边缘、下边缘和角落。基准应覆盖对齐主矩阵、错位子视图、窄列和各种尾宽，记录指令、扇区、有效带宽和总时间，并与标量 CPU 参考逐元素比较。还要用非单位 pitch 检查行寻址，而不仅是紧密数组。这样才能区分“快路径确实更快”和“为了快路径牺牲通用接口正确性”两种完全不同结果。
+\variantheading 若 \code{width=10}，每行前两个四元组可在对齐时向量加载，最后一组只含列
+8、9，必须标量加载两项并把另外两项填 0。
+\practiceheading 用 CUTLASS 的协作 tile copy 或 \code{cuda::memcpy_async} 实现作性能基线，
+并以 Compute Sanitizer memcheck 覆盖偏移子矩阵、\code{lda\%4!=0} 和尾行；Nsight Compute
+可统计向量与标量加载指令比例。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{NVIDIA CUDA C++ Programming Guide 的内建向量类型与对齐要求；高置信度}
+对抗审查：\code{cudaMalloc} 的基址对齐并不保证任意行地址仍对齐；若 \code{lda} 不是
+4 的倍数，部分行会走标量回退。不能把未对齐 \code{float*} 无条件强转成 \code{float4*}。
+\end{solutionexercise}
+
+\begin{solutionexercise}{2}
+\problemheading 修改原书图 15.7 的设备函数，用向量存储替代标量存储。原
+\code{writeTile} 依次接收全局输出指针 \code{c}、主维度 \code{ldc}、有效边界
+\code{maxRow/maxCol}、寄存器 tile \code{C_r} 以及尺寸 \code{m/n}。它遍历寄存器中的
+$m\times n$ 输出 tile，并仅在行、列分别小于 \code{maxRow}、\code{maxCol} 时把
+\code{C_r[row][col]} 写到
+\code{c[row*ldc+col]}。向量版本须保留逐元素边界语义，并正确处理目的地址对齐和不完整
+行尾。
+
+\approachheading 沿列每四项打包成 \code{float4}；整组在输出边界内且目的地址对齐时
+执行向量存储，否则标量写合法尾部。
+
+\answerheading
+\begin{lstlisting}[language=C++]
+template<int TN>
+__device__ __forceinline__ void writeTileVec4(float* C,size_t ldc,
+    size_t M,size_t N,size_t tileRow,size_t tileCol,
+    const float Creg[][TN],unsigned m,unsigned n) {
+  if(tileRow>=M || tileCol>=N)return;
+#pragma unroll
+  for(unsigned row=0;row<m;++row) {
+    if(size_t(row)>=M-tileRow)break;
+    size_t globalRow=tileRow+row;
+#pragma unroll
+    for(unsigned col=0;col<n;col+=4) {
+      if(size_t(col)>=N-tileCol)break;
+      size_t globalCol=tileCol+col;
+      size_t valid=N-globalCol;
+      bool full=(n-col>=4 && valid>=4);
+      float* dst=C+globalRow*ldc+globalCol;
+      if(full) {
+        if((reinterpret_cast<size_t>(dst)&15)==0) {
+          float4 v=make_float4(Creg[row][col],Creg[row][col+1],
+                               Creg[row][col+2],Creg[row][col+3]);
+          *reinterpret_cast<float4*>(dst)=v;
+        } else {
+#pragma unroll
+          for(unsigned j=0;j<4;++j) dst[j]=Creg[row][col+j];
+        }
+      } else {
+#pragma unroll
+        for(unsigned j=0;j<4;++j)
+          if(col+j<n && size_t(j)<valid) dst[j]=Creg[row][col+j];
+      }
+    }
+  }
+}
+\end{lstlisting}
+每个输出元素仍由原拥有线程写一次，故没有新增竞态。向量化只合并单线程相邻四项；跨线程
+是否形成完整合并事务还取决于线程级 tile 的排列，下一题会解决这一点。
+
+\complexity{$O(mn)$ 存储工作，完整区约 $mn/4$ 条存储指令}{$O(1)$ 额外空间}{所有输出 tile 所有者并行写回}
+调用方必须传矩阵基址与线程 tile 的绝对起始坐标，不能预先计算可能越界的
+\code{C+tileRow*ldc+tileCol} 再传入。函数先证明起始坐标和当前行列合法，之后才形成
+目的指针。
+
+\conclusionheading 该函数在满足边界与对齐时使用 \code{float4}，其余路径逐项安全写回；
+边界检查发生在任何派生目的指针形成之前。
+\discussionheading
+\discussionpoint{连续的线程私有片段还不等于合并的 warp 写回。}线程拥有四个相邻结果，只说明它可发出一条 \code{float4}；要让 warp 覆盖少量连续扇区，线程 $t+1$ 的四元组还应紧接线程 $t$。若逻辑 tile 把相邻线程映射到不同行、隔列或不同批次，每条向量都合法，整体地址却仍是分散的。例如 lane $t$ 写列 $4t$ 时相邻，而写列 $4t$、行 $t$ 时地址间隔约为 leading dimension，事务无法合并。可以先画出 lane 到绝对行列的表，再计算一个 warp 的地址跨度和扇区数量，这比只检查每线程指针更可靠。相同所有权分析决定 GEMM epilogue、图像通道写回和结构数组存储能否真正合并。
+
+\discussionpoint{尾部写回必须尊重对象边界而非事后修补。}只有目的绝对行列合法、连续四项均存在且地址对齐时，才能形成并解引用 \code{float4*}；未对齐完整组和不足四项尾部应逐项谓词写。先覆盖邻接对象再把它恢复，在并发线程存在时会产生竞态，也可能破坏另一个逻辑结果；先计算对象外指针再避免 store，同样不是稳健的 C++ 接口。比如一行只剩 6 项时，可安全写一个四元组再标量写 2 项，绝不能让第二个四元组跨到下一行。用宽度 0--7、错位列和最后一行做测试，可以覆盖每种标量回退。这个原则也适用于 SIMD 掩码存储和文件尾部块，边界必须在形成访问之前成立。
+
+\discussionpoint{缓存策略取决于写后是否很快复用。}向量 store 减少指令，但总吞吐还受事务合并、L2 写分配、ECC 和内存控制器影响；纯流式输出若之后很久不用，缓存驻留可能挤掉更有价值数据。若下一 kernel 立即读取同一矩阵，让结果保留在 L2 又可能明显缩短端到端时间。可用“写后立刻读”和“写后先扫过大于 L2 的干扰数组”两组实验隔离复用收益，而不能把冷热场景混成一个平均值。不同架构提供的缓存或流式提示语义并不完全相同，应把生产者和消费者一起测量，而不是只计 store kernel。这个生产--消费距离的视角也适用于数据库物化、图中间 frontier 和深度学习算子融合。
+
+\discussionpoint{epilogue 融合把向量写回变成数值转换边界。}高性能 GEMM 常在累加器仍位于寄存器时加入偏置、激活、缩放或量化，再一次性写出，从而避免中间张量往返全局内存。融合会引入新的语义：低精度转换需要舍入与饱和规则，ReLU 要明确 NaN 行为，按通道缩放又改变广播索引。测试应覆盖完整向量和每种尾宽、任意 leading dimension、NaN、极值与非单位缩放，并比较输出误差。只有在数值契约一致时，store instructions 与 global sectors 的下降才代表真正可替代的行业实现。
+\variantheading 若 \code{n=6,maxCol=5}，列 0--3 在对齐时用一次 \code{float4} 写，列 4
+由尾部标量路径写出，列 5 因超出 \code{maxCol} 不写。
+\practiceheading 用 Nsight Compute 检查 Global Store Efficiency 和 store 指令数，并以
+cuBLAS 输出作数值基线；Compute Sanitizer memcheck 应覆盖未对齐列偏移、部分行以及
+\code{maxCol<n} 的裁剪视图。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}{NVIDIA Best Practices Guide 的向量加载/存储建议；高置信度}
+边界审查：线程自己的四项连续不代表 warp 的向量起点连续；旧的 $8\times8$ 映射仍可能
+跨步。向量写也不能越过 \code{maxCol} 后再依赖掩码补救，因为写指令本身没有逐 lane 掩码。
+\end{solutionexercise}
+
+\begin{solutionexercise}{3}
+\problemheading 按原书第 15.5 节所述的线程级输出 tile 重排方式，重新实现本章的分块
+矩阵乘法内核。具体映射是：一个 256 线程块计算 $128\times128$ 输出 tile，8 个 warp
+按 $2\times4$ 排列、每个负责 $64\times32$；每个 warp 的 32 个线程按 $8\times4$
+排列，每线程从四个 $32\times16$ 象限各取得一个 $4\times4$ 物理 tile，合成逻辑
+$8\times8$ 输出 tile。实现应使相邻线程逐行写出相邻的四元素向量，并处理矩阵边界。
+
+\approachheading 一个 256 线程块由 8 个 warp 构成，按 $2\times4$ 覆盖
+$128\times128$ 输出 tile；每 warp 覆盖 $64\times32$。lane 按 $8\times4$ 排列，
+从四个 $32\times16$ 象限各取一个 $4\times4$ tile。每行的四个 lane 因而写相邻
+\code{float4}。
+
+\answerheading 以下内核计算行主序 $C_{M\times N}=A_{M\times K}B_{K\times N}$：
+\begin{lstlisting}[language=C++]
+template<int BM=128,int BN=128,int BK=8>
+__global__ void gemm_rearranged(const float* A,const float* B,float* C,
+                                int M,int N,int K) {
+  static_assert(BM==128 && BN==128 && BK==8,"mapping constants");
+  __shared__ float As[BM][BK+1]; // padding removes A bank conflicts
+  __shared__ float Bs[BK][BN];
+  float acc[4][4][4]={0};
+  int tid=threadIdx.x, warp=tid>>5, lane=tid&31;
+  int warpRow=warp/4, warpCol=warp%4;
+  int laneRow=lane/4, laneCol=lane%4;
+  int localRow=warpRow*64+laneRow*4;
+  int localCol=warpCol*32+laneCol*4;
+  int blockRow=blockIdx.y*BM, blockCol=blockIdx.x*BN;
+
+  for(int kb=0;kb<K;kb+=BK) {
+    for(int p=tid;p<BM*BK;p+=blockDim.x) {
+      int r=p/BK,k=p%BK,gr=blockRow+r,gk=kb+k;
+      As[r][k]=(gr<M && gk<K)?A[size_t(gr)*K+gk]:0.0f;
+    }
+    for(int p=tid;p<BK*BN;p+=blockDim.x) {
+      int k=p/BN,c=p%BN,gk=kb+k,gc=blockCol+c;
+      Bs[k][c]=(gk<K && gc<N)?B[size_t(gk)*N+gc]:0.0f;
+    }
+    __syncthreads();
+#pragma unroll
+    for(int k=0;k<BK;++k) {
+#pragma unroll
+      for(int q=0;q<4;++q) {
+        int ro=(q/2)*32,co=(q%2)*16;
+#pragma unroll
+        for(int r=0;r<4;++r) {
+          float av=As[localRow+ro+r][k];
+#pragma unroll
+          for(int c=0;c<4;++c)
+            acc[q][r][c]+=av*Bs[k][localCol+co+c];
+        }
+      }
+    }
+    __syncthreads();
+  }
+
+#pragma unroll
+  for(int q=0;q<4;++q) {
+    int ro=(q/2)*32,co=(q%2)*16;
+#pragma unroll
+    for(int r=0;r<4;++r) {
+      int gr=blockRow+localRow+ro+r, gc=blockCol+localCol+co;
+      if(gr<M && gc<N) {
+        float* dst=C+size_t(gr)*N+gc;
+        if(gc+3<N && ((reinterpret_cast<size_t>(dst)&15)==0)) {
+          *reinterpret_cast<float4*>(dst)=make_float4(
+              acc[q][r][0],acc[q][r][1],acc[q][r][2],acc[q][r][3]);
+        } else for(int c=0;c<4 && gc+c<N;++c) dst[c]=acc[q][r][c];
+      }
+    }
+  }
+}
+// dim3 block(256), grid((N+127)/128,(M+127)/128);
+\end{lstlisting}
+每个 $(i,j)$ 输出由唯一的块、warp、lane、象限和片内坐标确定；内层遍历全部 $k$ tile，
+边缘用 0 填充，故累加值就是点积。两次块屏障分别保护加载完成与下一轮覆盖。四个同
+\code{laneRow} 的相邻 lane 写连续 16 字节段，形成连续 64 字节区域；四个象限完整覆盖
+warp tile 且互不重叠。
+
+\complexity{$O(MNK)$ 工作；每线程每 $K$ tile 做 512 次 FMA}{$64$ 个累加寄存器/线程，约 8.5 KiB 共享空间/块}{$\lceil M/128\rceil\lceil N/128\rceil$ 块，256 线程/块}
+\conclusionheading 重排保持每线程 $8\times8$ 的总输出量，同时实现 warp 级合并向量写。
+\discussionheading
+\discussionpoint{三级 tile 是描述 GEMM 数据所有权的共同语言。}线程块 tile 决定从全局内存搬入的 $A/B$ 区域以及多少输出复用它们，warp tile 决定一组 32 线程怎样协作读取共享数据，线程 tile 则规定每个线程在寄存器中累加哪些 $C_{ij}$。本题的 $128\times128$、$64\times32$、$8\times8$ 并非三个独立数字：块 tile 必须能被 warp tile 覆盖，warp tile 又要由线程输出无重无漏地铺满。改变任一层都会连带改变共享布局、加载分工和 epilogue 写回。建立这种层次地图后，才能系统推导索引，而不是从大量魔数中猜测所有权。
+
+\discussionpoint{寄存器复用提高算术强度，也可能减少可用并发。}每线程保存 $8\times8=64$ 个累加器，使一小片输入被重复用于许多 FMA，减少共享读取；加上地址、$A/B$ 片段和双缓冲状态后，寄存器总数可能很高。若每 SM 因此只能驻留一个块，occupancy 下降；若编译器溢出到 local memory，原本片上的累加器甚至会产生全局流量。不过低 occupancy 不必然慢，足够的指令级并行和异步预取仍可隐藏延迟。应结合 ptxas 寄存器/local 报告、驻留块数和时间判断，而不是追求某个固定 occupancy 百分比。
+
+\discussionpoint{Tensor Core 路径重新定义了 warp 内数据布局。}标量 FMA 版本把共享元素加载到普通寄存器后逐项乘加，是理解 tile 边界和正确性最透明的基线；现代实现会用多级异步预取，并让 warp 发出 MMA 指令处理专门的矩阵 fragment。fragment 的 lane 映射、允许类型、累加精度和对齐要求都由指令族规定，不能从标量 $8\times8$ 所有权直接推断。CUTLASS 将块、warp、instruction tile 和 epilogue 参数化，正是为了管理这些耦合约束。迁移时应先保持数学与边界参考，再逐层替换搬运和计算机制。
+
+\discussionpoint{矩阵形状和数学模式决定应该使用哪个 kernel family。}大方阵能充分填满固定 $128\times128$ tile，瘦高、瘦宽、小批量或任一维小于 tile 时会产生大量掩码工作，甚至只有少数 warp 有效；生产库通常按形状分派不同 tile。比较 cuBLAS 或 CUTLASS 时还要固定数据类型、Tensor Core/TF32 模式、转置和累加精度，否则 TFLOP/s 与误差都不可比。测试需覆盖 $M,N,K$ 各自的尾部、非单位 leading dimension 和量级悬殊输入，并报告有效而非填充 FLOP。这样性能数字才同时反映形状适配和数值契约。
+\variantheading 若 $N=130$，最右输出块只有两列有效，多数 \code{float4} 写回退化为标量；
+数值仍正确，但合并写优势显著下降，适合为窄尾块另设内核。
+\practiceheading 以 cuBLAS SGEMM 和 CUTLASS 相同数据类型配置作基线，用 ptxas 报告核对
+每线程寄存器与 spill，再用 Nsight Compute 的 Roofline、Occupancy 和内存事务选择
+\code{BK} 与输出 tile。
+\sourcecheck{https://github.com/NVIDIA/cutlass}{NVIDIA CUTLASS 官方仓库的层次化 GEMM tile 与合并复制实现；高置信度}
+对抗审查：大量累加器可能造成寄存器溢出或低占用率，性能必须实测。边缘矩阵或 $N$ 非
+4 倍数会退回标量写；缺少任一轮末屏障都会让部分线程在其他线程仍计算时覆盖共享 tile。
+\end{solutionexercise}

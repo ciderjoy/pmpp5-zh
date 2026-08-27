@@ -1,0 +1,272 @@
+\chapter{性能考量}
+
+\begin{solutionexercise}{1}
+\problemheading 考虑下面的 CUDA 内核：
+\begin{lstlisting}[language=C++,firstnumber=1]
+__global__ void foo_kernel(float* a, float* b, float* c, float* d, float* e) {
+    unsigned int i = blockIdx.x*blockDim.x + threadIdx.x;
+    __shared__ float a_s[256];
+    __shared__ float bc_s[4*256];
+    a_s[threadIdx.x] = a[i];
+    for (unsigned int j = 0; j < 4; ++j) {
+        bc_s[j*256 + threadIdx.x] = b[j*blockDim.x*gridDim.x + i] + c[i*4 + j];
+    }
+    __syncthreads();
+    d[i + 8] = a_s[threadIdx.x];
+    e[i*8] = bc_s[threadIdx.x*4];
+}
+\end{lstlisting}
+对下面每个内存访问，说明它是合并的、未合并的，还是不适用合并概念：
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item 第 05 行对数组 \code{a} 的访问；
+  \item 第 05 行对数组 \code{a_s} 的访问；
+  \item 第 07 行对数组 \code{b} 的访问；
+  \item 第 07 行对数组 \code{c} 的访问；
+  \item 第 07 行对数组 \code{bc_s} 的访问；
+  \item 第 10 行对数组 \code{a_s} 的访问；
+  \item 第 10 行对数组 \code{d} 的访问；
+  \item 第 11 行对数组 \code{bc_s} 的访问；
+  \item 第 11 行对数组 \code{e} 的访问。
+\end{enumerate}
+
+\approachheading 合并只适用于同一 warp 的全局内存指令；共享内存应改用 bank 冲突
+分析。对循环体，固定同一次迭代的 $j$ 再比较相邻线程地址。
+
+以下分类假设 \code{blockDim.x <= 256}（教材常用配置为 256），并且所有全局数组都覆盖
+题面产生的最大索引。若块宽超过 256，固定大小的共享数组会先发生越界，此时不能只讨论
+合并访问或 bank 冲突。
+
+\answerheading
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+\item \code{a[i]}：合并，相邻线程读取连续 \code{float}。
+\item \code{a_s[threadIdx.x]}：不适用全局合并；共享 bank 连续且无冲突。
+\item \code{b[j*blockDim.x*gridDim.x+i]}：合并；固定 $j$ 时仅 $i$ 随线程连续变化。
+\item \code{c[i*4+j]}：未合并；相邻线程相差 4 个 \code{float}（16 B）。
+\item \code{bc_s[j*256+threadIdx.x]}：不适用；共享 bank 连续且无冲突。
+\item \code{a_s[threadIdx.x]}：不适用；共享 bank 连续且无冲突。
+\item \code{d[i+8]}：地址连续，属于合并访问；固定偏移可能使首事务未对齐并增加
+一个内存事务，但不把单位步长模式变成跨距访问。
+\item \code{bc_s[threadIdx.x*4]}：不适用合并；共享内存 bank 步长为 4，形成
+4 路 bank 冲突。
+\item \code{e[i*8]}：未合并；相邻线程相差 8 个 \code{float}（32 B）。
+\end{enumerate}
+
+\conclusionheading 全局访问 (a)、(c)、(g) 合并，(d)、(i) 未合并；其余为共享
+内存，合并概念不适用。
+\discussionheading
+\discussionpoint{合并访问描述的是一条 warp 指令的地址集合。}
+单个线程读取 \code{a[i]} 时，不能脱离其他 lane 称它“合并”或“不合并”；硬件处理的是同一 warp 在同一条动态指令上提出的整组地址。若 lane $t$ 的字节地址是 $A+4t$，32 个 lane 覆盖连续 128 B，可由少量内存扇区服务；若地址是 $A+32t$，请求字节散落在更大区域，需要更多事务。循环中的不同 $j$ 属于不同动态指令实例，应固定 $j$ 后再横向比较 lane，而不能把一个线程四次加载混成一组。这个观察法把“源码看起来连续”的直觉转化为可计算的步长、对齐和事务覆盖。
+\discussionpoint{共享内存使用 bank，而不是全局合并器。}
+\code{a_s} 与 \code{bc_s} 位于片上共享内存，访问不会经过全局内存的合并路径；它们的主要问题是同一 warp 的不同地址是否映射到同一 bank。连续 32 位字通常轮流落到 32 个 bank，所以 \code{a_s[t]} 可并行服务，而 \code{bc_s[4t]} 只使用部分 bank并形成多路冲突。若多个 lane 读取完全相同的共享地址，硬件还能广播该字，不应把它误判为普通冲突；多个 lane 写同址则另有数据竞争语义。将两套模型分开，才能为全局跨距选择布局重排，为共享冲突选择 padding 或 shuffle，而不是用错优化工具。
+\discussionpoint{“合并”是随架构与对齐连续变化的效率。}
+本题按 32 位元素和有效数组范围分类，\code{d[i+8]} 虽然首地址可能相对事务边界错位，lane 间仍保持单位步长，因此与 \code{e[8i]} 的大跨距本质不同。现代架构常把请求分解为固定字节扇区，错位可能让连续 128 B 覆盖多一个扇区，但不会突然变成 32 个完全独立事务；元素宽度、子数组偏移和缓存路径又会改变具体数量。因而“合并/未合并”适合作为教学分类，工程分析更应计算请求字节与实际传输字节的比值。先声明目标架构和地址假设，才能避免把一次设备上的事务结果写成永久定律。
+\discussionpoint{数据布局是在替整个 warp安排邻接关系。}
+结构数组中，相邻线程若各取一个结构的同一字段，地址间距会等于结构大小；改成字段数组后，同一字段连续排列，lane 便可消费相邻值，这就是 AoS 到 SoA 转换常见的动机。矩阵转置和批量张量重排也在做相似事情：把算法最常同时访问的逻辑对象放到物理相邻位置。重排本身需要额外内存流量，只有多个后续阶段复用新布局或原跨距十分严重时才值得。诊断应在对齐、偏移和边界块上比较实际传输量，并同时排除共享 bank 冲突，才能知道瓶颈来自哪一条存储路径。接口若长期采用新布局，还应把字段对齐和版本写入数据格式契约，防止生产者与消费者再次失配。
+\variantheading 若 \code{d[i+8]} 改为 \code{d[i*2]}，相邻线程跨 8 B，访问不再连续并增加事务数。
+\practiceheading 用 Nsight Compute 的 Global Memory Efficiency 与 Shared Bank Conflicts 分别验证两类访问。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}{NVIDIA CUDA Best Practices Guide 的全局内存合并与共享内存 bank 规则；地址差逐项复核，置信度高}
+\end{solutionexercise}
+
+\begin{solutionexercise}{2}
+\problemheading 编写一个使用转角的矩阵乘法内核函数，设计应对应图 6.4。
+
+为使题意独立可读，图 6.4 的“转角”设计把第二个输入矩阵按列主序存储：线程以
+连续地址协作读取其列片段，再把数据按转置方向写入带填充的共享内存瓦片；计算阶段
+仍按行主序输出 $P=MN$。内核应给出边界检查和阶段间同步。
+
+\approachheading 假设 $M$ 行主序、$N$ 列主序、$P$ 行主序。让相邻 \code{threadIdx.x}
+沿 $N$ 的一列读取连续 $k$，写入带一列填充的共享瓦片后转置索引。
+
+\answerheading 以下核心实现支持任意 $m\times k$ 与 $k\times n$ 尺寸；$N$ 的列主序
+索引为 \code{row + col*k}。
+\begin{lstlisting}[language=C++]
+constexpr int TILE = 32;
+__global__ void matmul_corner(const float* M, const float* Ncol,
+                              float* P, int m, int kdim, int n) {
+    __shared__ float Ms[TILE][TILE];
+    __shared__ float Ns[TILE][TILE + 1];
+    int tx = threadIdx.x, ty = threadIdx.y;
+    int row = blockIdx.y * TILE + ty;
+    int col = blockIdx.x * TILE + tx;
+    float sum = 0.0f;
+
+    for (int ph = 0; ph < (kdim + TILE - 1) / TILE; ++ph) {
+        int mk = ph * TILE + tx;
+        Ms[ty][tx] = (row < m && mk < kdim)
+                   ? M[row * kdim + mk] : 0.0f;
+
+        // tx walks down one column of column-major N: coalesced.
+        int nk = ph * TILE + tx;
+        int ncol = blockIdx.x * TILE + ty;
+        Ns[tx][ty] = (nk < kdim && ncol < n)
+                   ? Ncol[nk + ncol * kdim] : 0.0f;
+        __syncthreads();
+
+        #pragma unroll
+        for (int q = 0; q < TILE; ++q)
+            sum += Ms[ty][q] * Ns[q][tx];
+        __syncthreads();
+    }
+    if (row < m && col < n) P[row * n + col] = sum;
+}
+// dim3 block(TILE, TILE);
+// dim3 grid((n + TILE - 1) / TILE, (m + TILE - 1) / TILE);
+\end{lstlisting}
+两个无条件块级屏障分别防止读未完成和下一阶段覆盖；所有全局访问均有边界检查。
+\code{Ns} 的额外一列把列写入的 bank 步长从 32 改成 33，避免 32 路冲突。
+
+\complexity{$O(mkn)$ 总工作}{$O(TILE^2)$ 共享空间/块}{$mn$ 个输出点，按瓦片并行}
+\conclusionheading 该实现以共享内存“转角”，同时保持 $M$ 行主序加载与 $N$ 列主序
+加载合并，并处理边界、同步和 bank 冲突。
+\discussionheading
+\discussionpoint{“转角”是在片上改变数据观看方向。}
+行主序矩阵乘中，$M$ 的一行适合连续读取，而点积又需要沿 $N$ 的列移动；若线程直接按计算方向读全局内存，其中一个输入容易形成大步长。转角方案先让线程按全局内存喜欢的连续方向协作加载，再把值写进共享瓦片的转置坐标，计算阶段便能从另一个方向读取同一批数据。额外写读共享内存看似绕路，却用低延迟片上重排换回规则的外存事务，并让一个输入值服务多个输出。FFT 蝶形重排、图像转置和某些卷积数据变换都体现同一原则：外存布局与计算布局不一致时，可在片上建立适配层。
+\discussionpoint{加一列填充为何能打散 bank 冲突。}
+对 32 个 bank 和 32 位字，\code{tile[32][32]} 相邻两行同一列相隔 32 个字，bank 号增加 32 后模 32 不变，因此一个 warp 沿列访问时可能全部落到同一 bank。把第二维改为 33 后，行间步长模 32 等于 1，连续 lane 的列访问便轮流经过所有 bank；只付出每行一个额外元素的容量，就把序列化访问变成可并行访问。这个数论解释依赖 bank 数、bank 字宽和元素类型，若元素是 64 位或 tile 形状改变，必须重新按字节地址计算。padding 是针对特定映射的构造，而不是看到二维共享数组就机械加一列的规则。
+\discussionpoint{两个屏障保护共享瓦片的完整生命周期。}
+第一次屏障位于协作加载之后，确保所有生产者完成写入，任何线程才开始读取整行或整列；第二次屏障位于本阶段计算之后，防止快线程用下一阶段数据覆盖慢线程仍在消费的槽位。边界线程即使没有有效全局元素，也必须写入零并到达屏障，若提前返回，整个块可能违反屏障参与条件。tile 增大能提高复用，却同步增加线程、共享容量与每线程累加状态，最终还要满足合法块维和驻留资源。正确性分析应先画出共享槽的“写入--读取--再次覆盖”时间线，再谈用更大瓦片换取性能。
+\discussionpoint{异步流水化并没有取消依赖关系。}
+异步复制和双缓冲可在计算当前 $k$ 瓦片时预取下一瓦片，但它们只是把两个共享缓冲区的阶段显式化，仍需等待“数据已到达”和“旧数据已消费”两个事件。Tensor Core 路径还要求按照 fragment 形状安排 warp 与数据布局，转角原则依然存在，只是适配层更细。评估时可先用成熟矩阵乘库作为性能参照，再检查外存流量、共享冲突、同步等待和寄存器压力是否随流水化改善。若减少了加载停顿却因双缓冲占用翻倍而降低并发，优化只是把瓶颈移动到另一资源，并不必然缩短总时间。
+\variantheading 若 TILE=16，则块为 256 线程，共享数组约 2112 B，网格各维仍向上取整。
+\practiceheading 与 cuBLAS SGEMM 对比，并查看 Nsight Compute 的 bank conflict、DRAM sectors 和 occupancy。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}{NVIDIA CUDA Best Practices Guide 的转置瓦片、合并读取及共享数组加一列消除 bank 冲突示例；索引独立复核}
+\end{solutionexercise}
+
+\begin{solutionexercise}{3}
+\problemheading 对第五章的分块矩阵乘法，在 \code{BLOCK_SIZE} 的可能取值范围内，
+哪些 \code{BLOCK_SIZE} 值能让内核完全避免对全局内存的未合并访问？（只需
+考虑正方形线程块。）
+
+\approachheading CUDA 将二维块按 x 维最快线性化。按本章把“一个 warp 跨越矩阵行”
+统一归为未完全合并的简化模型，要让 $M,N$ 瓦片加载都落在同一矩阵行的连续位置，
+块宽至少为 32，且 warp 边界必须与行边界重合。
+
+\answerheading 正方形块有 $B^2$ 个线程，硬件每块最多 1024 个线程，所以
+$B\le32$。当 $B=32$ 时，每个 warp 恰好对应线程块的一整行，加载 $M$ 和 $N$ 时
+32 个线程都访问同一全局行中的连续元素。任何 $B<32$ 都会使至少一个 warp 跨越两条
+或更多线程块行；在教材模型中，这种访问不算完全合并。因此题目预期的唯一答案是 32。
+
+这不是跨架构的硬件定理。现代 GPU 会根据一个 warp 的实际地址集合生成一个或多个内存
+事务；$B=8,16,24$ 的跨行片段在特定 leading dimension、基址对齐与事务粒度下也可能
+充分利用事务。旧架构或不同缓存路径还可能得到另一结果。实际代码应以目标计算能力和
+Nsight Compute 的事务/字节指标验证，而不能只看“是否跨行”。
+
+\conclusionheading 在题设可能范围内，\code{BLOCK_SIZE = 32}。
+\discussionheading
+\discussionpoint{教材答案 32 来自“一个 warp 对齐一行”的模型。}
+正方形块以 x 维最快线性化，若边长 $B=32$，每 32 个连续线程恰好构成一整行，warp 加载矩阵行时地址既连续又不会跨到下一行。又因为单块最多 1024 个线程，正方形边长不能超过 32，于是教材模型得到唯一候选 32。这个推理很适合建立“warp 地址集合”的直觉，却把跨行片段一概归入未完全合并，属于有意简化。现代硬件按实际地址覆盖生成内存扇区，两个对齐的半行片段也可能没有浪费，因此应把 32 称为题设预期，而不是跨架构必要条件。实际判断必须列出每个 lane 的字节地址集合，而不能只观察二维块的外形。
+\discussionpoint{行首对齐与主导维会改变同一块宽的事务数。}
+即使 $B=32$，若矩阵 leading dimension 让下一行从非事务边界开始，或子矩阵首地址偏移了一个元素，连续 128 B 也可能跨越额外扇区。反过来，$B=16$ 时一个 warp 横跨两条半行，若两段各自对齐并恰好覆盖完整扇区，实际传输字节仍可能全部有用。元素由 32 位改成 64 位后，每个 lane 的字节宽度翻倍，事务覆盖又会变化。块宽、物理行跨距、基址与元素类型因而共同决定效率，任何只保留 $B$ 的规则都不足以描述真实内存系统。分配函数给出的基址对齐也不能自动保证任意子视图仍保持相同对齐。
+\discussionpoint{块形状还同时决定资源与协作结构。}
+$32\times32$ 虽让每个 warp 对齐一行，却使用 1024 个线程，可能使每个 SM 只能驻留很少的块，并为每块分配较多共享内存和寄存器。改成 $32\times8$ 可保持 x 方向整 warp 连续，让每线程循环计算多行，以较少线程维持相同逻辑瓦片；代价是线程粗化和更长寄存器生存期。归约、卷积或 Tensor Core 内核还有固定的 warp 协作形状，不能只为全局读取选择线程块。合理设计应把访存方向、共享瓦片、同步域和驻留资源作为联合问题，而不是先找到“合并块宽”再忽略其余限制。
+\discussionpoint{目标设备测量负责修正教学模型。}
+可以把 $B=8,16,24,32$ 与若干非方形块作为候选，在不同 leading dimension 和起始偏移下运行相同数学任务。先比较请求字节与实际传输字节，确认跨行片段是否真的浪费事务，再结合内核总时间和资源报告判断这项浪费是否主导性能。若 $B=16$ 与 32 的传输效率接近而前者允许更多独立块驻留，最优配置完全可能不是教材答案。用模型提出可解释的候选、用硬件证据选择部署配置，正是架构知识随设备演进时仍保持有效的方法。基准还应固定输出正确性和工作量，避免不同边界处理使字节指标失去可比性。
+\variantheading 在计算能力 6.x+、32 B 事务且行宽按 32 B 对齐时，$B=16$ 的两个半行片段也可完整利用四个事务。
+\practiceheading 用 Nsight Compute 的 sectors/request 和 Global Load Efficiency 实测候选 $B$，不要把 32 当跨架构定律。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}{NVIDIA CUDA Best Practices Guide 对 warp 地址集合、对齐与内存事务效率的官方说明；结论 32 是本章简化定义下的教材预期答案，不外推为所有架构的必要条件}
+\end{solutionexercise}
+
+\begin{solutionexercise}{4}
+\problemheading 实现一个使用向量加载的向量加法内核，并正确处理边界条件。
+
+\approachheading 每个常规线程处理一个 16 B 的 \code{float4}，另用一个线程以标量
+方式处理不足 4 个元素的尾部；网格按“完整向量数加尾线程”启动。
+
+\answerheading
+\begin{lstlisting}[language=C++]
+__global__ void vecadd4(const float* x, const float* y, float* z, int n) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int n4 = n / 4;
+    if (tid < n4) {
+        float4 a = reinterpret_cast<const float4*>(x)[tid];
+        float4 b = reinterpret_cast<const float4*>(y)[tid];
+        float4 c = make_float4(a.x + b.x, a.y + b.y,
+                               a.z + b.z, a.w + b.w);
+        reinterpret_cast<float4*>(z)[tid] = c;
+    } else if (tid == n4) {
+        for (int i = 4 * n4; i < n; ++i) z[i] = x[i] + y[i];
+    }
+}
+
+void launch_vecadd(const float* x, const float* y, float* z, int n) {
+    if (n <= 0) return;
+    int work = n / 4 + ((n % 4) != 0);
+    vecadd4<<<(work + 255) / 256, 256>>>(x, y, z, n);
+    // Production code checks cudaGetLastError() and later sync/copy errors.
+}
+\end{lstlisting}
+该实现要求 $x,y,z$ 的基地址满足 \code{float4} 的 16 B 对齐；\code{cudaMalloc}
+返回的基地址满足该条件。若传入的是带任意元素偏移的子数组，调用方应保证对齐，或在
+内核中改走全标量路径。线程只写互异元素，无竞态，也不需要块级同步。
+
+\complexity{$O(n)$ 总工作}{$O(1)$ 每线程额外空间}{$\lceil n/4\rceil$ 个粗化任务}
+\conclusionheading 完整四元组使用向量加载/存储，0--3 个尾元素由唯一线程标量处理，
+无越界访问。
+\discussionheading
+\discussionpoint{向量类型减少的是指令开销，不是数据总量。}
+\code{float4} 把四个相邻浮点数视为一个 16 B 对齐对象，编译器因而可能用一次宽加载和一次宽存储代替四组地址计算与标量指令。一个 warp 仍然请求相同数量的有效字节，设备 DRAM 的峰值也不会因为类型名字改变；若原标量访问已完美合并，物理事务数甚至可能相同。收益通常来自更少的指令、更清晰的对齐信息和每线程一次处理多项的粗化，而不是凭空提高带宽。查看最终机器指令很重要，因为源码中的向量类型并不保证编译器在所有上下文都保留单条宽访问。尾部不足四项时仍需标量或掩码路径，并验证它不会越过已分配对象边界。
+\discussionpoint{16 字节对齐是访问契约而非转换效果。}
+\code{cudaMalloc} 返回的基础地址通常满足充分对齐，但若调用方传入 \code{x+1}，地址只移动 4 B，强制转换为 \code{float4*} 不会把它重新排列到 16 B 边界。通用实现可先用少量标量元素推进到对齐地址，再执行向量主体，最后处理标量尾部；也可在接口层明确要求对齐并为不满足者选择另一内核。长度与三个指针的偏移都要检查，因为输入对齐而输出未对齐同样非法。将对齐写成可验证的前置条件，比依赖某个测试分配恰好从基础地址开始更可靠。
+\discussionpoint{尾部不能通过越界读取后屏蔽写回来补救。}
+若 $n\bmod4=3$，最后一个完整向量之后只剩三个浮点数，读取一个 \code{float4} 已经越过对象边界，即使随后不写第四项也无法撤销非法读取。稳妥方案让唯一线程按标量处理 0--3 个余数，或在分配层提供明确的可安全过读 padding，并保证该约定对所有地址空间成立。C++ 还对对象类型、别名和对齐有规则，任意把来源不明的字节区解释成向量对象可能产生额外未定义行为。余数类与指针偏移的笛卡尔积应进入单元测试，才能证明向量主体和尾路径之间既无重叠也无遗漏。
+\discussionpoint{更宽的向量可能以寄存器压力换指令减少。}
+一次处理四项意味着线程要同时持有更多输入和输出，简单加法中这通常便宜，复杂表达式却可能延长许多值的活跃区间并增加寄存器用量。可驻留 warp 因此下降，极端时还会出现 local-memory spill；与此同时，原本已经合并的标量访问并不会因 128 位指令而减少 DRAM 字节。选择 \code{float2}、\code{float4} 或标量路径时，应确认生成的宽指令，并比较资源用量、实际传输与总时间。向量宽度是编译器和微架构的联合参数，而不是越宽越接近硬件峰值的单调旋钮。
+\variantheading 若 $n=1027$，有 256 个完整 \code{float4} 和 3 个尾元素，工作任务数为 257。
+\practiceheading 用 Compute Sanitizer memcheck 覆盖四种余数，并以 SASS 确认生成 128 位访问。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{NVIDIA CUDA C++ Programming Guide 的内建向量类型及对齐要求；边界 $n\bmod4$ 全枚举复核}
+\end{solutionexercise}
+
+\begin{solutionexercise}{5}
+\problemheading 考虑下面的共享内存数组，以及一个包含一个 warp（32 个线程）的线程块
+对该数组的访问：
+\begin{lstlisting}[language=C++,numbers=none]
+__shared__ float a[1024];
+a[threadIdx.x*stride] = ...;
+\end{lstlisting}
+假设 \code{a[0]} 位于 bank 0。对于下面每个 \code{stride} 值，指出该 warp
+访问了哪些 bank，以及每个 bank 上的 bank 冲突数量（如果有）：
+\begin{enumerate}[label=\alph*.,leftmargin=2.2em]
+  \item \code{stride = 32}；
+  \item \code{stride = 31}；
+  \item \code{stride = 24}；
+  \item \code{stride = 16}；
+  \item \code{stride = 12}；
+  \item \code{stride = 8}；
+  \item \code{stride = 7}。
+\end{enumerate}
+
+\approachheading 对 32 位 \code{float}，线程 $t$ 访问
+$b_t=(t\,s)\bmod32$ 号 bank。访问 bank 数为 $32/\gcd(s,32)$，每个所用 bank 上有
+$\gcd(s,32)$ 个线程。
+
+\answerheading
+\begin{center}
+\begin{tabular}{c@{\quad}l@{\quad}l}
+\toprule
+stride & 访问的 bank & 冲突\\
+\midrule
+32 & $\{0\}$ & bank 0 上 32 路（31 个额外请求）\\
+31 & $\{0,1,\ldots,31\}$（逆序置换） & 无冲突\\
+24 & $\{0,8,16,24\}$ & 每个 8 路（7 个额外请求）\\
+16 & $\{0,16\}$ & 每个 16 路（15 个额外请求）\\
+12 & $\{0,4,8,12,16,20,24,28\}$ & 每个 4 路（3 个额外请求）\\
+8  & $\{0,8,16,24\}$ & 每个 8 路（7 个额外请求）\\
+7  & $\{0,1,\ldots,31\}$（置换） & 无冲突\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\conclusionheading 冲突路数依次为 32、1、8、16、4、8、1；路数 1 表示无冲突。
+\discussionheading
+\discussionpoint{最大公因数揭示了步长访问的周期。}
+对连续 32 位字和 32 个 bank，lane $t$ 访问 \code{a[t*s]} 时落入的 bank 是 $(ts+c)\bmod32$。若 $s$ 与 32 互素，序列在 32 步内遍历所有 bank，像 $s=7$ 或 31 都只是对 bank 的置换；若最大公因数为 8，就只访问 $32/8=4$ 个 bank，每个 bank 接收 8 个不同地址。于是冲突路数恰由 $\gcd(s,32)$ 给出，不必为每个 stride 手画 32 个 lane。这个数论视角还能解释为何二维数组加一列常有效：它把行步长从 32 改成与 32 互素的 33。
+\discussionpoint{同一 bank 不一定意味着同一种硬件行为。}
+当多个 lane 读取完全相同的共享字时，硬件可以广播该值，虽然它们都落在一个 bank，也不会像访问 32 个不同地址那样串行。若这些 lane 写同一地址，问题首先是多个写者产生的数据竞争或未定义的最终值，不能因为硬件可能合并某些请求就宣称程序正确。本题的 stride 访问让 lane 指向不同数组元素，所以 $s=32$ 确实是多路冲突；把它与同址读取对照，能看出 bank 号只是一半信息，字内偏移和读写方向同样重要。性能规则永远不能替代生产者、消费者和竞态的语义分析。
+\discussionpoint{先换算成字节地址，才能推广到其他类型。}
+简单公式假设每个元素恰好占一个 32 位 bank 单元；若改成 64 位值，一个元素可能跨越两个这样的单元，同一逻辑 stride 便对应不同 bank 序列。结构体含 padding、向量类型一次覆盖多个字，二维数组又把第二维长度变成物理行步长，都使“元素步长”不再等同于“bank 步长”。不同计算能力的共享内存组织也应以目标文档为准，不应把历史上可配置的模式泛化到所有现代设备。可靠做法是从基础地址加字节偏移开始，按目标 bank 宽度映射，再判断同一 warp 的实际请求。
+\discussionpoint{消除冲突也要核算所付出的资源代价。}
+二维数组加一列可改变模映射，warp shuffle 可直接在线程寄存器间交换值，重新排列索引或分阶段访问也能避免多个不同地址同时落入一 bank。每种方法都有成本：padding 占共享容量，shuffle 受 warp 作用域与参与掩码限制，分阶段则增加指令和同步。轻微冲突有时被其他延迟隐藏，而多占的共享内存可能少驻留一个完整块，所以理论冲突路数下降不保证总时间缩短。应先构造无冲突的功能等价版本，再比较共享吞吐、资源占用和内核时间，确认优化消除的是主导瓶颈而非漂亮的单一计数。
+\variantheading \code{stride=6} 时 $\gcd(6,32)=2$，访问 16 个 bank，每个 bank 2 路冲突。
+\practiceheading 在目标 GPU 上查看 Nsight Compute 的 Shared Bank Conflicts，并注意广播读与不同地址写的差别。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}{NVIDIA CUDA Best Practices Guide 对 32 个 bank、连续 32 位字映射及冲突串行化的说明；模 32 序列独立枚举}
+\end{solutionexercise}

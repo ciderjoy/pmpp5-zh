@@ -1,0 +1,508 @@
+\chapter{稀疏矩阵计算}
+
+\begin{solutionexercise}{1}
+\problemheading 考虑下面这个稀疏矩阵：
+\[
+\begin{bmatrix}
+1&0&7&0\\0&0&8&0\\0&4&3&0\\2&0&0&1
+\end{bmatrix}
+\]
+分别写出它在以下格式下的表示：\textup{(a)} COO；\textup{(b)} CSR；
+\textup{(c)} ELL；\textup{(d)} JDS；\textup{(e)} CSC。表示中须明确值数组、
+索引/指针数组、填充规则和 JDS 的行置换；统一采用零基下标。第 \textup{(e)} 项来自
+中文译稿的扩展，底本范围差异见本题后的题解编者注。
+
+\approachheading 统一采用零基下标；行内元素按列号升序排列。ELL 按“同一迭代的各行
+元素连续”方式存放，JDS 则先按行长降序稳定排序，再按锯齿对角线存放。
+
+\answerheading 矩阵共有 7 个非零元素。各表示如下；星号是不会参与计算的填充槽，
+其列下标可任取合法值。
+\begin{align*}
+\text{COO:}\quad
+ \code{rowIdx}&=[0,0,1,2,2,3,3],\\
+ \code{colIdx}&=[0,2,2,1,2,0,3],\\
+ \code{value}&=[1,7,8,4,3,2,1].
+\end{align*}
+\begin{align*}
+\text{CSR:}\quad
+ \code{rowPtrs}&=[0,2,3,5,7],\\
+ \code{colIdx}&=[0,2,2,1,2,0,3],\\
+ \code{value}&=[1,7,8,4,3,2,1].
+\end{align*}
+最长行含 2 个非零元素，所以 ELL 的两个“列”按列主序铺开为
+\begin{align*}
+ \code{nnzPerRow}&=[2,1,2,2],\\
+ \code{colIdx}&=[0,2,1,0,\;2,*,2,3],\\
+ \code{value}&=[1,8,4,2,\;7,*,3,1].
+\end{align*}
+JDS 的一种稳定排序为原行 $[0,2,3,1]$，相应行长为 $[2,2,2,1]$：
+\begin{align*}
+ \code{row}&=[0,2,3,1],&
+ \code{iterPtr}&=[0,4,7],\\
+ \code{colIdx}&=[0,1,0,2,\;2,2,3],&
+ \code{value}&=[1,4,2,8,\;7,3,1].
+\end{align*}
+第一段是各排序行的第 0 个元素，第二段是前三行的第 1 个元素。长度相同的三行允许
+任意置换，但必须同步置换 \code{row} 及各段中的元素。
+
+CSC 按列分组：
+\begin{align*}
+ \code{colPtrs}&=[0,2,3,6,7],\\
+ \code{rowIdx}&=[0,3,2,0,1,2,3],\\
+ \code{value}&=[1,2,4,7,8,3,1].
+\end{align*}
+
+\editorialnote 英文底本第 17 章练习 1 只列 COO、CSR、ELL、JDS 四项；中文学习译稿
+另加入了 CSC。本题解保留并回答中文译稿的扩展子问，但不把它误称为英文底本原题。
+
+\conclusionheading 逐一由这些数组还原坐标和值，均得到题给矩阵；JDS 的 \code{row}
+数组负责把排序后的输出恢复到原行号。
+\discussionheading
+\discussionpoint{格式名称背后是遍历方向。}
+把同一个矩阵换成 COO、CSR 或 CSC，看起来只是重新排列三组数组，实际却是在提前回答“计算将沿哪个方向推进”。例如 SpMV 逐行形成 $y_i$ 时，CSR 的两个行指针直接给出一段连续区间；若要反复访问某列，CSC 才能避免扫描全部非零元。COO 没有压缩某一维，因而适合流式生成、拼接和按键排序，却要为每项同时携带行列坐标。ELL 与 JDS 又把规则性编码进布局：前者接受填充，后者接受行置换，以便硬件按统一节拍取数。因此选择格式不是无代价的“换皮”，而是在存储空间、构造成本和预期算子之间签订一份数据访问契约。
+
+\discussionpoint{规则布局怎样转化为并行效率。}
+设一个 warp 的 32 个线程各负责一行，当它们同时读取各自行中的第 $t$ 个非零元时，按迭代列主序存放的 ELL 可以给出连续地址，这正是合并访问希望看到的形状。然而只要一条行很长而其余行很短，统一宽度就会制造大量填充，短行线程也会提前失活。JDS 先按行长排序，使同一锯齿段中的活动线程数逐段递减，通常比原始次序更整齐，但输出必须经置换恢复原行。CPU 的缓存线、GPU 的 warp 和传统向量机的向量长度并不相同，所以“规则”必须相对于执行平台定义；仅凭格式名称，无法推出某个矩阵一定更快。
+
+\discussionpoint{转换成本要放进矩阵的整个寿命。}
+如果矩阵只参与一次乘法，先统计行长、排序行、分配填充并搬运数据，很可能比直接使用 COO 或 CSR 更贵。相反，Krylov 迭代可能对同一矩阵执行数百次 SpMV，这时一次性的 $T_{\mathrm{convert}}$ 可以由每次节省的时间摊销；简单的盈亏点是 $k>T_{\mathrm{convert}}/(T_{\mathrm{old}}-T_{\mathrm{new}})$。这个模型还应加入输入向量和输出置换、临时缓冲以及多 GPU 分发，因为它们同样属于格式生命周期。工程报告若只展示稳定阶段的内核带宽，就会掩盖一次性任务、小矩阵或结构频繁变化时真正占主导的成本。
+
+\discussionpoint{领域结构促成混合与分桶格式。}
+规则有限差分网格的行长往往集中在一个狭窄区间，统一 ELL 宽度通常不会浪费太多；推荐系统和幂律图则可能同时出现大量短行与少数超长行，用全局最大行长填充会迅速失控。实际库因而常按行长分桶：短行交给 ELL 或 SELL，中等行使用 warp 协作 CSR，极长行再由单独的块级归约处理。这样做增加了描述符、内核启动和构造复杂度，却能让每一类行匹配适当的并行粒度。评价方案时应同时给出行长分位数、非零元字节数、填充率、转换时间与多次迭代后的总时间，才能把领域结构与性能结论真正联系起来。
+\variantheading 若在零基坐标 $(1,1)$ 再加入值 5，则 $z=8$，CSR 的 \code{rowPtrs} 变为 $[0,2,4,6,8]$；四行均长 2，ELL 不再有填充，JDS 的两个锯齿段也都含 4 项。
+\practiceheading 在 32-lane warp、FP32 值和 32 位索引的 NVIDIA GPU 上，用 cuSPARSE \code{cusparseSpMV} 的 CSR 结果校验自写 ELL/JDS；取 $x=[1,1,1,1]^T$ 时本题原矩阵应得 $y=[8,8,7,3]^T$，再用 Nsight Compute 比较 DRAM 字节数。
+\sourcecheck{https://ntrs.nasa.gov/api/citations/19890017045/downloads/19890017045.pdf}{Saad 1989 年原始论文直接定义了按行长降序重排、依次存放锯齿对角线以及 \code{IDIAG}/\code{JDIAG} 指针与列号；对抗检查：零基/一基下标和同长行的排序都不是格式本身的唯一选择，本解已把约定写明}
+\end{solutionexercise}
+
+\begin{solutionexercise}{2}
+\problemheading 设有一个整数稀疏矩阵，含 $m$ 行、$n$ 列、$z$ 个非零元素。分别写出用
+\textup{(a)} COO、\textup{(b)} CSR、\textup{(c)} ELL、\textup{(d)} JDS 表示该矩阵
+各需要多少个整数。计数应同时包括非零值和格式所需的整数索引/指针；若已知信息不足以
+作答，请指出还缺少哪些信息。
+
+\approachheading 同时计入非零值和整数索引。令
+$r=\max_i\ell_i$ 为最大行长，其中 $\ell_i$ 是第 $i$ 行非零元素数；采用本章 ELL 的
+\code{nnzPerRow} 数组以及 JDS 的行置换和带末端哨兵的 \code{iterPtr}。
+
+\answerheading
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+格式 & 整数数目 & 组成\\
+\midrule
+COO & $3z$ & 值、行号、列号各 $z$\\
+CSR & $2z+m+1$ & 值、列号各 $z$，行指针 $m+1$\\
+ELL & $2mr+m$ & 值、列号各 $mr$，每行长度 $m$\\
+JDS & $2z+m+r+1$ & 值、列号各 $z$，行置换 $m$，段指针 $r+1$\\
+\bottomrule
+\end{tabular}
+\end{center}
+所以 COO、CSR 只需题给 $m,n,z$。ELL 和 JDS 还需要最大行长 $r$；若要真正
+构造数组而不只是求总长度，还需要全部行长分布和各非零元素坐标。某些 ELL 实现把填充值
+固定为 0，省略 \code{nnzPerRow}，此时为 $2mr$；某些 JDS 实现显式保存每个排序行的
+长度，则还要增加 $m$。这些是接口约定差异，不能静默混算。
+
+\editorialnote 英文底本和中文译稿的第 2 题都只问 COO、CSR、ELL、JDS；CSC 只出现在
+第 1 题中。旧稿误把 CSC 加进本题题面，现已按练习原文删去。
+
+\conclusionheading 信息不足只影响依赖最大行长或完整行分布的格式；不能仅由平均行长
+$z/m$ 反推出 ELL/JDS 的大小。
+\discussionheading
+\discussionpoint{整数个数还不是内存流量。}
+题目要求数“多少个整数”，这能比较数组长度，却不能直接回答矩阵能否装入显存或一次 SpMV 要搬多少字节。假设值为 FP64、索引为 32 位，CSR 每个非零元至少携带 8 字节值和 4 字节列号；若索引改为 64 位，元数据流量便从每项 4 字节增到 8 字节，而乘加次数没有变化。SpMV 通常受内存带宽约束，因而少读一个索引可能比省下一条整数指令更重要。进一步的字节模型还要估计输入向量 $x$ 的缓存复用和输出写回，区分“数组静态大小”与“运行时实际传输”，否则不同格式之间的容量比较会被误当成性能预测。
+
+\discussionpoint{元数据约定必须先于公式统一。}
+两个实现都自称 ELL，并不保证它们的数组长度相同：一个接口可能保存每行有效长度，另一个把填充列号设为哨兵而省略长度。JDS 的 \code{iterPtr} 是否含末端哨兵、空行是否仍进入置换、同长行是否稳定排序，也都会改变 $m$ 或 $r$ 级别的常数项。若论文 A 把这些辅助数组计入、论文 B 却只统计值和列号，“B 更省内存”的结论只是口径差异。格式描述因此应像 API 契约一样写清零基下标、指针长度、填充值和空输入语义；这些细节不仅影响计数，也决定内核能否在边界处无歧义地停止。
+
+\discussionpoint{索引宽度连接规模上限与带宽。}
+32 位无符号位置最多表达 $2^{32}-1$，但许多库接口使用有符号整数，实际安全上限常是 $2^{31}-1$；一旦 $z$ 或 \code{rowPtrs[m]} 超界，截断可能把合法区间变成负数或较小地址。全部改成 64 位可以容纳更大的矩阵，却让每个列号和指针多占 4 字节，在内存受限算子中并非免费。一个折中是分块保存：块间基址使用 64 位，块内列号或偏移使用 16/32 位，只要显式证明局部范围不会溢出。这种分层索引也见于图分区、文件格式和数据库页，核心思想都是用较宽地址定位区域，再用较窄偏移描述区域内部。
+
+\discussionpoint{峰值驻留量才决定能否运行。}
+矩阵本体占 12~GiB 并不意味着它能放进 16~GiB GPU，因为格式转换可能同时保留源 COO、目标 CSR、直方图、扫描临时区和排序工作区。迭代求解器还要保存多个向量，检查点或多 GPU 通信又会增加暂存缓冲；分配器对齐与碎片使可用连续空间进一步小于标称容量。可靠预算应画出各阶段对象的生命周期，取同一时刻仍存活对象之和的峰值，而不是把所有数组总和或单个稳态快照当答案。生产系统还会预留错误恢复和库 workspace 的余量，这把一道格式计数题延伸成了资源规划与内存生命周期分析问题。
+\variantheading 若 $m=4,z=7,r=2$ 且沿用本题元数据约定，则 COO、CSR、ELL、JDS 分别需要 $21,19,20,21$ 个整数；这组数可直接由四个公式交叉复算。
+\practiceheading 假定值和索引均为 4 字节、GPU 显存为 16 GiB，用 cuSPARSE 的 32 位 CSR/COO 描述符建立同一矩阵，并以 Nsight Compute 的 \code{dram__bytes} 检查元数据流量；若 $z\ge2^{31}$，改用 64 位索引后重新核算容量。
+\sourcecheck{https://ntrs.nasa.gov/api/citations/19890017045/downloads/19890017045.pdf}{Saad 1989 年原始论文直接并列讨论 ITPACK/ELL 与 JDS 的值、列号、行重排和段指针结构；对抗检查：不同接口是否另存 ELL/JDS 行长会改变常数项，本解因此显式声明计数模型，且没有用不含 JDS 的库文档代替证据}
+\end{solutionexercise}
+
+\begin{solutionexercise}{3}
+\problemheading 用直方图和前缀和这两个基础并行原语，实现从 COO 到 CSR 的格式转换。
+输入 COO 三元组可以是任意顺序；输出须给出长度 $m+1$ 的合法 CSR 行指针，并保证同一行
+中的每个非零元素被写入唯一槽位。还须说明是否保持 COO 原有的行内次序。
+
+\approachheading 先按行统计元素数，再对计数作排他前缀和得到每行区间；散布阶段必须
+使用独立游标，不能原地破坏 \code{rowPtrs}。同一行的多个线程以原子加领取唯一槽位。
+
+\answerheading 下面代码省略常规 CUDA 错误检查，但给出了转换的全部设备步骤：
+\begin{lstlisting}[language=C++]
+__global__ void count_rows(const int* cooRow, const int* cooCol,
+                           int z, int m, int n,
+                           unsigned* counts, unsigned* bad) {
+    int e = blockIdx.x * blockDim.x + threadIdx.x;
+    if (e >= z) return;
+    int r = cooRow[e], c = cooCol[e];
+    if (r < 0 || r >= m || c < 0 || c >= n) {
+        atomicExch(bad, 1u); return;
+    }
+    atomicAdd(&counts[r], 1u);
+}
+
+__global__ void scatter_csr(const int* cooRow, const int* cooCol,
+                            const int* cooVal, int z, int m, int n,
+                            unsigned* next, int* csrCol, int* csrVal,
+                            unsigned* bad) {
+    int e = blockIdx.x * blockDim.x + threadIdx.x;
+    if (e >= z) return;
+    int r = cooRow[e], c = cooCol[e];
+    if (r < 0 || r >= m || c < 0 || c >= n) {
+        atomicExch(bad, 1u); return;
+    }
+    unsigned p = atomicAdd(&next[r], 1u);
+    csrCol[p] = c;
+    csrVal[p] = cooVal[e];
+}
+
+// Require m,n,z >= 0; counts[0..m-1] = 0 and bad = 0.
+if (z > 0) {                         // CUDA cannot launch a zero-block grid
+    count_rows<<<(z + 255) / 256, 256>>>(row, col, z, m, n,
+                                         counts, bad);
+    CHECK(cudaGetLastError());
+}
+unsigned hBad = 0;
+CHECK(cudaMemcpy(&hBad, bad, sizeof(hBad), cudaMemcpyDeviceToHost));
+if (hBad) throw std::out_of_range("COO coordinate");
+
+// For m>0, run ExclusiveScan(counts,rowPtrs,m), for example with CUB.
+// In every case write the sentinel rowPtrs[m] = z; thus m=z=0 gives [0].
+unsigned uz = unsigned(z);
+CHECK(cudaMemcpy(rowPtrs + m, &uz, sizeof(uz), cudaMemcpyHostToDevice));
+if (m > 0)
+    CHECK(cudaMemcpy(next, rowPtrs, size_t(m) * sizeof(unsigned),
+                     cudaMemcpyDeviceToDevice));
+if (z > 0) {
+    scatter_csr<<<(z + 255) / 256, 256>>>(row, col, val, z, m, n,
+                                         next, csrCol, csrVal, bad);
+    CHECK(cudaGetLastError());
+}
+\end{lstlisting}
+散布内核显式接收 \code{m,n}；各内核在同一 stream 中依次启动，内核边界就是全网格
+依赖点。第二次行列检查使散布本身也不会因调用者错误地跳过主机检查而越界。
+
+排他扫描给出 \code{rowPtrs[r]}，而最后的哨兵必须显式写成 $z$。代码先验证全部行、列
+坐标并在发现 \code{bad} 后停止，散布时又作防御性复查；所以非法输入只能报错，不会用
+非法行号访问 \code{next}。$z=0$ 时跳过两个元素内核，仍产生全零行指针（特别地，
+$m=0$ 时 CSR 行指针就是单元素数组 $[0]$）。
+
+散布后同一行内部的次序不确定。CSR 本身不要求列有序；若下游接口要求列升序，还需对每个
+\code{rowPtrs[r]:rowPtrs[r+1]} 段排序。重复坐标会作为多个条目保留；若要合并重复项，
+再做分段归约。
+
+\complexity{$O(m+z)$ 工作；并行扫描深度 $O(\log m)$，热点行的原子散布可能串行化}{$O(m+z)$ 输出及 $O(m)$ 计数/游标临时空间}{$z$ 个统计与散布任务，扫描由库原语并行执行}
+\conclusionheading 直方图决定每行长度，排他扫描决定区间，原子游标保证每个 COO 条目
+恰好占据该行的一个不同 CSR 槽位。
+\discussionheading
+\discussionpoint{计数、扫描、散布是一条可迁移的管线。}
+怎样让并行线程在不知道前面有多少输出时仍得到互不重叠的位置？先统计每个桶的大小，再对桶大小做排他扫描，便能把第 $r$ 个桶映射到区间 $[p_r,p_{r+1})$；最后的散布只需在这个区间内领取槽位。COO 转 CSR 中桶是矩阵行，而图邻接表构造、粒子空间分箱和基数排序只是换了“桶键”的含义。三个阶段各有清楚不变量：计数总和为 $z$，扫描区间首尾相接，散布对每个输入恰写一次。掌握这些不变量，比记住某个库调用更有价值，因为它们还能指导错误检测和并行算法的组合证明。
+
+\discussionpoint{唯一槽位不等于稳定顺序。}
+原子加游标能保证同一行的两个线程不会写到同一位置，但哪个线程先获得较小下标取决于调度，所以行内次序并不稳定。CSR 的数学语义通常不要求列有序，然而稀疏三角求解、重复项合并或逐位可复现输出可能依赖确定顺序。若必须保持 COO 输入顺序，可以先为每个元素计算稳定的行内秩；若必须按列排序，则可按 $(row,col)$ 做稳定基数排序，再由行边界生成指针。稳定性要付出额外搬运和临时空间，却也让重复坐标相邻、搜索更容易、测试结果更可预测，因此它应作为明确契约选择，而不是原子散布的默认副产品。
+
+\discussionpoint{平均行长会掩盖真正的原子热点。}
+设 $z/m=8$，这个平均值既可能来自每行恰有 8 项，也可能来自一条百万项长行和大量空行；两种输入对同一原子游标的竞争完全不同。幂律图中的超级节点会让许多线程争用一个计数器，使散布阶段局部串行化，即使全局线程数很大也无法消除这个瓶颈。可按线程块建立局部直方图后再合并，对超长行分段并分配独立区间，或直接排序所有键来换掉热点原子。选择策略时应查看最大值、分位数和实际冲突率，而不能只报告 $z/m$；这也是并行负载均衡中“均值不足以描述偏斜”的典型例子。
+
+\discussionpoint{转换接口还要定义坏数据的命运。}
+真实 COO 数据可能含越界坐标、重复坐标、空矩阵，甚至在累计计数时发生整数溢出；若这些情况没有契约，转换程序即使在正常样例上正确，也可能静默写坏内存。重复坐标可以原样保留，使 SpMV 分别累加，也可以排序后做分段归约，把它们合成一个值；两种做法在浮点舍入顺序和后续非零元计数上都不同。稳健管线应先验证坐标范围与计数容量，并记录拒绝、丢弃或合并的数量，使结果能够追溯。这个原则同样适用于数据清洗和图导入：格式转换不仅是内存重排，还是从外部数据到内部不变量的一道可信边界。
+\variantheading 若 $m=3$ 且 COO 行号依次为 $[2,0,2,1,2]$，直方图为 $[1,1,3]$、排他结果含哨兵为 \code{rowPtrs} $=[0,1,2,5]$；原子只会改变最后一段三个条目的内部次序。
+\practiceheading 在支持 32 位全局原子的 NVIDIA GPU（计算能力 7.0 或更新、32-lane warp）上，用 CUB \code{DeviceScan::ExclusiveSum} 和 \code{DeviceRadixSort} 实现两条路径，并以 Nsight Compute 的原子吞吐和 L2 sector 指标定位热点行。
+\sourcecheck{https://github.com/NVIDIA/cccl/tree/main/cub}{NVIDIA CCCL/CUB 官方源代码与文档；对抗检查：扫描只生成区间，不能单独解决同一行散布竞态，故本解另设原子游标并保留行指针}
+\end{solutionexercise}
+
+\begin{solutionexercise}{4}
+\problemheading 实现构造混合 ELL--COO 表示的主机端代码，并用它完成一次 SpMV：
+每行前至多 $K$ 个非零元素放入 ELL，超出 $K$ 的余项放入 COO；ELL 部分在设备上通过
+内核计算，COO 部分的贡献在主机上计算。须说明两部分的输出如何合并，并处理空行、短行和
+超过 $K$ 的长行。
+
+\approachheading 输入采用按行分组的三元组。每行前 $K$ 项进入列主序 ELL，其余项进入
+COO。设备输出先清零并计算 ELL，回传后主机再累加 COO；这样不存在 CPU/GPU 同时写同一
+输出的竞态。
+
+\answerheading 核心实现如下（\code{Triplet} 含整数 \code{row,col} 和浮点
+\code{value}）：
+\begin{lstlisting}[language=C++]
+struct Triplet { int row, col; float value; };
+
+__global__ void ell_spmv(const float* value, const int* col,
+                         const int* len, int m, int K,
+                         const float* x, float* y) {
+    int r = blockIdx.x * blockDim.x + threadIdx.x;
+    if (r >= m) return;
+    float s = 0.0f;
+    for (int t = 0; t < len[r]; ++t) {
+        int p = t * m + r;              // column-major ELL
+        s += value[p] * x[col[p]];
+    }
+    y[r] = s;
+}
+
+void hybrid_spmv(const std::vector<Triplet>& a, int m, int n, int K,
+                 const std::vector<float>& x, std::vector<float>& y) {
+    if (m < 0 || n < 0 || K < 0 || x.size() != size_t(n))
+        throw std::invalid_argument("bad shape");
+    std::vector<std::vector<Triplet>> rows(m);
+    for (const auto& e : a) {
+        if (e.row < 0 || e.row >= m || e.col < 0 || e.col >= n)
+            throw std::out_of_range("COO coordinate");
+        rows[e.row].push_back(e);
+    }
+
+    y.assign(size_t(m), 0.0f);
+    if (m == 0 || n == 0 || K == 0) {
+        // K==0 is the pure-COO endpoint; the other two cases have no entries.
+        for (const auto& e : a) y[e.row] += e.value * x[e.col];
+        return;
+    }
+
+    std::vector<float> ev(size_t(m) * K, 0.0f);
+    std::vector<int> ec(size_t(m) * K, 0), len(m, 0);
+    std::vector<Triplet> overflow;
+    for (int r = 0; r < m; ++r) {
+        len[r] = std::min<int>(K, rows[r].size());
+        for (int t = 0; t < len[r]; ++t) {
+            ev[size_t(t) * m + r] = rows[r][t].value;
+            ec[size_t(t) * m + r] = rows[r][t].col;
+        }
+        overflow.insert(overflow.end(), rows[r].begin() + len[r],
+                         rows[r].end());
+    }
+
+    float *dv = nullptr, *dx = nullptr, *dy = nullptr;
+    int *dc = nullptr, *dl = nullptr;
+    // CHECK denotes the usual cudaError_t checker.
+    CHECK(cudaMalloc(&dv, ev.size() * sizeof(float)));
+    CHECK(cudaMalloc(&dc, ec.size() * sizeof(int)));
+    CHECK(cudaMalloc(&dl, len.size() * sizeof(int)));
+    CHECK(cudaMalloc(&dx, x.size() * sizeof(float)));
+    CHECK(cudaMalloc(&dy, size_t(m) * sizeof(float)));
+    CHECK(cudaMemcpy(dv, ev.data(), ev.size()*sizeof(float), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(dc, ec.data(), ec.size()*sizeof(int), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(dl, len.data(), len.size()*sizeof(int), cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(dx, x.data(), x.size()*sizeof(float), cudaMemcpyHostToDevice));
+    ell_spmv<<<(m + 255) / 256, 256>>>(dv, dc, dl, m, K, dx, dy);
+    CHECK(cudaGetLastError());
+    CHECK(cudaMemcpy(y.data(), dy, size_t(m)*sizeof(float), cudaMemcpyDeviceToHost));
+
+    for (const auto& e : overflow) y[e.row] += e.value * x[e.col];
+    CHECK(cudaFree(dy)); CHECK(cudaFree(dx)); CHECK(cudaFree(dl));
+    CHECK(cudaFree(dc)); CHECK(cudaFree(dv));
+}
+\end{lstlisting}
+生产代码应使用 RAII 包装设备分配，使中途异常也能释放资源。这里在任何设备分配和启动
+之前处理 $m=0$、$n=0$ 和 $K=0$：既不会把零字节分配当成正常设备缓冲区，也不会启动
+零块网格；$K=0$ 时全部合法条目恰由主机 COO 路径处理。其余情况下 ELL 与 COO 恰好划分
+全部条目，因此每个乘积贡献一次且仅一次。
+
+\complexity{构造和 SpMV 均为 $O(z+mK)$ 上界，实际乘加总数为 $z$}{ELL 为 $O(mK)$，COO 余项为 $O(\sum_i\max(\ell_i-K,0))$，另有向量空间}{设备并行度为 $m$ 行；主机余项顺序执行，是题目指定的可扩展性瓶颈}
+\conclusionheading 必须先完成设备计算和回传，再由主机加入溢出贡献；若改成设备 COO
+内核，则需原子加或第二输出向量后再归并。
+\discussionheading
+\discussionpoint{混合格式先要证明划分完整。}
+把每行前 $K$ 项放入 ELL、其余项放入 COO，直觉上是在让常见的短前缀走规则快路径，让不规则长尾走旁路。但正确性的核心不是“两个内核都算了一些数”，而是每个原始非零元恰好属于一部分：集合必须互斥，二者并集又必须等于原矩阵。空行、长度恰为 $K$ 的行和含重复坐标的行都是检验这一不变量的边界。只要划分成立，最终输出就是 $y=y_{\mathrm{ELL}}+y_{\mathrm{COO}}$；若某项被遗漏或重复，线性性也无法挽救。类似的常见路径与异常路径分解广泛用于数据库执行和网络处理，但都必须先建立完备、无重叠的分类规则。
+
+\discussionpoint{不规则尾部可以有多种执行位置。}
+题目让 CPU 计算 COO 溢出区，是为了把所有权和合并过程讲清楚，并不表示主机一定是最佳位置。GPU 可以让每个 COO 项原子累加到 $y$，也可以先按行排序后做分段归约，或者生成独立的 $y_{\mathrm{COO}}$ 再执行一次向量相加。原子方案省临时空间但会在长行上争用，分段方案更规则却增加排序和 workspace，双输出方案避免写冲突但多一次全向量流量。CPU 路径实现简单，却需要设备完成点、输出回传和串行尾部。选项之间没有脱离数据分布的优胜者，真正的比较对象应是包含同步与合并在内的端到端路径。
+
+\discussionpoint{互连拓扑会改变 CPU 与 GPU 的分工。}
+在离散 GPU 上，把长度为 $m$ 的输出向量经 PCIe 回主机，往往比处理少量 COO 项更昂贵；而 CPU 与 GPU 共享物理内存的系统可能省掉显式复制，却仍有缓存一致性、页迁移和同步代价。若溢出项来自另一张 GPU，GPU-aware MPI、NVLink 或主机中转又会形成不同数据路径。因此阈值 $K$ 不能只由“还有多少溢出项”决定，还要估计链路固定延迟、有效带宽、输出大小以及是否能与其他工作重叠。这个例子说明异构算法的切分点不仅由 FLOP 决定，数据放在哪里、何时必须可见，往往才是系统级性能的主导因素。
+
+\discussionpoint{结构变化要求把重建也纳入控制回路。}
+静态有限元矩阵可以一次选择 $K$ 后反复使用，但自适应网格或动态图的行长分布会随时间变化，旧阈值可能逐渐制造过多填充或溢出。每轮都重建 ELL/COO 又可能让转换成本吞掉计算收益，因此更实际的做法是周期采样行长分位数和溢出比例，只在预计节省超过重建代价时切换。判断条件可以比较未来预计迭代数乘以单次收益与重建、传输和缓存失效成本，并为观测噪声预留余量。这样的反馈式格式选择接近在线优化问题：既要适应新数据，也要设置回滞，避免在两个接近的阈值之间反复震荡。
+\variantheading 若三行长度为 $[1,3,5]$ 且 $K=2$，ELL 有 6 个槽位、其中 5 个是真实项，COO 溢出恰为 $0+1+3=4$ 项；两部分合计仍覆盖全部 9 个非零元一次。
+\practiceheading 假定离散 PCIe GPU、FP32 值和 32 位索引，用 cuSPARSE CSR SpMV 作数值与吞吐基线，再由 Nsight Systems 测量本实现的 D2H 复制和 CPU 溢出区间；测试时矩阵与 $x$ 常驻设备以免混入重复上传成本。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__MEMORY.html}{CUDA Runtime API 官方内存复制与分配语义；对抗检查：主机在异步设备写尚未完成时读取输出会产生生命周期错误，本解使用同步的设备到主机复制作为完成点}
+\end{solutionexercise}
+
+\begin{solutionexercise}{5}
+\problemheading 实现一个使用 JDS 格式的并行 SpMV 内核。输入包括按行长降序排列后的
+行置换、按锯齿对角线存放的非零值和列号，以及每个锯齿段的起始指针；输出须按原矩阵行号
+写回，并正确处理各段活动行数递减的边界。
+
+\approachheading 排序后每个线程负责一个行位置。记 $p_t=\code{iterPtr[t]}$，则第 $t$ 个
+锯齿段的活动行数为 $p_{t+1}-p_t$。行位置超过该值时，由于活动数单调不增，可以立即结束。
+
+\answerheading
+\begin{lstlisting}[language=C++]
+__global__ void spmv_jds(const float* value, const int* colIdx,
+                         const int* row, const int* iterPtr,
+                         int numRows, int numIters,
+                         const float* x, float* y) {
+    int r = blockIdx.x * blockDim.x + threadIdx.x; // sorted row position
+    if (r >= numRows) return;
+    float sum = 0.0f;
+    for (int t = 0; t < numIters; ++t) {
+        int active = iterPtr[t + 1] - iterPtr[t];
+        if (r >= active) break;
+        int p = iterPtr[t] + r;
+        int c = colIdx[p];
+        sum += value[p] * x[c];
+    }
+    y[row[r]] = sum;                    // restore original row order
+}
+// iterPtr has numIters + 1 entries; row is a permutation of 0..numRows-1.
+\end{lstlisting}
+构造时应验证 \code{iterPtr[0]==0}、末项等于 $z$、各段长度单调不增、列下标合法且
+\code{row} 是排列。每个输出行只有一个写者，所以无需原子操作或块间同步。
+
+\complexity{$O(z)$ 总乘加，关键路径为最大行长 $r$}{$O(z+m+r)$ JDS 元数据与数值空间，每线程 $O(1)$ 寄存器}{最多 $m$ 个线程；排序使同一 warp 的退出位置接近，降低分歧}
+\conclusionheading \code{iterPtr} 同时给出段起点和活动行数，\code{row} 保证重排不会
+改变 SpMV 输出的逻辑行号。
+\discussionheading
+\discussionpoint{JDS 把短行退出变成长向量收缩。}
+设排序后的行长是 $[5,5,3,1]$，第一条锯齿对角线含 4 项，第二、三条仍各含 3 项，最后两条只剩 2 项；活动宽度因此单调缩短。传统向量机可以把每一段当作一条连续向量，GPU 则可让相邻线程读取相邻项，避免原始行次序下某些 lane 很早退出。这个规则性来自预先按行长排序，而不是矩阵天然规则，所以还要支付置换和段指针的成本。现代 CSR 自适应内核与 SELL 也能通过分桶或局部排序处理不均匀行，JDS 不是唯一答案；它更重要的启示是，改变数据次序可以把控制流不规则性转化为可管理的段长度。
+
+\discussionpoint{行置换必须贯穿算子的语义。}
+JDS 只重排矩阵行，不改变每个非零元的列号，因此输入仍按原始 $x_j$ 读取；线程位置 $r$ 算出的和却属于原行 \code{row[r]}。如果把结果直接写到 $y[r]$，程序不会越界，数值也可能看似平滑，但它实际计算了 $PAx$ 而不是 $Ax$，其中 $P$ 是行置换矩阵。连续执行多个算子时，可以让中间向量暂时保持置换顺序，以省掉来回搬运，但下一个算子的行列布局必须同步变换。这个问题与数据库列重排、图顶点重编号相同：置换能改善局部性，却必须作为显式元数据传播，不能在单个内核结束时凭记忆恢复。
+
+\discussionpoint{规则访存并不保证逐位可重复。}
+一个线程顺序累加一行时，加法顺序通常由存储顺序固定；若为了超长行并行度而让多个 lane 先算部分和，再用树形归约合并，舍入路径就发生了变化。对于 $[10^{20},-10^{20},3]$ 这样的 FP32 数据，不同配对可以得到 0 或 3，尽管两种执行都没有数据竞态。固定归约树能让结果跨运行重复，却不自动让它更接近实数精确和；FP64 累加、pairwise 或补偿求和解决的是另一维度的准确性。稀疏库因而应分别声明数据竞态、确定性和误差容限，而不能用“访问规则”笼统替代数值契约。
+
+\discussionpoint{预处理只有被复用时才有经济意义。}
+把行排序、重排全部非零元并建立 \code{iterPtr} 都消耗带宽，最终写回还要经过行置换；一次性 SpMV 很可能在内核加速之前就已亏损。若构造耗时 20~ms，而 JDS 相比 CSR 每次节省 0.2~ms，那么至少约 100 次复用才刚达到盈亏点，尚未计入额外内存。迭代求解器、固定拓扑图传播和多右端项计算较容易满足这一条件，动态图或临时查询则未必。真实决策应在代表性行长分布上同时测构造与稳态，并把预热、缓存和转换生命周期写进报告，这也是所有“先编译后执行”型优化的共同评估方式。
+\variantheading 若 \code{iterPtr} $=[0,5,8,9]$，三个段的活动行数为 $5,3,1$；排序位置 $r=3$ 的线程只执行第 0 段一次乘加，并在第 1 段因 $3\not<3$ 退出。
+\practiceheading 在 32-lane warp、FP32/32 位索引的 NVIDIA GPU 上，把自写 JDS 与 cuSPARSE CSR 对同一矩阵重复执行 100 次；用 Nsight Compute 的 Branch Efficiency、Global Load Efficiency 和 DRAM Throughput 判断排序成本能否被稳态 SpMV 摊薄。
+\sourcecheck{https://ntrs.nasa.gov/api/citations/19890017045/downloads/19890017045.pdf}{Saad 1989 年原始论文直接给出 JDS 的行置换、逐渐缩短的连续锯齿段、列下标和段起点指针；对抗检查：若活动行数不单调或 row 含重复项，提前退出和无原子写均不再成立，故本解把它们列为构造不变量}
+\end{solutionexercise}
+
+\begin{solutionexercise}{6}
+\problemheading 原书第 17.6 节指出，SpMV/JDS 各次迭代的起始地址难以对齐到架构规定
+的边界。请说明：如果把 JDS 改造成该节提到的“分段 ELL”变体，也就是把排序后的行分组、
+每组分别按 ELL 方式填充并对齐各段，这个对齐问题能否得到缓解？代价是什么？
+
+\editorialnote 所核英文第 5 版底本的第 17 章练习止于第 5 题；中文译稿增加了第 6--8
+题。本题解依“中文译稿为题目主要来源”的口径保留这三题，并在此统一标明版本差异。
+
+\approachheading JDS 每段长度随活动行数变化，所以下一段自然紧跟上一段，起点可能落在
+任意元素位置。分段 ELL 可以人为选择每段的基址和行距。
+
+\answerheading 可以缓解。把行长相近的排序行切成段，对每段独立填充到该段最大行长；
+再令段基址按交易边界对齐，并把段的行距（以字节计）补到该边界的整数倍。这样该段内
+第 $t$ 次迭代的起点
+\[
+  \text{base}_{s}+t\,\text{pitch}_{s}
+\]
+都保持对齐，而纯 JDS 的 \code{iterPtr[t]} 没有这一保证。
+
+代价包括：段内填充元素；为了对齐基址和行距而增加的额外空洞；段偏移、行距、段长等
+元数据；更多预处理和行置换；以及按段启动内核或在内核中查段的控制开销。段太大趋近纯
+ELL，填充严重；段太小则元数据、启动和尾部 warp 浪费增加。因此答案不是“完全消除且
+没有代价”，而是在交易效率和空间/调度开销之间折中。
+
+\complexity{SpMV 的有效工作仍为 $O(z)$，但会增加 $O(p)$ 填充工作，其中 $p$ 由分段选择决定}{比 JDS 多 $O(p+s)$，$s$ 为段数}{段内访问规则且合并；段间需要独立调度，短段可能降低占用}
+\conclusionheading 分段 ELL 能以可控填充换取可控对齐，最优段宽需结合行长分布和目标
+GPU 的内存交易粒度实测。
+\discussionheading
+\discussionpoint{pitch 防止每轮访问逐渐失去对齐。}
+某段含 30 个 FP32 元素时，第一轮即使从 128 字节边界开始，下一轮起点也会前进 120 字节，于是地址相位相对交易边界移动了 120、112、104 字节。把段宽补到 32 项后，pitch 变为 128 字节，每一轮都重新落在同样的对齐位置；代价是每轮多读或跳过两个填充槽。这里要区分“首地址对齐”和“步长对齐”，前者只保证第一轮，后者才保证整个迭代序列。二维图像、张量行距和网络环形缓冲也有同样问题，因此 pitch 是一种跨行维持访问相位的布局参数，而不只是 CUDA 分配接口返回的数字。
+
+\discussionpoint{局部排序把 JDS 延伸为 SELL。}
+全局 JDS 可以获得最长的规则段，却可能把原本相邻的行搬到很远位置，损害输出局部性并增加大规模置换。SELL-C-$\sigma$ 把矩阵切成高度为 $C$ 的 slice，只在大小为 $\sigma$ 的窗口内按行长重排，再把每个 slice 填到局部最大行长。$C$ 接近 warp 宽度时便于线程协作，较大的 $\sigma$ 通常减少填充，却让置换范围扩大。于是窗口、slice 高度和 pitch 共同构成三方取舍：规则向量长度、填充空间与原始行局部性不能同时无限改善。理解这一关系有助于读懂现代稀疏格式为何常带多个调参，而不是只有一个缩写名称。
+
+\discussionpoint{段宽增大并不会单调提速。}
+更宽的段能减少段描述符和短尾 warp，似乎应该越大越好；反例是一个 slice 中只有一条超长行，其长度会成为其余短行的填充上限。若行长为 $[2,2,2,100]$，高度 4 的统一 ELL 需要 400 个槽位却只有 106 项有效，而把长行单独分桶可大幅降低浪费。反过来，段切得过细又会产生更多边界、较短连续请求和额外调度。最优段宽因此取决于行长方差、元素与索引字节数、缓存容量及硬件并行宽度，通常需要按矩阵族调参；这类非单调关系也是自动调优比固定经验常数更可靠的原因。
+
+\discussionpoint{有用负载与硬件交易必须分开核算。}
+用 $z$ 乘以值和索引宽度只能得到算法真正需要的数据量，却看不到填充槽、未对齐请求和缓存重复取数。一个内核可能报告很高的 DRAM 吞吐量，只因为搬运了大量无用填充；另一个内核吞吐数字较低，却以更少实际字节完成同样的 $z$ 次乘加。应先计算逻辑负载，再通过 sector/request、L2 命中和实际 DRAM 字节解释放大系数，并把格式转换时间按复用次数摊销。这样才能区分“总线很忙”和“算法有效”，也能把稀疏矩阵分析连接到压缩、数据库扫描等所有需要区分有效字节与物理流量的领域。
+\variantheading 假定 FP32 数值数组按 128 字节交易边界对齐，某段有 30 行，则自然 pitch 为 120 字节；把段宽填充到 32 行后 pitch 为 128 字节，每次迭代多 2 个槽，却使所有迭代起点继续对齐。
+\practiceheading 在 32-lane warp、4 字节元素且全局交易按 128 字节对齐分析的 NVIDIA GPU 上，实现 SELL-C-$\sigma$ 风格分段并与 cuSPARSE CSR 比较；用 Nsight Compute 的 sectors/request、L2 命中率和有效 DRAM 字节扫描段宽 16、32、64。
+\sourcecheck{https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/}{CUDA C++ Best Practices Guide 的合并访问与对齐规则；对抗检查：仅对齐段首而不让 pitch 同样对齐，后续迭代仍会失去对齐}
+\end{solutionexercise}
+
+\begin{solutionexercise}{7}
+\problemheading 原书第 17.2 节提到，SpMV/COO 中原子操作的执行顺序不确定，可能带来
+浮点数值稳定性问题。请说明：本章所示每行由一个线程顺序累加的 SpMV/CSR 是否也存在同样
+的问题？为什么？回答须区分一次固定内核执行中的行内加法次序和不同实现/优化可能改变的
+归约次序。
+
+\approachheading 区分“浮点加法本来不满足结合律”和“多个线程对同一输出进行无序原子
+更新”这两件事。
+
+\answerheading 本章的基础 CSR 内核没有与 COO \emph{同样的}非确定性：第 $r$ 个线程
+独占 $y_r$，并按 \code{rowPtrs[r]} 到 \code{rowPtrs[r+1]-1} 的固定顺序串行累加；不存在
+同一位置的跨线程竞态，固定二进制、编译选项和输入下通常可重复。
+
+但这不表示 CSR 的数值结果精确或与其他实现逐位相同。若一行有 $k$ 项，采用逐次的
+round-to-nearest 加法且无上溢/下溢，常用前向误差界为
+\[
+ |\widehat{s}-s|\le \gamma_{k-1}\sum_{j=1}^{k}|a_jx_j|,
+ \qquad
+ \gamma_{k-1}=\frac{(k-1)u}{1-(k-1)u},
+\]
+其中 $u$ 是 unit roundoff。改变列内顺序、采用 FMA、用 warp 对一行做树形归约，都会改变
+舍入路径和 ULP 差异。若所谓 CSR 内核让多个线程协作同一行并以原子方式汇总，它又会重新
+具有 COO 类似的顺序不确定性。
+
+\conclusionheading 基础 CSR 消除了原子更新顺序的不确定性，却没有消除浮点舍入误差；
+“可重复”也不等于“数学精确”。
+\discussionheading
+\discussionpoint{没有竞态不代表结果唯一或准确。}
+若每一行只由一个线程写，确实消除了两个线程同时更新 $y_i$ 的数据竞态，但该线程仍按某个有限精度顺序累加。把输入重新排序后，执行依然合法，却可能因浮点加法不结合而得到不同末位；固定顺序只能保证这次实现较可重复，不能保证它接近实数精确和。反过来，一个确定的树形归约也可能稳定地产生较大误差。因此测试必须先说明契约：要求逐位相同、允许若干 ULP、比较范数误差，还是只要求迭代求解最终达到目标残差。把这三种性质拆开，是理解所有并行数值程序而不仅是 SpMV 的起点。
+
+\discussionpoint{长行并行化实质上是在选择加法树。}
+一条含百万项的行若由单线程处理，延迟无法接受；让 warp 计算部分和再归约，或让多个块原子累加，可以释放并行度，却改变项的配对顺序。固定二叉树能让相同分区重复，动态原子顺序则可能随调度变化；二者都不保证最小误差。提高累加到 FP64、按量级做 pairwise summation，或引入 Kahan/Neumaier 补偿，可以减少舍入损失，但会增加指令、寄存器或合并状态。工程选择应把行长分布和误差预算一起考虑，因为“最快的归约树”与“最稳定的归约树”通常不是同一个目标。
+
+\discussionpoint{工具链也是数值实验的一部分。}
+同一索引顺序在不同编译选项下仍可能变化：编译器把乘加收缩成 FMA 时只舍入一次，禁用收缩则在乘法和加法后各舍入一次；快速数学可能使用近似倒数，FTZ 又会把反规格化结果冲成零。库还可能根据 GPU 架构和 workspace 自动选择不同分块，从而改变归约树。需要审计或跨机器复现的计算应记录编译器版本、架构目标、数学选项、库算法标识和输入哈希，并用误差统计而非单个样例作比较。这个要求类似实验科学记录仪器配置：硬件与软件环境不是背景信息，而是结果生成过程的一部分。
+
+\discussionpoint{最终应用决定什么误差才重要。}
+Krylov 求解器通常更关心残差曲线和迭代次数，即使单次 SpMV 相差几个 ULP，只要没有改变收敛结论，逐位差异未必有应用意义。整数 BFS 的访问标记不存在同类舍入问题，机器学习训练则可能接受统计波动，却要求损失曲线和最终指标处于可接受分布。因而完整评测可以同时报告逐位一致率、最大与分位 ULP、向量范数误差以及端到端收敛或任务质量。这样做不是放松正确性，而是把局部算术误差连接到问题条件数和业务容限，避免用一个脱离领域的“相等/不等”标签概括所有风险。
+\variantheading 对 IEEE FP32 序列 $[10^{20},-10^{20},3]$，顺序 $((10^{20}-10^{20})+3)$ 得 3，而 $10^{20}+(-10^{20}+3)$ 得 0；二者都无数据竞态，却展示了重排造成的可检查差异。
+\practiceheading 固定同一 NVIDIA GPU、CUDA 工具链、FP32 FMA 设置和输入顺序，以 cuSPARSE CSR 为性能基线，并用 CUB 固定树归约实现协作行版本；重复运行后同时报告 bitwise 一致率、最大 ULP 和 Nsight Compute 吞吐。
+\sourcecheck{https://docs.nvidia.com/cuda/floating-point/index.html}{NVIDIA CUDA Floating Point 官方说明；对抗检查：把无竞态误解为零 ULP 误差、或把任何 CSR 变体都视为确定，都会得到过强结论}
+\end{solutionexercise}
+
+\begin{solutionexercise}{8}
+\problemheading 混合 ELL--COO 格式中，每行保留的元素上限 $K$ 是一个可调参数。请分析：
+$K$ 取得过大或过小分别会带来什么后果？如果已知矩阵各行长度的分布，你会如何选择 $K$？
+分析须同时考虑 ELL 填充浪费、规则合并访问、COO 余项数量及原子累加代价。
+
+\approachheading 对行长 $\ell_i$，ELL 槽位数是 $mK$，真实 ELL 项数是
+$\sum_i\min(\ell_i,K)$，填充量与 COO 溢出量分别为
+\[
+P(K)=\sum_i\max(K-\ell_i,0),\qquad
+C(K)=\sum_i\max(\ell_i-K,0).
+\]
+
+\answerheading $K$ 过大时，$P(K)$ 和设备存储增大，长循环的尾部只有少数线程活跃，
+控制分歧与无效内存跨度上升；极端情况下退化为纯 ELL。$K$ 过小时，$C(K)$ 增大，COO
+需要更多行/列元数据和原子累加；热点长行会产生原子争用。若按第 4 题在主机处理 COO，
+还会增加回传后的串行工作，甚至让 CPU/PCIe 路径主导总时间。$K=0$ 和
+$K\ge\max_i\ell_i$ 分别是纯 COO 与纯 ELL 两个边界情形。
+
+选择时先由行长直方图计算 $P(K),C(K)$，再在内存预算内最小化一个面向目标设备的代价模型，
+例如
+\[
+ T(K)\approx \alpha\sum_i\min(\ell_i,K)
+       +\beta P(K)+\chi C(K)+\rho\,R(K),
+\]
+其中 $R(K)$ 表示 COO 中按行集中的原子争用，系数由微基准测得。实用初值可取行长的高分位数
+（如 90--99 分位），再在附近枚举；还应把 $mK$ 的字节数、对齐、warp 分组后的行长分布和
+矩阵将被复用的迭代次数纳入测量。仅取平均行长会被少量超长行严重误导。
+
+\complexity{评估所有候选 $K$ 可由行长直方图的前后缀和在线性时间完成；每个 SpMV 有 $z$ 个有效乘加}{$2mK$ 个 ELL 值/列槽加 $3C(K)$ 个 COO 值/坐标槽（不计行长元数据）}{ELL 按行并行且访问合并；COO 按溢出元素并行但需要原子汇总}
+\conclusionheading 行长分布给出候选范围，硬件代价和真实矩阵复用场景决定最终 $K$；没有
+对所有矩阵都最优的固定百分位。
+\discussionheading
+\discussionpoint{$K$ 可以理解为规则快路径的预算。}
+增大 $K$ 会把更多非零元纳入 ELL，使 COO 尾部更短、原子争用更少；与此同时，每一行都必须为更宽的 ELL 预留槽位，短行产生填充，缓存工作集也随之扩大。题中 $P(K)$ 与 $C(K)$ 分别刻画填充和溢出项数，却不能直接相加后宣称时间最优，因为一个填充槽主要消耗带宽，一个 COO 项还可能引入随机访问和原子串行化。更现实的模型是 $T(K)=aP(K)+bC(K)+T_{\mathrm{launch}}$，系数要由设备和数据测得。于是 $K$ 不是纯数学阈值，而是把可预测工作与不规则工作分配给两条执行路径的资源预算。
+
+\discussionpoint{单阈值可以继续发展成多桶调度。}
+全矩阵共用一个 $K$，隐含假设是所有行都适合相同并行策略；若行长跨越几个数量级，这个假设很快失效。可以把 0--4 项的行放进窄 ELL，5--32 项的行放进 SELL，极长行交给一个 warp 或线程块协作归约，从而分别减少短行填充和长行串行。多桶方案需要额外的行置换、描述符和多个内核启动，还可能让小桶不足以占满 GPU，所以桶越多也不一定越好。这个演化与任务调度中的 size class 相似：按规模选择专门执行器能降低内部浪费，但分类和调度本身也必须计入总成本。
+
+\discussionpoint{硬件资源会移动最佳阈值。}
+若目标 GPU 的 FP32 原子吞吐较高且 L2 能缓存热点输出，较小 $K$ 留下的 COO 尾部可能并不昂贵；在原子争用严重或显存带宽紧张的设备上，更大的规则区反而可能有利。索引从 32 位变为 64 位会放大每个填充槽的字节代价，输入向量复用提高又可能让原子而非读取成为瓶颈。具体地，$K$ 每增加 1 都为全部 $m$ 行新增一个值槽和一个列索引槽，却只把行长超过旧 $K$ 的那些 COO 项移入规则区；短行占多数时，这笔固定带宽支出会迅速压过尾部收益。甚至相同 GPU 上，矩阵常驻与每轮重传也会给出不同最佳点，批量大小变化也会移动平衡位置。因此阈值应附带设备、数据类型和运行方式的假设，不能从一个矩阵或一个架构的曲线推广成普遍常数。
+
+\discussionpoint{动态负载可以用反馈而非固定经验值。}
+对结构稳定的矩阵，可以离线扫描候选 $K$，把格式构造成本按预计迭代次数摊销后选择端到端最小值。动态图或自适应网格中，行长分布持续变化，更合适的做法是周期采样填充率、溢出比例和实际计时，仅当未来收益预计覆盖重建成本时才切换，并设置回滞避免频繁往返。例如重建格式耗时 20~ms、预计每轮只节省 0.2~ms 时，至少还要运行约 100 轮才刚能回本，剩余迭代不足便应维持原布局。控制器还应保留一个稳定 CSR 基线，以便模型预测失准时回退。这样的反馈式布局选择把稀疏格式问题连接到在线 autotuning：性能参数不是一次决定永久有效，而是受工作负载漂移和观测成本共同约束。
+\variantheading 对行长 $[0,1,2,9]$，$K=2$ 时 $P=3,C=7$，而 $K=3$ 时 $P=6,C=6$；后者只少 1 个溢出项却多 3 个填充槽，若两类槽成本相同则 $K=2$ 的总额外量更小。
+\practiceheading 假定 32-lane NVIDIA GPU、FP32 值、32 位索引且矩阵常驻显存，扫描 $K=0\ldots\max\ell_i$，用 cuSPARSE CSR 作基线，并以 Nsight Compute 的 DRAM 字节、原子吞吐和 Warp Execution Efficiency 拟合 $T(K)$。
+\sourcecheck{https://mgarland.org/files/papers/nvr-2008-004.pdf}{Bell 与 Garland 对混合 ELL/COO（HYB）格式的原始性能研究；对抗检查：只最小化填充量会忽略 COO 原子争用，只最小化溢出量又会退化成过大的 ELL}
+\end{solutionexercise}

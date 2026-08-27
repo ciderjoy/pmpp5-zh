@@ -1,0 +1,163 @@
+\chapter{多 GPU 编程}
+
+\begin{solutionexercise}{1}
+\problemheading 假设把本章的五点模板应用于一个网格，其 $x$ 维包含 64 个网格点，
+$y$ 维包含 512 个网格点；计算沿 $y$ 维均匀划分到 16 个 MPI 秩。原书图 23.1 的内核
+只更新 $x=1,\ldots,62$，两端列为固定边界；图 23.12 的阶段 1 先计算每个秩顶部和底部
+两个边界输出行，阶段 2 在交换这两个完整的 64 元素 \code{float} 行时计算其余内部行。
+分别回答：
+\begin{enumerate}[label=(\alph*)]
+  \item 每个进程计算多少个输出网格点值？
+  \item 每个进程需要多少个 halo 网格点？
+  \item 阶段 1 中，每个进程计算多少个边界网格点？
+  \item 阶段 2 中，每个进程计算多少个内部网格点？
+  \item 阶段 2 中，每个进程发送多少字节？
+\end{enumerate}
+
+\approachheading 一维域分解不切分 $x$ 维。每个秩拥有 $512/16=32$ 个输出行；五点模板
+只需相邻分区各一行 halo。原书图 23.12 的阶段 1 先算上下两条边界输出行，阶段 2 计算其余
+行并发送这两行。
+
+\answerheading
+\begin{enumerate}[label=(\alph*)]
+  \item 每个进程计算
+  \[
+    62\times32=1984
+  \]
+  个输出网格点。
+  \item 顶、底各一条 halo 行，共
+  \[
+    2\times64=128
+  \]
+  个 halo 槽位；所以含 halo 的本地输入数组是 $64\times34$。
+  \item 阶段 1 计算顶部、底部两个边界输出行；每行只更新 $x=1,\ldots,62$，共
+  $2\times62=124$ 点。
+  \item 阶段 2 计算 $32-2=30$ 个内部行，同样每行更新 62 点，共
+  $30\times62=1860$ 点。检查：$124+1860=1984$。
+  \item 每个边界值是一个 \code{float}，逻辑发送量为
+  \[
+    2\times64\times4=512\ \text{字节}.
+  \]
+\end{enumerate}
+\editorialnote 底本题面把网格写成 $64\times512$，容易把每个秩拥有的全部 64 列都算作
+“计算出的输出”。但原书图 23.1 的五点模板内核明确从 $x=1$ 开始，并要求
+$x<\code{nx}-1$；$x=0,63$ 是固定边界列，不由该内核更新。因此 (a)、(c)、(d) 必须按
+62 个可更新列计为 1984、124、1860。图 23.14 的 halo 交换仍发送完整的 64 元素边界行，
+所以 (b)、(e) 保持 128 和 512 字节。若机械地把 64 列全算作输出，才会得到底本容易诱发的
+2048/128/1920 口径，但它与所指定内核的边界条件不一致。
+
+上述数字按每个秩预留上下两侧、并执行两个方向的 halo 交换来计。若全局 $y$ 边界是非周期
+边界且端点秩以 \code{MPI_PROC_NULL} 代替不存在的邻居，则中间 14 个秩实际在网络上发送
+512 字节，两个端点秩各只有一个真实邻居，实际网络负载为 256 字节；它们仍可保持 128 个
+halo 槽位和相同代码结构。若采用周期边界，则所有秩都是 512 字节。
+
+\complexity{每秩 $O(62\cdot32)$ 有效点计算；总计算量与可更新网格点数成正比}{每秩 $O(64\cdot34)$ 本地输入及输出空间}{16 个秩并行；阶段 2 的 1860 点计算可与至多 512 字节通信重叠}
+\conclusionheading (a)--(e) 依次是 1984、128、124、1860、512 字节；
+非周期端点的实际网络字节数是需要单独说明的边界例外。
+\discussionheading
+\discussionpoint{halo 的宽度由数据依赖决定。}
+半径为 1 的五点模板计算边界输出时，只会读取相邻分区的一层输入，所以每侧交换一行；若离散模板半径变为 $r$，或一次内核融合多个时间步，所需 halo 可能扩到 $r$ 层甚至更宽。分区方向决定哪一维的邻接变成远程通信，MPI 只是搬运这些依赖的工具。最可靠的方法是先画出每个输出点的读集合，再把跨分区部分映射成消息。这样能区分本地固定边界、halo 输入和真正由内核更新的输出，避免把含 halo 的本地数组尺寸直接当作计算点数。读集合分析还可自动生成通信表并验证角点是否重复交换。
+
+\discussionpoint{强扩展最终受表面积与体积之比约束。}
+固定全局网格而增加秩数时，每秩内部体积持续缩小，计算量近似按秩数下降；半径固定的边界表面积下降得更慢，通信占比因而上升。二维条带分解只有两个邻居却可能拥有较长边界，二维块分解能降低单秩周长，却增加邻居与角点处理；三维情况同理。局部子域很小时，一条 512 字节消息的固定延迟甚至比传输时间更重要，继续加 GPU 不再带来线性加速。表面积/体积模型因此是 stencil 强扩展的第一性解释，也能指导进程网格形状和分区维度选择。弱扩展则保持局部体积不变，瓶颈模型与此不同。
+
+\discussionpoint{非阻塞调用只创造重叠机会。}
+先发起 \code{Irecv/Isend}，再计算不依赖 halo 的 1860 个内部点，最后 \code{Waitall} 并计算 124 个边界点，在依赖图上允许通信与内部计算并行。它并不保证网络真的在后台推进：MPI 可能只在再次进入库时提供弱进展，GPU 内核也可能占满需要的复制或执行资源，设备缓冲还必须通过事件完成生产。GPU-aware MPI 又受注册、网卡与拓扑影响。是否重叠应从时间线和总时间验证，不能因为 API 名称带 \code{I} 就宣称隐藏了通信；正确表述是“建立了可重叠结构”。
+
+\discussionpoint{物理边界会改变真实网络邻居。}
+非周期 $y$ 边界下，首秩没有顶部邻居、末秩没有底部邻居，使用 \code{MPI_PROC_NULL} 可以保留统一调用结构，同时这些方向不产生传输并且接收缓冲保持原值。周期边界则让首尾秩互为邻居，所有秩都执行两个方向的实际交换。物理边界值可能由初始化或独立内核维护，所以“预留两个 halo 槽位”不等于“网络一定接收两行”。规模报告应区分逻辑 payload、实际邻居数和网络字节，并记录秩到 GPU/NUMA 节点的绑定，否则端点例外与拓扑差异会被平均值掩盖。
+\variantheading 若改为沿 $y$ 均分到 8 个秩，每秩有 64 个输出行，输出点为 $62\times64=3968$，halo 仍为 128 点，阶段 1 为 124 点，阶段 2 为 $62\times62=3844$ 点，发送量仍为 512 字节。
+\practiceheading 先运行 \code{solutions/code/ch17-23/ch23_ex01_partition.cpp} 核对分区
+计数。随附 \code{ch23_ex01_halo_exchange_mpi.cpp} 使用非周期 $y$ 边界和
+\code{MPI_PROC_NULL}：发起四个非阻塞调用后先计算 1860 个内部点，\code{MPI_Waitall} 后逐项
+核验 128 个 halo 槽位（含端点保留的物理边界），再计算 124 个边界点并独立核验全部 1984 个
+输出。该程序验证依赖顺序和重叠机会，不声称 MPI 一定异步推进；扩展到每秩一张 GPU 时，应把
+主机向量替换为设备缓冲，明确 stream/event 所有权，并用 Nsight Systems 时间线证明 GPU-aware
+MPI 与内部内核确实重叠。
+\sourcecheck{https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report.pdf}{MPI Forum 的 MPI 4.1 官方标准用于核验 halo 通信与 \code{MPI_PROC_NULL} 边界语义；点数另按原书图 23.1 的 $x$ 边界条件独立复算。对抗检查：把含 halo 的 34 行或固定的两列当成内核输出都会多算，把 \code{MPI_PROC_NULL} 调用算成实际网络传输则会高估端点秩}
+\end{solutionexercise}
+
+\begin{solutionexercise}{2}
+\problemheading 如果以下 MPI 调用传输了 4000 字节：
+\begin{center}
+\small\code{MPI_Send(ptr_a, 1000, MPI_FLOAT, 2000, 4, MPI_COMM_WORLD)}
+\end{center}
+每个被发送数据元素的大小是多少？
+\begin{enumerate}[label=(\alph*)]
+  \item 1 字节
+  \item 2 字节
+  \item 4 字节
+  \item 8 字节
+\end{enumerate}
+
+\approachheading MPI 的消息数据量是 \code{count} 乘以 datatype 的类型签名大小；题目
+已经给出总字节数，无需根据指针类型猜测。
+
+\answerheading
+\[
+  \frac{4000\ \text{bytes}}{1000\ \text{elements}}
+  =4\ \text{bytes/element}.
+\]
+因此选择 (c)。在可移植程序中可用
+\code{MPI_Type_size(MPI_FLOAT, \&size)} 查询该实现的类型大小；本题的已知传输量已经
+把答案固定为 4。目的秩 2000 只有在 communicator 至少包含 2001 个秩时才合法，但这不改变
+条件式算术。
+
+\conclusionheading 每个被发送元素为 4 字节，答案 (c)。
+\discussionheading
+\discussionpoint{count 与 datatype 一起定义用户数据。}
+调用 \code{MPI_Send} 时，\code{count} 说明有多少个类型实例，\code{datatype} 决定实例布局，而 \code{MPI_Type_size} 给出一个实例包含的有效基本数据字节，因此连续预定义类型的 payload 是前两项数量的乘积。目的秩选择接收者，tag 与 communicator 参与消息匹配，它们即使是数值 2000 或 4，也不能解释成字节数。发送端与接收端不必使用相同类型句柄，但类型签名中的基本数据项必须相容。把参数角色逐项分清，才能从一次函数调用正确推导数据量，也能避免把寻址元数据混进性能模型。
+
+\discussionpoint{datatype size 与 extent 回答两个不同问题。}
+派生类型可以描述结构体中的有效字段、二维数组的一列或带间隔的子数组；size 只累计真正参与消息的基本数据，extent 则覆盖从下界到上界的内存跨度，包括空洞与显式边界。连续发送多个该类型时，第 $k$ 个实例按 extent 定位，而不是紧接在前一个有效字节后。若用 size 分配本地数组跨度，可能让相邻实例重叠或越界；若用 extent 当网络 payload，又会把空洞误算成有效传输。MPI 类型系统因此同时描述“传什么”和“内存中怎样跨步”，这与序列化 schema 和数组 stride 的区别相近。
+
+\discussionpoint{网卡观察到的字节通常大于用户 payload。}
+MPI 实现可能为消息附加匹配头、序号和传输层报头，大消息还可能分片，小消息则可能采用 eager 协议先复制到接收侧缓冲。于是应用计算的 4000 字节是用户数据，不是以太网或 InfiniBand 计数器必须显示的总线上字节。常用延迟带宽模型 $T=\alpha+n/\beta$ 把每消息固定成本 $\alpha$ 与随 payload 增长的项分开，协议切换还可能形成分段曲线。性能诊断应明确测量层级，不能用网卡字节反推 datatype size，也不能用用户 payload 否认真实协议开销。
+
+\discussionpoint{派生类型提供可移植描述，却不保证零复制。}
+发送一个跨步列向量时，MPI 可以让网卡直接 gather 分散地址，也可以先把有效项 pack 到连续临时缓冲，再执行普通发送；标准允许不同实现策略。复杂嵌套类型、GPU 缓冲或未注册内存可能让打包成本占主导，而显式 pack 有时更容易与计算流水重叠。比较方案应核对 \code{Type_size}、\code{Type_get_extent} 和收发类型签名，再测实际传输与 CPU/GPU 暂存时间。派生类型的首要价值是正确、可移植地表达布局，是否获得零复制属于实现与硬件能力，需要实测而不能从 API 语法推断。
+\variantheading 若调用改为发送 250 个 \code{MPI_DOUBLE}，且 \code{MPI_Type_size} 返回 8，则用户 payload 为 $250\times8=2000$ 字节；目的秩和 tag 仍不进入字节数计算。
+\practiceheading 在同构 CPU 节点、\code{MPI_THREAD_SINGLE} 且不使用 GPU 缓冲的假设下，用 Open MPI 或 MPICH 调用 \code{MPI_Type_size}/\code{MPI_Type_get_extent} 对比预定义与派生类型，并用 mpiP 区分 payload 计数和通信耗时。
+\sourcecheck{https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report.pdf}{MPI Forum 的 MPI 4.1 官方标准对元素计数、数据类型与类型大小的定义；对抗检查：第四个实参 2000 是目的秩而非字节数，第五个实参 4 是 tag 而非元素大小}
+\end{solutionexercise}
+
+\begin{solutionexercise}{3}
+\problemheading 下列哪些说法正确？
+\begin{enumerate}[label=(\alph*)]
+  \item \code{MPI_Send()} 默认是阻塞的。
+  \item \code{MPI_Recv()} 默认是阻塞的。
+  \item MPI 消息必须至少有 128 字节。
+\end{enumerate}
+
+\approachheading 区分“阻塞调用返回”和“通信对端已经完成”；再检查 MPI 是否允许
+\code{count=0}。
+
+\answerheading (a)、(b) 正确，(c) 错误。
+\begin{itemize}
+  \item \code{MPI_Send} 是标准模式的阻塞发送。返回时发送缓冲区可以安全复用，但实现
+  可能采用 eager 缓冲，也可能等待匹配接收；“阻塞”不等于必然与接收方同步。
+  \item \code{MPI_Recv} 是阻塞接收，直到匹配消息已经放入接收缓冲区并可返回状态。
+  \item MPI 允许零计数消息，标准没有 128 字节的最小消息限制。传输协议内部可能有 eager
+  阈值或报头，但那不是用户消息的合法最小长度。
+\end{itemize}
+
+\editorialnote 英文底本使用单数问法 “Which ... is true?”，但标准语义下 (a) 和
+(b) 同时正确。中文译稿改成“哪些说法正确”是必要修正，本题解据此作多选回答。
+
+\conclusionheading 正确选项为 (a)、(b)；(c) 没有标准依据。
+\discussionheading
+\discussionpoint{阻塞发送承诺的是本地缓冲安全。}
+\code{MPI_Send} 返回意味着发送缓冲区可以修改或复用，数据可能已经进入接收缓冲，也可能只被复制到 MPI 内部临时区；它不承诺远端进程已经从 \code{MPI_Recv} 返回。标准模式还允许完成依赖匹配接收是否启动，因此“阻塞”也不等于纯本地操作。接收返回的含义不同：匹配数据已经放进接收缓冲，并可通过 status 查询来源和 tag。理解本地完成与远端状态的区别，才能正确安排缓冲生命周期，也能避免把一次点对点调用误作隐式屏障。非周期边界上的 \code{MPI_PROC_NULL} 仍遵循调用完成规则。
+
+\discussionpoint{eager 缓冲可能暂时掩盖错误的等待环。}
+若所有秩都先对右邻调用标准发送、再从左邻接收，小消息可能被 eager 缓冲，使发送提前完成，程序看似正常。消息增大、缓冲耗尽、实现改用 rendezvous，或将调用替换为 \code{MPI_Ssend} 后，所有秩都等待匹配接收，环形死锁便暴露。正确程序不能依赖某个 eager 阈值、当前空闲内存或机器速度，因为这些都不是标准语义保证。压力测试应跨越消息尺寸和通信模式，但最终修复必须消除等待环，而不是把阈值调大。非周期拓扑虽不形成整环，内部秩的对称等待仍应按同一原则审查。
+
+\discussionpoint{安全交换模式在简洁、重叠和生命周期之间取舍。}
+\code{MPI_Sendrecv} 把一次发送和一次接收交给实现协调，适合规则邻居交换且较容易证明不会形成阻塞环。奇偶秩分阶段也能让阻塞调用安全，却增加轮次；\code{Irecv--Isend--Waitall} 为计算重叠创造机会，但请求对象、发送缓冲和接收缓冲必须一直存活到完成。零计数消息仍参与匹配，源、目的、tag 和 communicator 仍须正确，不能把“无 payload”理解为“无通信语义”。选用模式时应先证明匹配和生命周期，再讨论性能，API 更异步并不自动意味着程序更安全。
+
+\discussionpoint{非阻塞启动与后台进展是两个层次。}
+\code{MPI_Isend} 返回只说明请求已建立，数据何时在没有后续 MPI 调用时推进，取决于实现提供强进展、弱进展、专用线程还是网卡卸载。有些系统需要周期调用 \code{MPI_Test}，另一些会在后台传输；GPU-aware 路径还涉及设备事件、内存注册和 stream 可见性。因此把内部计算放在 \code{Waitall} 前只是建立了重叠机会，真正重叠要由时间线和总时间证明。调试还应检查 status/tag、超时和缓冲所有权，把正确性、进展保证与实际并发三个问题分开。
+\variantheading 若环中每个秩先对右邻执行 \code{MPI_Ssend}、再从左邻 \code{MPI_Recv}，所有秩都可能等待匹配接收而死锁；改用一次 \code{MPI_Sendrecv} 后每个秩可同时完成左右交换。
+\practiceheading 假定两台同构 InfiniBand 节点、Open MPI/MPICH、\code{MPI_THREAD_SINGLE} 且无 GPU-aware 路径，用 Intel MPI Benchmarks PingPong 按 2 的幂从 0/1 字节扫描到至少数 MiB，寻找延迟或带宽曲线的协议转折，并结合该实现公开的 MPI T control variable 核验 eager/rendezvous 配置；mpiP 可做调用画像，却不能普遍直接给出阈值。阈值只解释性能，不能改写标准语义。
+\sourcecheck{https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report.pdf}{MPI Forum 的 MPI 4.1 官方标准关于阻塞发送、阻塞接收和零计数消息的规范；对抗检查：不能把标准发送的本地完成误写成远端完成，也不能把某实现的 eager 阈值当成 MPI 消息下限}
+\end{solutionexercise}
