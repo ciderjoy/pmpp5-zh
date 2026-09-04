@@ -48,59 +48,8 @@ Random Access Memory）。从 NVIDIA Pascal 架构开始，GPU 还可能使用 H
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    \fbox{\begin{minipage}{0.88\textwidth}
-      \centering
-      \textbf{GPU}\\[0.3em]
-      \begin{tabular}{c@{\hspace{0.3em}}c@{\hspace{0.3em}}c@{\hspace{0.3em}}c}
-        \fbox{\begin{minipage}{0.18\textwidth}\centering
-          \textbf{GPC}\\[0.2em]
-          \fbox{\begin{minipage}{0.82\textwidth}\centering
-            \textbf{SM}\\[-0.1em]
-            \scriptsize SP SP SP\\[-0.1em]
-            \scriptsize SP SP SP
-          \end{minipage}}\\[-0.1em]
-          \scriptsize $\cdots$ 多个 SM
-        \end{minipage}}
-        &
-        \fbox{\begin{minipage}{0.18\textwidth}\centering
-          \textbf{GPC}\\[0.2em]
-          \fbox{\begin{minipage}{0.82\textwidth}\centering
-            \textbf{SM}\\[-0.1em]
-            \scriptsize SP SP SP\\[-0.1em]
-            \scriptsize SP SP SP
-          \end{minipage}}\\[-0.1em]
-          \scriptsize $\cdots$ 多个 SM
-        \end{minipage}}
-        &
-        \fbox{\begin{minipage}{0.18\textwidth}\centering
-          \textbf{GPC}\\[0.2em]
-          \fbox{\begin{minipage}{0.82\textwidth}\centering
-            \textbf{SM}\\[-0.1em]
-            \scriptsize SP SP SP\\[-0.1em]
-            \scriptsize SP SP SP
-          \end{minipage}}\\[-0.1em]
-          \scriptsize $\cdots$ 多个 SM
-        \end{minipage}}
-        &
-        \fbox{\begin{minipage}{0.18\textwidth}\centering
-          \textbf{GPC}\\[0.2em]
-          \fbox{\begin{minipage}{0.82\textwidth}\centering
-            \textbf{SM}\\[-0.1em]
-            \scriptsize SP SP SP\\[-0.1em]
-            \scriptsize SP SP SP
-          \end{minipage}}\\[-0.1em]
-          \scriptsize $\cdots$ 多个 SM
-        \end{minipage}}
-      \end{tabular}\\[0.5em]
-      \fbox{\parbox[c][0.55cm][c]{0.72\textwidth}{\centering
-        \textbf{片外全局内存（DRAM）}\quad
-        内存控制器 / 内存通道}}
-    \end{minipage}}
-  \end{tabular}
-  \caption{CUDA-capable GPU 的架构（依据原书图 4.1 重绘的概念示意；
-  SP 表示流式处理器）}
+  \includegraphics[width=\textwidth]{figs/ch4/4-1.png}
+  \caption{CUDA-capable GPU 的架构（SP 表示流式处理器）}
   \label{fig:4-1}
 \end{figure}
 
@@ -121,34 +70,8 @@ Random Access Memory）。从 NVIDIA Pascal 架构开始，GPU 还可能使用 H
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\hspace{0.7em}}c@{\hspace{0.7em}}c}
-    \fbox{\begin{minipage}{0.24\textwidth}\centering
-      \textbf{网格}\\[0.2em]
-      块 0、块 1、块 2、$\ldots$
-    \end{minipage}}
-    & $\longrightarrow$ &
-    \fbox{\begin{minipage}{0.48\textwidth}\centering
-      \textbf{GPU}\\[0.2em]
-      \begin{tabular}{cc}
-        \fbox{\begin{minipage}{0.18\textwidth}\centering
-          \textbf{SM 0}\\[-0.1em]块 0\\块 3\\块 6
-        \end{minipage}}
-        &
-        \fbox{\begin{minipage}{0.18\textwidth}\centering
-          \textbf{SM 1}\\[-0.1em]块 1\\块 4\\块 7
-        \end{minipage}}\\[0.3em]
-        \fbox{\begin{minipage}{0.18\textwidth}\centering
-          \textbf{SM 2}\\[-0.1em]块 2\\块 5\\块 8
-        \end{minipage}}
-        &
-        \fbox{\begin{minipage}{0.18\textwidth}\centering
-          \textbf{待执行列表}\\[-0.1em]块 9、块 10、$\ldots$
-        \end{minipage}}
-      \end{tabular}
-    \end{minipage}}
-  \end{tabular}
-  \caption{线程块按块分配给流式多处理器（依据原书图 4.2 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch4/4-2.png}
+  \caption{线程块按块分配给流式多处理器}
   \label{fig:4-2}
 \end{figure}
 
@@ -206,23 +129,8 @@ Collection（gcc）、Intel C Compiler 和 Clang/LLVM C Compiler 等主流现代
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c|l}
-    \toprule
-    线程 & 执行时间线（从左向右）\\
-    \midrule
-    $T_0$ & \rule{0.16\textwidth}{0.4pt}\hspace{0.04\textwidth}
-      \texttt{barrier}\hspace{0.08\textwidth}\rule{0.20\textwidth}{0.4pt}\\
-    $T_1$ & \rule{0.22\textwidth}{0.4pt}\hspace{0.04\textwidth}
-      \texttt{barrier}\hspace{0.08\textwidth}\rule{0.20\textwidth}{0.4pt}\\
-    $T_2$ & \rule{0.30\textwidth}{0.4pt}\hspace{0.04\textwidth}
-      \texttt{barrier}\hspace{0.08\textwidth}\rule{0.20\textwidth}{0.4pt}\\
-    $T_N$ & \rule{0.38\textwidth}{0.4pt}\hspace{0.04\textwidth}
-      \texttt{last arrival}\hspace{0.04\textwidth}\rule{0.20\textwidth}{0.4pt}\\
-    \bottomrule
-  \end{tabular}\\[-0.1em]
-  \scriptsize 左侧曲线表示到达时间；最后一个线程到达后，所有线程才能继续。
-  \caption{屏障同步的执行时序示例（依据原书图 4.3 重绘）}
+  \includegraphics[width=0.72\textwidth]{figs/ch4/4-3.png}
+  \caption{屏障同步的执行时序示例}
   \label{fig:4-3}
 \end{figure}
 
@@ -292,24 +200,8 @@ CUDA 运行时就可以按照任意相对顺序执行不同线程块。这种灵
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\hspace{1.0em}}c}
-    \fbox{\begin{minipage}{0.34\textwidth}\centering
-      \textbf{低成本 GPU：每次 2 个块}\\[0.2em]
-      波次 1：块 0、1\\
-      波次 2：块 2、3\\
-      波次 3：块 4、5\\
-      波次 4：块 6、7
-    \end{minipage}}
-    &
-    \fbox{\begin{minipage}{0.34\textwidth}\centering
-      \textbf{高端 GPU：每次 4 个块}\\[0.2em]
-      波次 1：块 0、1、2、3\\
-      波次 2：块 4、5、6、7
-    \end{minipage}}
-  \end{tabular}
-  \caption{线程块之间没有同步约束时，CUDA 程序具有透明可扩展性
-  （依据原书图 4.5 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch4/4-5.png}
+  \caption{线程块之间没有同步约束时，CUDA 程序具有透明可扩展性}
   \label{fig:4-5}
 \end{figure}
 
@@ -358,19 +250,8 @@ warp，线程 32–63 构成第二个 warp，以此类推。如果每个线程�
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c|c|c}
-    \toprule
-    线程块 & 线程范围 & warp 数量\\
-    \midrule
-    Block 1 & 0--31,\ 32--63,\ $\ldots$,\ 224--255 & 8\\
-    Block 2 & 0--31,\ 32--63,\ $\ldots$,\ 224--255 & 8\\
-    Block 3 & 0--31,\ 32--63,\ $\ldots$,\ 224--255 & 8\\
-    \midrule
-    \multicolumn{2}{r|}{SM 中总计} & 24\\
-    \bottomrule
-  \end{tabular}
-  \caption{线程块被划分为 warp 以进行线程调度（依据原书图 4.6 重绘）}
+  \includegraphics[width=0.65\textwidth]{figs/ch4/4-6.png}
+  \caption{线程块被划分为 warp 以进行线程调度}
   \label{fig:4-6}
 \end{figure}
 
@@ -389,20 +270,8 @@ $32(n+1)-1$ 结束。如果线程块大小不是 32 的倍数，最后一个 war
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    \begin{tabular}{c|c|c|c}
-      $T_{0,0}$ & $T_{0,1}$ & $T_{0,2}$ & $T_{0,3}$\\ \hline
-      $T_{1,0}$ & $T_{1,1}$ & $T_{1,2}$ & $T_{1,3}$\\ \hline
-      $T_{2,0}$ & $T_{2,1}$ & $T_{2,2}$ & $T_{2,3}$\\ \hline
-      $T_{3,0}$ & $T_{3,1}$ & $T_{3,2}$ & $T_{3,3}$
-    \end{tabular}\\[0.4em]
-    $\longrightarrow\quad
-    T_{0,0},T_{0,1},T_{0,2},T_{0,3},
-    T_{1,0},T_{1,1},\ldots,T_{3,3}$
-    \quad（行主序线性布局）
-  \end{tabular}
-  \caption{将二维线程放入线性布局（依据原书图 4.7 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch4/4-7.png}
+  \caption{将二维线程放入线性布局}
   \label{fig:4-7}
 \end{figure}
 
@@ -431,22 +300,8 @@ warp 中的所有线程。也就是说，在任意时刻，一条指令会被取
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\hspace{1em}}c}
-    \fbox{\begin{minipage}{0.31\textwidth}\centering
-      \textbf{处理分区 0}\\
-      指令取出/分发\\
-      SP SP SP SP SP SP SP SP
-    \end{minipage}}
-    &
-    \fbox{\begin{minipage}{0.31\textwidth}\centering
-      \textbf{处理分区 1}\\
-      指令取出/分发\\
-      SP SP SP SP SP SP SP SP
-    \end{minipage}}
-  \end{tabular}\\[-0.1em]
-  \scriptsize 一个玩具 SM；真实 H100 SM 有四个处理分区，每个分区 32 个 SP。
-  \caption{SM 由处理分区组成，以执行 SIMD 指令（依据原书图 4.8 重绘）}
+  \includegraphics[width=0.48\textwidth]{figs/ch4/4-8.png}
+  \caption{SM 由处理分区组成，以执行 SIMD 指令}
   \label{fig:4-8}
 \end{figure}
 
@@ -522,17 +377,8 @@ EDVAC 计算机的设计为基础。今天通常称为“冯·诺依曼模型”
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c|c|c}
-    \toprule
-    线程 & \code{then} 遍 & \code{else} 遍\\
-    \midrule
-    0--23 & 执行 A & 非活动\\
-    24--31 & 非活动 & 执行 B\\
-    \bottomrule
-  \end{tabular}\\[-0.1em]
-  \scriptsize 两条路径执行完后，warp 中线程可能重新汇合并执行 C。
-  \caption{warp 在 \code{if-else} 语句处分歧的示例（依据原书图 4.9 重绘）}
+  \includegraphics[width=0.72\textwidth]{figs/ch4/4-9.png}
+  \caption{warp 在 \code{if-else} 语句处分歧的示例}
   \label{fig:4-9}
 \end{figure}
 
@@ -556,18 +402,8 @@ Volta 架构开始，不同遍可以并发执行，也就是一条路径的执�
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c|cccccccc}
-    \toprule
-    迭代 & 1 & 2 & 3 & 4 & 5 & 6 & 7 & 8\\
-    \midrule
-    线程 1 & A&A&A&A&A&A&A&A\\
-    线程 4 & A&A&A&A&--&--&--&--\\
-    线程 7 & A&A&A&A&A&A&A&A\\
-    \bottomrule
-  \end{tabular}\\[-0.1em]
-  \scriptsize A 表示执行，-- 表示非活动；不同线程的循环次数不同。
-  \caption{warp 在 \code{for} 循环处分歧的示例（依据原书图 4.10 重绘）}
+  \includegraphics[width=0.72\textwidth]{figs/ch4/4-10.png}
+  \caption{warp 在 \code{for} 循环处分歧的示例}
   \label{fig:4-10}
 \end{figure}
 

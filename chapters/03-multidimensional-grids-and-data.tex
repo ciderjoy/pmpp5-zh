@@ -109,7 +109,7 @@ $2^{16}-1=65{,}535$。同一线程块中的所有线程共享 \code{blockIdx.x}�
 的线程数量由内核调用的第二个执行配置参数指定。在内核中，可以通过
 \code{blockDim} 的 \code{x}、\code{y} 和 \code{z} 字段访问这一配置。
 
-在当前 CUDA 系统中，一个线程块的总大小限制为 1024 个线程。只要线程总数不超过
+\textbf{在当前 CUDA 系统中，一个线程块的总大小限制为 1024 个线程}。只要线程总数不超过
 1024，这些线程可以以任意方式分布在三个维度中。例如，下面的
 \code{blockDim} 值都是允许的：
 \[
@@ -137,8 +137,8 @@ KernelFunction<<<dimGrid, dimBlock>>>(...);
 
 图 \ref{fig:3-1} 中的网格由 4 个线程块组成，排列成一个 $2\times2$ 数组。
 每个线程块使用 $(\code{blockIdx.y},\code{blockIdx.x})$ 标记。例如，块
-$(1,0)$ 的 \code{blockIdx.y}=1，\code{blockIdx.x}=0。需要注意，块和线程标签
-的排列顺序是最高维度在前。这与设置执行配置参数时代码使用的顺序相反；代码中
+$(1,0)$ 的 \code{blockIdx.y}=1，\code{blockIdx.x}=0。\textbf{需要注意，块和线程标签
+的排列顺序是最高维度在前}。这与设置执行配置参数时代码使用的顺序相反；代码中
 最低维度在前。用这种相反的顺序标记块，更适合说明线程坐标如何映射到多维数据
 的索引。
 
@@ -150,9 +150,9 @@ $(1,0)$ 的 \code{blockIdx.y}=1，\code{blockIdx.x}=0。需要注意，块和线
 具有 \code{threadIdx.z}=1、\code{threadIdx.y}=0 和 \code{threadIdx.x}=2。
 在这个例子中，网格共有 4 个线程块，每个线程块 16 个线程，总计 64 个线程。
 
-\noindent\textbf{译者注：}原书相应说明中有一处疑似排印错误，写作
+\footnote{\noindent\textcolor{red}{\textbf{译者注：}原书相应说明中有一处疑似排印错误，写作
 \code{threadId.x}；CUDA C++ 的内置变量实际是 \code{threadIdx.x}，本译稿按
-正确标识符规范化。
+正确标识符规范化。}}
 这里使用很小的数字只是为了让图示保持简单；典型 CUDA 网格包含数千到数百万个
 线程。
 
@@ -165,9 +165,8 @@ $(1,0)$ 的 \code{blockIdx.y}=1，\code{blockIdx.x}=0。需要注意，块和线
 （垂直方向或 y 方向有 62 个像素，水平方向或 x 方向有 76 个像素）。假设我们
 选择 $16\times16$ 的线程块，即 x 方向和 y 方向各有 16 个线程。需要在 y 方向
 使用 4 个线程块，在 x 方向使用 5 个线程块，因此总共需要 $4\times5=20$ 个
-线程块，如图 \ref{fig:3-2} 所示。粗线表示线程块边界；本概念重绘用文字标出
-实际像素区和线程覆盖区，具体的有效线程分类见图 \ref{fig:3-5}。每个线程负责处理
-一个像素，其 y、x 坐标由 \code{blockIdx}、
+线程块，如图 \ref{fig:3-2} 所示。粗线表示线程块边界。阴影区域表示覆盖像素的线程。
+每个线程负责处理一个像素，其 y、x 坐标由 \code{blockIdx}、
 \code{blockDim} 和 \code{threadIdx} 的值推导得到。
 
 \footnote{本书始终按多维数据的降序维度书写其尺寸：先写 z 维，再写 y 维，最后
@@ -177,33 +176,19 @@ $(1,0)$ 的 \code{blockIdx.y}=1，\code{blockIdx.x}=0。需要注意，块和线
 \code{gridDim} 和 \code{blockDim} 中数据维度的排列顺序相反。当根据要处理的
 多维数组定义线程网格的维度时，这种差异尤其容易造成混淆。}
 
-垂直（行）坐标为：
 \[
-  \code{blockIdx.y} \times \code{blockDim.y} + \code{threadIdx.y}.
-\]
-水平（列）坐标为：
-\[
-  \code{blockIdx.x} \times \code{blockDim.x} + \code{threadIdx.x}.
+\begin{aligned}
+\text{垂直（行）坐标为}
+  &= \code{blockIdx.y} \times \code{blockDim.y} + \code{threadIdx.y},\\
+\text{水平（列）坐标为}
+  &= \code{blockIdx.x} \times \code{blockDim.x} + \code{threadIdx.x}.
+\end{aligned}
 \]
 
 \begin{figure}[htbp]
   \centering
-  \fbox{\begin{minipage}{0.88\textwidth}
-    \centering
-    \textbf{输入图片：$62\times76$}\\[0.4em]
-    \begin{tabular}{c|c|c|c|c}
-      \multicolumn{5}{c}{x 方向：5 个线程块，每块 $16\times16$}\\
-      \hline
-      \rule{0pt}{1.1em}块 & 块 & 块 & 块 & 块\\ \hline
-      块 & 块 & 块 & 块 & 块\\ \hline
-      块 & 块 & 块 & 块 & 块\\ \hline
-      块 & 块 & 块 & 块 & 块\\ \hline
-    \end{tabular}\\[0.3em]
-    y 方向：4 个线程块；实际像素区域为 $62\times76$，
-    线程覆盖区域为 $64\times80$
-  \end{minipage}}
-  \caption{使用二维线程网格处理输入图片 \code{Pin}（$62\times76$，
-  依据原书图 3.2 重绘的概念示意）}
+  \includegraphics[width=\textwidth]{figs/ch3/3-2.png}
+  \caption{使用二维线程网格处理输入图片 \code{Pin}（$62\times76$）}
   \label{fig:3-2}
 \end{figure}
 
@@ -242,9 +227,9 @@ colorToGrayscaleConversion<<<dimGrid, dimBlock>>>(
     Pout_d, Pin_d, m, n);
 \end{lstlisting}
 
-\noindent\textbf{译者注：}原书此处的主机调用顺序与图 3.4 中的内核形参声明
+\footnote{\noindent\textbf{译者注：}原书此处的主机调用顺序与图 3.4 中的内核形参声明
 \code{Pout, Pin} 相反。为使示例按该声明正确工作，本译稿将调用顺序校正为
-\code{Pout_d, Pin_d}；这一处改动特此注明。
+\code{Pout_d, Pin_d}；这一处改动特此注明。}
 
 为简单起见，本例把线程块维度固定为 $16\times16$。另一方面，网格维度取决于
 图片的尺寸。处理一张 $1500\times2000$（300 万像素）的图片时，需要生成
@@ -303,27 +288,8 @@ $M_9$ 就是它的等价元素。这正是 C 和 C++ 编译器线性化二维数
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    \begin{tabular}{|c|c|c|c|}
-      \hline
-      $M_{0,0}$ & $M_{0,1}$ & $M_{0,2}$ & $M_{0,3}$\\ \hline
-      $M_{1,0}$ & $M_{1,1}$ & $M_{1,2}$ & $M_{1,3}$\\ \hline
-      $M_{2,0}$ & $M_{2,1}$ & $M_{2,2}$ & $M_{2,3}$\\ \hline
-      $M_{3,0}$ & $M_{3,1}$ & $M_{3,2}$ & $M_{3,3}$\\ \hline
-    \end{tabular}\\[0.4em]
-    $\Downarrow$ 按行展开\\[0.4em]
-    \begin{tabular}{|c|c|c|c|c|c|c|c|}
-      \hline
-      $M_{0,0}$ & $M_{0,1}$ & $M_{0,2}$ & $M_{0,3}$
-        & $M_{1,0}$ & $M_{1,1}$ & $M_{1,2}$ & $M_{1,3}$\\ \hline
-      $M_{2,0}$ & $M_{2,1}$ & $M_{2,2}$ & $M_{2,3}$
-        & $M_{3,0}$ & $M_{3,1}$ & $M_{3,2}$ & $M_{3,3}$\\ \hline
-    \end{tabular}\\[0.4em]
-    $M_{2,1}\longrightarrow M_{2\times4+1}=M_9$
-  \end{tabular}
-  \caption{二维 C++ 数组的行主序布局（索引为 $j\times\code{Width}+i$）
-  及其一维索引（依据原书图 3.3 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch3/3-3.png}
+  \caption{二维 C++ 数组的行主序布局及其一维索引}
   \label{fig:3-3}
 \end{figure}
 
@@ -341,9 +307,10 @@ $M_9$ 就是它的等价元素。这正是 C 和 C++ 编译器线性化二维数
   L = 0.299r + 0.587g + 0.114b.
 \]
 
-\noindent\textbf{译者注：}原书正文在这里给出的灰度公式与图 3.4 代码中的权重
-\code{0.21f}、\code{0.71f} 和 \code{0.07f} 并不相同。本译稿保留了两处
-底本内容，并将这一差异明确标出。
+\footnote{\noindent\textbf{译者注：}这里统一采用 ITU-R BT.601 对经过传递函数
+编码的 RGB 信号计算亮度信号（luma）的常用系数。不同色彩空间可能采用不同系数；
+若要求线性光意义上的相对亮度，应先通过逆传递函数将输入线性化，再使用与该
+色彩空间基色相匹配的系数。}
 
 \begin{figure}[htbp]
   \centering
@@ -366,7 +333,7 @@ void colorToGrayscaleConversion(unsigned char* Pout,
         unsigned char b = Pin[rgbOffset + 2]; // Blue value
         // Perform the rescaling and store it
         // We multiply by floating-point constants
-        Pout[grayOffset] = (unsigned char)(0.21f*r + 0.71f*g + 0.07f*b);
+        Pout[grayOffset] = (unsigned char)(0.299f*r + 0.587f*g + 0.114f*b);
     }
 }
   \end{lstlisting}
@@ -390,10 +357,10 @@ void colorToGrayscaleConversion(unsigned char* Pout,
 有 \code{width} 个像素，行 \code{row}、列 \code{col} 处像素的一维索引为
 \code{row*width+col}（图中第 10 行）。这个一维索引 \code{grayOffset} 是
 \code{Pout} 的像素索引，因为输出灰度图像中的每个像素占一个字节
-（\code{unsigned char}）。
-
-以 $62\times76$ 的图片为例，块 $(1,0)$ 中线程 $(0,0)$ 计算得到的
+（\code{unsigned char}）。以 $62\times76$ 的图片为例，块 $(1,0)$ 中线程 $(0,0)$ 计算得到的
 \code{Pout} 像素的一维索引为：
+{\color{red}
+
 \[
 \begin{aligned}
 \text{行索引}
@@ -414,7 +381,7 @@ P_{\mathrm{out}}[16,0]
   &=\code{Pout[1216]}.
 \end{aligned}
 \]
-
+}
 对于 \code{Pin}，需要把灰度像素索引乘以 3（图中第 13 行），因为每个彩色像素
 由三个元素存储：分别是 r、g、b，每个元素占一个字节。所得的
 \code{rgbOffset} 是 \code{Pin} 中该彩色像素的起始位置。程序从 \code{Pin}
@@ -448,44 +415,9 @@ P_{\mathrm{in}}[16,0]
 
 \begin{figure}[htbp]
   \centering
-  \begingroup
-  \scriptsize
-  \setlength{\tabcolsep}{3pt}
-  \begin{tabular}{c@{\hspace{0.4em}}c@{\hspace{0.4em}}c@{\hspace{0.4em}}c@{\hspace{0.4em}}c}
-    \multicolumn{5}{c}{\textbf{覆盖区域：$62\times76$ 像素，线程覆盖 $64\times80$}}\\
-    \hline
-    \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1\\
-      12 个块，$256$ 个线程有效}}
-      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
-      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
-      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
-      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 2\\
-        $192/256$ 有效}}\\
-    \hline
-    \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
-      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
-      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
-      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
-      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 2}}\\
-    \hline
-    \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
-      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
-      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
-      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 1}}
-      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 2}}\\
-    \hline
-    \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 3\\
-      $224/256$ 有效}}
-      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 3}}
-      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 3}}
-      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 3}}
-      & \fbox{\parbox[c][1.1cm][c]{0.14\textwidth}{\centering 区域 4\\
-        $168/256$ 有效}}\\
-    \hline
-  \end{tabular}
-  \endgroup
+  \includegraphics[width=\textwidth]{figs/ch3/3-5.png}
   \caption{用 $16\times16$ 线程块覆盖 $76\times62$（宽$\times$高，本章正文记作
-  $62\times76$）图片时的四类区域（依据原书图 3.5 重绘）}
+  $62\times76$）图片时的四类区域}
   \label{fig:3-5}
 \end{figure}
 
@@ -558,13 +490,8 @@ int plane = blockIdx.z*blockDim.z + threadIdx.z;
 
 \begin{figure}[htbp]
   \centering
-  \fbox{\begin{minipage}{0.82\textwidth}
-    \centering
-    \fbox{\parbox[c][2.0cm][c]{0.30\textwidth}{\centering 原始图像}}
-    \quad$\longrightarrow$\quad
-    \fbox{\parbox[c][2.0cm][c]{0.30\textwidth}{\centering 模糊图像}}
-  \end{minipage}}
-  \caption{原始图像与模糊图像的概念对比（依据原书图 3.6 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch3/3-6.png}
+  \caption{原始图像（左）及其模糊版本（右）}
   \label{fig:3-6}
 \end{figure}
 
@@ -590,17 +517,8 @@ $(\code{row},\code{col})$ 的输出像素值时，像素块以输入图像中同
 
 \begin{figure}[htbp]
   \centering
-  \begin{tabular}{|c|c|c|}
-    \hline
-    $(\code{row-1},\code{col-1})$ & $(\code{row-1},\code{col})$
-      & $(\code{row-1},\code{col+1})$\\ \hline
-    $(\code{row},\code{col-1})$ & \fbox{\textbf{目标像素}}
-      & $(\code{row},\code{col+1})$\\ \hline
-    $(\code{row+1},\code{col-1})$ & $(\code{row+1},\code{col})$
-      & $(\code{row+1},\code{col+1})$\\ \hline
-  \end{tabular}
-  \caption{输出像素由输入图像中以自身为中心的邻域像素块求平均得到
-  （依据原书图 3.7 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch3/3-7.png}
+  \caption{输出像素由输入图像中以自身为中心的邻域像素块求平均得到}
   \label{fig:3-7}
 \end{figure}
 
@@ -687,31 +605,8 @@ $(26,51)$。
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\hspace{1.2em}}c@{\hspace{1.2em}}c}
-    \fbox{\begin{minipage}{0.24\textwidth}
-      \centering
-      \textbf{情况 1：角点}\\[0.3em]
-      3$\times$3 邻域\\
-      4 个有效像素
-    \end{minipage}}
-    &
-    \fbox{\begin{minipage}{0.24\textwidth}
-      \centering
-      \textbf{情况 2：边}\\[0.3em]
-      3$\times$3 邻域\\
-      6 个有效像素
-    \end{minipage}}
-    &
-    \fbox{\begin{minipage}{0.24\textwidth}
-      \centering
-      \textbf{情况 3：内部}\\[0.3em]
-      3$\times$3 邻域\\
-      9 个有效像素
-    \end{minipage}}\\[0.7em]
-    \multicolumn{3}{c}{\scriptsize 译者补充：四个角点和四条边的边界处理都依赖有效像素计数。}
-  \end{tabular}
-  \caption{图像边缘附近像素的边界条件（依据原书图 3.9 重绘的概念示意）}
+  \includegraphics[width=0.62\textwidth]{figs/ch3/3-9.png}
+  \caption{图像边缘附近像素的边界条件}
   \label{fig:3-9}
 \end{figure}
 
@@ -786,32 +681,8 @@ P_{1,5}={}&M_{1,0}N_{0,5}+M_{1,1}N_{1,5}
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\hspace{0.7em}}c@{\hspace{0.7em}}c}
-    \fbox{\begin{minipage}{0.24\textwidth}
-      \centering
-      \textbf{$M$}\\[0.3em]
-      行 \code{row}\\
-      （水平条带）
-    \end{minipage}}
-    &
-    \fbox{\begin{minipage}{0.24\textwidth}
-      \centering
-      \textbf{$N$}\\[0.3em]
-      列 \code{col}\\
-      （垂直条带）
-    \end{minipage}}
-    &
-    \fbox{\begin{minipage}{0.24\textwidth}
-      \centering
-      \textbf{$P$}\\[0.2em]
-      \fbox{\rule{0pt}{0.8cm}\rule{0.13\textwidth}{0pt}}\\[0.15em]
-      \scriptsize 高亮内框表示一个瓦片
-    \end{minipage}}\\
-    \multicolumn{3}{c}{$M$ 的一行与 $N$ 的一列相乘并求和，得到 $P$ 的一个元素；
-    每个线程块负责 $P$ 中的一个瓦片。}
-  \end{tabular}
-  \caption{使用多个线程块分块计算矩阵 $P$（依据原书图 3.10 重绘）}
+  \includegraphics[width=0.78\textwidth]{figs/ch3/3-10.png}
+  \caption{使用多个线程块分块计算矩阵 $P$}
   \label{fig:3-10}
 \end{figure}
 
@@ -891,65 +762,26 @@ $(1,0)$ 的线程 $(0,0)$ 计算 $P_{2,0}$。
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c|c||c|c}
-    \hline
-    $P_{0,0}$ & $P_{0,1}$ & $P_{0,2}$ & $P_{0,3}$\\ \hline
-    $P_{1,0}$ & $P_{1,1}$ & $P_{1,2}$ & $P_{1,3}$\\ \hline\hline
-    $P_{2,0}$ & $P_{2,1}$ & $P_{2,2}$ & $P_{2,3}$\\ \hline
-    $P_{3,0}$ & $P_{3,1}$ & $P_{3,2}$ & $P_{3,3}$\\ \hline
-  \end{tabular}\\[0.4em]
-  \begin{tabular}{c}
-    \textbf{每个 $2\times2$ 方格是一个线程块}\\
-    块 $(0,0)$ 的线程 $(0,0)\longrightarrow P_{0,0}$\\
-    块 $(1,0)$ 的线程 $(0,0)\longrightarrow P_{2,0}$
-  \end{tabular}
-  \caption{\code{MatrixMulKernel} 的一个小型执行示例
-  （依据原书图 3.12 重绘）}
+  \includegraphics[width=0.75\textwidth]{figs/ch3/3-12.png}
+  \caption{\code{MatrixMulKernel} 的一个小型执行示例}
   \label{fig:3-12}
 \end{figure}
 
 \begin{figure}[htbp]
   \centering
-  \begingroup
-  \scriptsize
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{c@{\hspace{0.8em}}c@{\hspace{0.8em}}c}
-    \fbox{\begin{minipage}{0.23\textwidth}
-      \centering
-      \textbf{$M$}\\
-      第 \code{row} 行
-    \end{minipage}}
-    & $\longrightarrow$
-    & \fbox{\begin{minipage}{0.23\textwidth}
-      \centering
-      \textbf{$P$}\\
-      $P_{\mathrm{row,col}}$
-    \end{minipage}}\\[0.5em]
-    \fbox{\begin{minipage}{0.23\textwidth}
-      \centering
-      \textbf{$N$}\\
-      第 \code{col} 列
-    \end{minipage}}
-    & $\longrightarrow$
-    & \multicolumn{1}{c}{\parbox{0.24\textwidth}{\centering
-      \scriptsize 线程 $(0,0)$、$(1,0)$、$(0,1)$、$(1,1)$\\[-0.1em]
-      \scriptsize 分别产生 4 个点积}}
-  \end{tabular}
-  \endgroup
-  \caption{一个线程块执行矩阵乘法时的动作（依据原书图 3.13 重绘）}
+  \includegraphics[width=0.62\textwidth]{figs/ch3/3-13.png}
+  \caption{一个线程块执行矩阵乘法时的动作}
   \label{fig:3-13}
 \end{figure}
 
-\noindent
+
 在 \code{MatrixMulKernel} 中，\code{row} 和 \code{col} 索引确定线程要计算的
 $P$ 元素。\code{row} 索引同时确定 $M$ 的行，\code{col} 索引确定 $N$ 的列，
 它们构成该线程的输入。图 \ref{fig:3-13} 展示了每个线程块中的乘法动作。对于
 小型矩阵乘法例子，块 $(0,0)$ 中的线程产生 4 个点积。块 $(0,0)$ 中线程
 $(1,0)$ 的行、列索引分别为 $0\times2+1=1$ 和 $0\times2+0=0$，因此该线程
 映射到 $P_{1,0}$，计算 $M$ 第 1 行与 $N$ 第 0 列的点积。
-\noindent\textbf{译者注：}原书此处将两个乘数排印为 0；由于本例的线程块为
-$2\times2$，这里按前文的索引公式校正为 2。
+
 
 现在手动跟踪图 \ref{fig:3-11} 中块 $(0,0)$ 的线程 $(0,0)$ 执行
 \code{for} 循环的过程。第 0 次迭代（$k=0$）中，
