@@ -1,5 +1,6 @@
 \chapter{多维网格与数据}
 \label{chap:multidimensional-grids-and-data}
+\chaptercontents
 
 \setcounter{footnote}{0}
 
@@ -130,7 +131,7 @@ KernelFunction<<<dimGrid, dimBlock>>>(...);
 
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=\textwidth]{figs/ch3/3-1.png}
+  \includegraphics[width=0.7\textwidth]{figs/ch3/3-1.png}
   \caption{CUDA 多维网格组织示例}
   \label{fig:3-1}
 \end{figure}
@@ -149,10 +150,6 @@ $(1,0)$ 的 \code{blockIdx.y}=1，\code{blockIdx.x}=0。\textbf{需要注意，�
 图 \ref{fig:3-1} 展开块 $(1,1)$，展示其中的 16 个线程。例如，线程 $(1,0,2)$
 具有 \code{threadIdx.z}=1、\code{threadIdx.y}=0 和 \code{threadIdx.x}=2。
 在这个例子中，网格共有 4 个线程块，每个线程块 16 个线程，总计 64 个线程。
-
-\footnote{\noindent\textcolor{red}{\textbf{译者注：}原书相应说明中有一处疑似排印错误，写作
-\code{threadId.x}；CUDA C++ 的内置变量实际是 \code{threadIdx.x}，本译稿按
-正确标识符规范化。}}
 这里使用很小的数字只是为了让图示保持简单；典型 CUDA 网格包含数千到数百万个
 线程。
 
@@ -187,7 +184,7 @@ $(1,0)$ 的 \code{blockIdx.y}=1，\code{blockIdx.x}=0。\textbf{需要注意，�
 
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=\textwidth]{figs/ch3/3-2.png}
+  \includegraphics[width=0.8\textwidth]{figs/ch3/3-2.png}
   \caption{使用二维线程网格处理输入图片 \code{Pin}（$62\times76$）}
   \label{fig:3-2}
 \end{figure}
@@ -226,10 +223,6 @@ dim3 dimBlock(16, 16, 1);
 colorToGrayscaleConversion<<<dimGrid, dimBlock>>>(
     Pout_d, Pin_d, m, n);
 \end{lstlisting}
-
-\footnote{\noindent\textbf{译者注：}原书此处的主机调用顺序与图 3.4 中的内核形参声明
-\code{Pout, Pin} 相反。为使示例按该声明正确工作，本译稿将调用顺序校正为
-\code{Pout_d, Pin_d}；这一处改动特此注明。}
 
 为简单起见，本例把线程块维度固定为 $16\times16$。另一方面，网格维度取决于
 图片的尺寸。处理一张 $1500\times2000$（300 万像素）的图片时，需要生成
@@ -337,8 +330,7 @@ void colorToGrayscaleConversion(unsigned char* Pout,
     }
 }
   \end{lstlisting}
-  \caption{\code{colorToGrayscaleConversion} 内核及其二维线程到数据的映射
-  （依据原书图 3.4 重绘）}
+  \caption{\code{colorToGrayscaleConversion} 内核及其二维线程到数据的映射}
   \label{fig:3-4}
 \end{figure}
 
@@ -359,7 +351,7 @@ void colorToGrayscaleConversion(unsigned char* Pout,
 \code{Pout} 的像素索引，因为输出灰度图像中的每个像素占一个字节
 （\code{unsigned char}）。以 $62\times76$ 的图片为例，块 $(1,0)$ 中线程 $(0,0)$ 计算得到的
 \code{Pout} 像素的一维索引为：
-{\color{red}
+
 
 \[
 \begin{aligned}
@@ -381,7 +373,7 @@ P_{\mathrm{out}}[16,0]
   &=\code{Pout[1216]}.
 \end{aligned}
 \]
-}
+
 对于 \code{Pin}，需要把灰度像素索引乘以 3（图中第 13 行），因为每个彩色像素
 由三个元素存储：分别是 r、g、b，每个元素占一个字节。所得的
 \code{rgbOffset} 是 \code{Pin} 中该彩色像素的起始位置。程序从 \code{Pin}

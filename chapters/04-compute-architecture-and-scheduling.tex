@@ -1,5 +1,6 @@
 \chapter{计算架构与调度}
 \label{chap:compute-architecture-and-scheduling}
+\chaptercontents
 
 \setcounter{footnote}{0}
 
@@ -39,7 +40,6 @@ SM 的内存资源由不同的片上内存结构组成，在图 \ref{fig:4-1} �
 \textbf{Memory}。第五章将讨论这些片上内存结构。GPU 还配有若干 GB 的片外设备
 内存，在图中称为\textbf{全局内存（Global Memory）}。全局内存通过多个内存控制器
 或内存通道访问；这些控制器或通道在整体上提供较高的数据访问带宽。
-
 较早的 GPU 使用 GDDR（Graphics Double Data Rate）SDRAM（Synchronous Dynamic
 Random Access Memory）。从 NVIDIA Pascal 架构开始，GPU 还可能使用 HBM
 （High-Bandwidth Memory）、HBM2、HBM2E 或 HBM3。这些内存由与 GPU 集成在同一
@@ -49,7 +49,7 @@ Random Access Memory）。从 NVIDIA Pascal 架构开始，GPU 还可能使用 H
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=\textwidth]{figs/ch4/4-1.png}
-  \caption{CUDA-capable GPU 的架构（SP 表示流式处理器）}
+  \caption{CUDA-capable GPU 的架构}
   \label{fig:4-1}
 \end{figure}
 
@@ -97,11 +97,9 @@ cluster），即一组线程块。类似于同一线程块中的线程会被分�
 
 CUDA 允许同一线程块中的线程使用线程块范围的屏障同步函数协调活动。最常用的
 函数是 \code{__syncthreads()}。注意，该函数名中的两个下划线分别由两个连续的
-\code{_} 字符组成；这是 CUDA 中表示内建函数（intrinsic function）的约定，见
-“内建函数”侧栏。
-
-当一个线程调用 \code{__syncthreads()} 时，它会停留在调用所在的程序位置，直到
-同一线程块中的每个线程都到达该位置。调用同步函数的线程被称为到达了与该程序
+\code{_} 字符组成；这是 CUDA 中表示内建函数（intrinsic function）的约定（见侧栏：
+“内建函数”）。\textbf{当一个线程调用 \code{__syncthreads()} 时，它会停留在调用所在的程序位置，
+直到同一线程块中的每个线程都到达该位置}。调用同步函数的线程被称为到达了与该程序
 位置对应的屏障。屏障确保线程块中的所有线程都完成当前执行阶段，然后任何线程
 才能进入下一阶段。只有当线程块中的所有线程都到达屏障后，它们才会被释放，继续
 执行屏障之后的语句。
@@ -149,7 +147,6 @@ Collection（gcc）、Intel C Compiler 和 Clang/LLVM C Compiler 等主流现代
 要么都执行包含该调用的路径，要么都不执行。对于 \code{if-else} 语句，如果两个
 路径各有一个 \code{__syncthreads()}，线程块中的所有线程也必须全部执行
 \code{then} 路径，或全部执行 \code{else} 路径。两个调用是不同的屏障同步点。
-
 图 \ref{fig:4-4} 展示了一个错误用法：从第 04 行开始的 \code{if} 语句中有两个
 屏障同步调用。偶数 \code{threadIdx.x} 的线程执行 \code{then} 路径，其余线程
 执行 \code{else} 路径。第 06 行和第 10 行的调用定义了两个不同的屏障。由于不能
@@ -173,8 +170,7 @@ __global__ void foo_kernel(...) {
     }
 }
   \end{lstlisting}
-  \caption{错误使用 \code{__syncthreads()} 的示例；第 06 行和第 10 行
-  是不同的屏障（依据原书图 4.4 重绘）}
+  \caption{错误使用 \code{__syncthreads()} 的示例。}
   \label{fig:4-4}
 \end{figure}
 
@@ -242,11 +238,7 @@ warp 是 SM 中的线程调度单位。图 \ref{fig:4-6} 展示了一个实现�
 warp 的方式。示例中，块 1、块 2 和块 3 都分配给同一个 SM；每个块又被划分为
 多个 warp。每个 warp 由连续的 \code{threadIdx} 值组成：线程 0–31 构成第一个
 warp，线程 32–63 构成第二个 warp，以此类推。如果每个线程块有 256 个线程，
-则每个块有
-\[
-  256/32=8
-\]
-个 warp；SM 中有三个这样的块，因此共有 $8\times3=24$ 个 warp。
+则每个块有 $256/32=8$ 个 warp；SM 中有三个这样的块，因此共有 $8\times3=24$ 个 warp。
 
 \begin{figure}[htbp]
   \centering
@@ -279,7 +271,6 @@ $32(n+1)-1$ 结束。如果线程块大小不是 32 的倍数，最后一个 war
 y 坐标为 0，按 x 坐标递增排列；接下来四个线程的 y 坐标为 1，也按 x 坐标递增
 排列。这里的坐标分别对应 CUDA 字段 \code{threadIdx.y} 和 \code{threadIdx.x}。
 示例中的 16 个线程构成半个 warp，另用 16 个非活动线程补足一个 32 线程 warp。
-
 如果二维线程块为 $8\times8$，64 个线程会构成两个 warp。第一个 warp 从
 $T_{0,0}$ 到 $T_{3,7}$，第二个 warp 从 $T_{4,0}$ 到 $T_{7,7}$。读者可以
 自行画出该图验证这一点。
@@ -289,6 +280,10 @@ $T_{0,0}$ 到 $T_{3,7}$，第二个 warp 从 $T_{4,0}$ 到 $T_{7,7}$。读者可
 例如，一个三维 $2\times8\times4$ 线程块（x 维为 4、y 维为 8、z 维为 2）
 共有 64 个线程，会划分为两个 warp：第一个 warp 从 $T_{0,0,0}$ 到
 $T_{0,7,3}$，第二个 warp 从 $T_{1,0,0}$ 到 $T_{1,7,3}$。
+
+\footnote{本文用 $T_{z,y,x}$ 表示线程坐标，三个下标依次对应
+\code{threadIdx.z}、\code{threadIdx.y} 和 \code{threadIdx.x}；
+因此这里的 $2\times8\times4$ 按 $z\times y\times x$ 排列。}
 
 SM 设计为按照单指令多数据（Single Instruction, Multiple Data，SIMD）模型执行
 warp 中的所有线程。也就是说，在任意时刻，一条指令会被取出并由 warp 中所有
@@ -301,7 +296,8 @@ warp 中的所有线程。也就是说，在任意时刻，一条指令会被取
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=0.48\textwidth]{figs/ch4/4-8.png}
-  \caption{SM 由处理分区组成，以执行 SIMD 指令}
+  \caption{SM被组织成处理块以进行SIMD。在这个玩具示例中，
+  每八个流处理器形成一个处理块。SM由两个处理块组成。}
   \label{fig:4-8}
 \end{figure}
 
@@ -335,7 +331,13 @@ EDVAC 计算机的设计为基础。今天通常称为“冯·诺依曼模型”
 计算机的基础蓝图。
 
 冯·诺依曼模型中的计算机有输入/输出（I/O），可以向系统提供程序和数据，也可以
-从系统产生结果。执行程序时，计算机首先把程序及其数据输入内存。程序由一组
+从系统产生结果。执行程序时，计算机首先把程序及其数据输入内存。
+
+\begin{center}
+  \includegraphics[width=0.62\textwidth]{figs/ch4/sidebar-von-neumann.png}
+\end{center}
+
+程序由一组
 指令组成；控制单元维护程序计数器（Program Counter，PC），其中保存下一条待
 执行指令的内存地址。在每个“指令周期”中，控制单元使用 PC 将指令取入指令
 寄存器（Instruction Register，IR），再检查指令位以确定计算机各组件要执行的
@@ -345,7 +347,13 @@ EDVAC 计算机的设计为基础。今天通常称为“冯·诺依曼模型”
 将线程作为 warp 执行的动机，可以用适合 GPU 的修改版冯·诺依曼模型表示。对应
 图 \ref{fig:4-8} 中处理分区的处理器只有一个负责取出和分发指令的控制单元；
 相同的控制信号会发送到多个处理单元，每个处理单元对应 SM 中的一个流式处理器，
-并执行 warp 中的一个线程。所有处理单元都由指令寄存器中的同一条指令控制，
+并执行 warp 中的一个线程。
+
+\begin{center}
+  \includegraphics[width=0.72\textwidth]{figs/ch4/sidebar-simd.png}
+\end{center}
+
+所有处理单元都由指令寄存器中的同一条指令控制，
 它们的执行差异来自寄存器文件中不同的数据操作数。这就是处理器设计中的 SIMD。
 
 例如，所有处理单元都可以执行 \code{add r1, r2, r3}，但不同处理单元中的
@@ -367,7 +375,7 @@ EDVAC 计算机的设计为基础。今天通常称为“冯·诺依曼模型”
 但是，当同一 warp 中的线程采取不同控制流路径时，SIMD 硬件会分别遍历这些路径，
 每条路径执行一次。例如，部分线程走 \code{then} 路径、其余线程走 \code{else}
 路径时，硬件会执行两次：一次执行 \code{then} 路径，另一次执行 \code{else}
-路径。每次遍历其中一条路径时，走另一条路径的线程都不会产生有效作用。
+路径。在每次通过其中一条路径时，跟随另一条路径的线程不允许生效。
 
 同一 warp 中的线程采取不同控制流路径时，称这些线程发生了\textbf{控制流分歧
 （control divergence）}。这种多遍执行方式使 SIMD 硬件能够实现 CUDA 线程的
@@ -394,8 +402,8 @@ Volta 架构开始，不同遍可以并发执行，也就是一条路径的执�
 完成某个阶段后才能继续，应使用 \code{__syncwarp()} 等 warp 级屏障同步原语
 保证正确性。
 
-分歧也可能出现在其他控制流结构中。图 \ref{fig:4-10} 展示了分歧
-\code{for} 循环：每个线程执行不同数量的迭代，次数从 4 到 8 不等。前四次迭代
+分歧也可能出现在其他控制流结构中。图 \ref{fig:4-10} 展示了\textbf{分歧
+\code{for} 循环}：每个线程执行不同数量的迭代，次数从 4 到 8 不等。前四次迭代
 中所有线程都活动并执行 A；第五次迭代中，部分线程执行 A，另一些线程（例如
 线程 4）已经完成迭代而处于非活动状态；第八次迭代中，图示线程中只有线程 1
 和线程 7 执行 A，其他线程均非活动。
@@ -466,7 +474,6 @@ Volta 架构开始，不同遍可以并发执行，也就是一条路径的执�
 warp 要执行的指令需要等待先前发起的长延迟操作结果时，该 warp 不会被选中执行；
 硬件会选择另一个不再等待结果的驻留 warp。没有等待前序指令结果的 warp 已经
 \textbf{准备好执行}。若有多个 warp 准备好执行，优先级逻辑会选择其中一个。
-
 SM 在每个时刻选择不同准备好执行的 warp 的能力称为\textbf{细粒度多线程
 （fine-grained multithreading）}。它让 SM 可以利用某些线程的指令等待时间，
 执行其他线程的指令。因此，即使指令延迟很长，warp 的细粒度多线程执行仍能保持
@@ -518,11 +525,7 @@ warp 调度会把 warp 指令的长等待时间“隐藏”起来：硬件在等
 
 要使延迟容忍有效，最好给 SM 分配远多于其执行单元同时支持数量的线程。例如，
 Hopper H100 GPU 的每个 SM 有 128 个流式处理器，但同时最多可以分配 2048 个
-线程。因此，一个 SM 可以拥有多达
-\[
-  2048/128=16
-\]
-倍于当前一个时钟周期可执行数量的线程。这种线程相对于 SM 的过量配置
+线程。因此，一个 SM 可以拥有多达16倍于当前一个时钟周期可执行数量的线程。这种线程相对于 SM 的过量配置
 （oversubscription）对于延迟容忍非常重要，因为当前 warp 遇到长延迟操作时，
 它提高了找到另一个 warp 执行的概率。
 

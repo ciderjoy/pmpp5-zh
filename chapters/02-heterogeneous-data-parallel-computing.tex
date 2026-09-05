@@ -1,5 +1,6 @@
 \chapter{异构数据并行计算}
 \label{chap:heterogeneous-data-parallel-computing}
+\chaptercontents
 
 数据并行性是这样一种现象：要在数据集的不同部分上执行的计算彼此独立，因此
 可以并行执行。许多应用都具有丰富的数据并行性，适合进行可扩展的并行执行；在
@@ -142,13 +143,13 @@ CUDA 程序通过调用内核函数启动并行执行，底层运行时机制则
 多个输出像素，以提高执行和数据访问效率；本书后文会讨论这一点。由于硬件支持
 高效的线程生成和调度，CUDA 程序员可以假设这些线程只需很少的时钟周期就能生成
 和调度；传统 CPU 线程的生成和调度通常则需要数千个时钟周期。第 3 章将展示如何
-实现彩色转灰度和图像模糊\textcolor{red}{内核}，本章为简洁起见使用向量加法作为贯穿示例。
+实现彩色转灰度和图像模糊内核函数，本章为简洁起见使用向量加法作为贯穿示例。
 
 \section{向量加法示例}
 \label{sec:vector-addition-example}
 
-向量加法可以说是最简单的数据并行计算，\textcolor{red}{是顺序编程中 ``Hello World'' 的并行
-对应物}。在展示向量加法的内核代码之前，先回顾传统向量加法（主机代码）函数的
+向量加法可以说是最简单的数据并行计算，相当于顺序编程中 ``Hello World'' 。
+在展示向量加法的内核代码之前，先回顾传统向量加法（主机代码）函数的
 工作方式会很有帮助。图 \ref{fig:2-4} 展示了一个由 \code{main} 函数和向量加法
 函数组成的简单 C++ 程序。
 
@@ -249,8 +250,8 @@ global memory），通常简称全局内存。例如，NVIDIA Hopper H100 GPU �
 对于向量加法内核，调用内核之前，程序员需要在设备全局内存中分配空间，并把数据
 从主机内存传送到设备全局内存中的已分配空间。这些活动对应图 \ref{fig:2-5} 的
 第 1 部分。设备执行结束后，程序员还需要把输出数据从设备全局内存传回主机内存，
-并释放不再需要的设备全局内存空间；这些活动对应第 3 部分。\textcolor{red}{CUDA 运行时系统
-（通常运行在主机上）提供 API 函数，代表程序员完成这些活动。}下文简称“从主机
+并释放不再需要的设备全局内存空间；这些活动对应第 3 部分。CUDA 运行时系统
+（通常运行在主机上）提供 API 函数，替程序员完成这些活动。下文简称“从主机
 向设备传送数据”，指把数据从主机内存复制到设备全局内存；反方向同理。
 
 图 \ref{fig:2-5} 的第 1 和第 3 部分需要使用 CUDA API 函数，为 $A$、$B$、$C$
@@ -259,16 +260,8 @@ global memory），通常简称全局内存。例如，NVIDIA Hopper H100 GPU �
 
 \begin{figure}[htbp]
   \centering
-  \begin{tabular}{>{\ttfamily}p{0.22\textwidth} p{0.65\textwidth}}
-    \toprule
-    \code{cudaMalloc()} & 在设备全局内存中分配对象且需要两个参数。\\
-    {\normalfont\bfseries 指针的地址：} & 该指针指向所分配对象。\\
-    {\normalfont\bfseries 大小：} & 该分配对象以字节数表示的分配大小。\\
-    \code{cudaFree()} & 从设备全局内存释放对象且需要一个参数。\\
-    {\normalfont\bfseries 指针：} & 指向待释放对象。\\
-    \bottomrule
-  \end{tabular}
-  \caption{管理设备全局内存的 CUDA API 函数（依据原书图 2.6 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch2/2-6.png}
+  \caption{管理设备全局内存的 CUDA API 函数}
   \label{fig:2-6}
 \end{figure}
 
@@ -348,15 +341,7 @@ cudaFree(A_d);
 
 \begin{figure}[htbp]
   \centering
-  \begin{tabular}{>{\ttfamily}p{0.25\textwidth} p{0.62\textwidth}}
-    \toprule
-    \code{cudaMemcpy()} & 执行内存数据传送，需要四个参数。 \\
-    {\normalfont \bfseries 目标指针} & 指向目标内存地址的指针。 \\
-    {\normalfont \bfseries 源指针} & 指向源内存地址的指针。\\ 
-    {\normalfont \bfseries 大小} & 要复制的字节数。\\
-    {\normalfont \bfseries 传输类型} & 即传送方向。\\
-    \bottomrule
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch2/2-7.png}
   \caption{在主机与设备之间传送数据的 CUDA API 函数}
   \label{fig:2-7}
 \end{figure}
@@ -448,9 +433,7 @@ if (err != cudaSuccess) {
 \end{lstlisting}
 
 这样，如果系统设备内存不足，用户就会得到通知。恰当的错误检查可以节省数小时的
-调试时间；还可以定义 C++ 宏，使源代码中的检查代码更加简洁。\textcolor{red}{原书示例的条件
-判断写作 \code{error}，但前一行声明的是 \code{err}；此处按上下文改为
-\code{err}。}
+调试时间；还可以定义 C++ 宏，使源代码中的检查代码更加简洁。
 \end{quote}
 
 \section{内核函数与线程}
@@ -522,8 +505,8 @@ CUDA 内核还可以访问另外两个内置变量 \code{threadIdx} 和 \code{bl
 在一个区域内，每条电话线都有一个七位数的本地号码，因此每个区域最多约有一千万
 个号码。可以把每条电话线看作一个 CUDA 线程，把区号看作 \code{blockIdx}，把
 七位本地号码看作 \code{threadIdx}。这种层次化组织在保持局部性的同时，支持非常
-大的电话线路数量；\textcolor{red}{拨打同一区域的号码时只需拨本地号码，偶尔拨打其他区域的号码
-时才需要拨 1、区号和本地号码}。CUDA 线程的层次化组织也提供了一种局部性形式，
+大的电话线路数量；拨打同一区域的号码时只需拨本地号码，偶尔拨打其他区域的号码
+时才需要拨 1 和区号以及本地号码。CUDA 线程的层次化组织也提供了一种局部性形式，
 本书很快就会研究这种局部性。
 \end{quote}
 

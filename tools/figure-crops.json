@@ -1,7 +1,8 @@
 {
     "project_root": "..",
     "pdf": "doc/Programming Massively Parallel Processors 5th.pdf",
-    "dpi": 300,
+    "dpi": 600,
+    "coordinate_dpi": 300,
     "figures": [
         {
             "id": "1-1",
@@ -68,6 +69,28 @@
                 "height": 950
             },
             "output": "figs/ch2/2-5.png"
+        },
+        {
+            "id": "2-6",
+            "page": 57,
+            "crop": {
+                "x": 343,
+                "y": 318,
+                "width": 1420,
+                "height": 331
+            },
+            "output": "figs/ch2/2-6.png"
+        },
+        {
+            "id": "2-7",
+            "page": 59,
+            "crop": {
+                "x": 337,
+                "y": 321,
+                "width": 1425,
+                "height": 286
+            },
+            "output": "figs/ch2/2-7.png"
         },
         {
             "id": "2-9",
@@ -288,6 +311,30 @@
                 "height": 653
             },
             "output": "figs/ch4/4-10.png"
+        },
+        {
+            "id": "4-sidebar-von-neumann",
+            "page": 106,
+            "crop": {
+                "x": 735,
+                "y": 1113,
+                "width": 931,
+                "height": 720
+            },
+            "output": "figs/ch4/sidebar-von-neumann.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "4-sidebar-simd",
+            "page": 107,
+            "crop": {
+                "x": 553,
+                "y": 564,
+                "width": 991,
+                "height": 608
+            },
+            "output": "figs/ch4/sidebar-simd.png",
+            "review": "reviewed"
         }
     ]
 }

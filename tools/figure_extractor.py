@@ -8,7 +8,8 @@ Two workflows are supported:
    human review. Automatic rectangles are candidates, not final truth.
 
 All page numbers are one-based PDF physical page numbers. Crop coordinates in
-the manifest are pixels at the manifest's reference DPI.
+the manifest are pixels at the manifest's coordinate DPI; the output DPI only
+controls the resolution of rendered PNG files.
 """
 
 from __future__ import annotations
@@ -87,7 +88,7 @@ def selected_figures(
     return [by_id[figure_id] for figure_id in requested_ids]
 
 
-def crop_rect_points(crop: Dict[str, Any], dpi: int) -> fitz.Rect:
+def crop_rect_points(crop: Dict[str, Any], coordinate_dpi: int) -> fitz.Rect:
     required = ("x", "y", "width", "height")
     missing = [key for key in required if key not in crop]
     if missing:
@@ -100,7 +101,9 @@ def crop_rect_points(crop: Dict[str, Any], dpi: int) -> fitz.Rect:
     height = float(crop["height"])
     if x < 0 or y < 0 or width <= 0 or height <= 0:
         raise FigureExtractorError(f"Invalid crop rectangle: {crop}")
-    points_per_pixel = 72.0 / dpi
+    if coordinate_dpi <= 0:
+        raise FigureExtractorError("Coordinate DPI must be a positive integer")
+    points_per_pixel = 72.0 / coordinate_dpi
     return fitz.Rect(
         x * points_per_pixel,
         y * points_per_pixel,
@@ -110,6 +113,8 @@ def crop_rect_points(crop: Dict[str, Any], dpi: int) -> fitz.Rect:
 
 
 def crop_pixels(rect: fitz.Rect, dpi: int) -> Dict[str, int]:
+    if dpi <= 0:
+        raise FigureExtractorError("DPI must be a positive integer")
     pixels_per_point = dpi / 72.0
     x0 = max(0, round(rect.x0 * pixels_per_point))
     y0 = max(0, round(rect.y0 * pixels_per_point))
@@ -142,6 +147,8 @@ def render_clip(
     dpi: int,
     output: Path,
 ) -> Tuple[int, int]:
+    if dpi <= 0:
+        raise FigureExtractorError("DPI must be a positive integer")
     if page_number < 1 or page_number > document.page_count:
         raise FigureExtractorError(
             f"PDF page {page_number} is outside 1..{document.page_count}"
@@ -166,7 +173,7 @@ def render_clip(
 def validate_manifest(
     document: fitz.Document,
     figures: Iterable[Dict[str, Any]],
-    dpi: int,
+    coordinate_dpi: int,
 ) -> None:
     seen = set()
     for figure in figures:
@@ -184,7 +191,7 @@ def validate_manifest(
         crop = figure.get("crop")
         if not isinstance(crop, dict):
             raise FigureExtractorError(f"Figure {figure_id}: crop must be an object")
-        rect = crop_rect_points(crop, dpi)
+        rect = crop_rect_points(crop, coordinate_dpi)
         page_rect = document[page_number - 1].rect
         if rect.is_empty or not page_rect.contains(rect):
             raise FigureExtractorError(
@@ -199,12 +206,17 @@ def command_extract(args: argparse.Namespace) -> int:
     pdf_path = source_pdf(manifest_path, manifest, args.pdf)
     if not pdf_path.is_file():
         raise FigureExtractorError(f"Source PDF not found: {pdf_path}")
-    dpi = int(args.dpi or manifest.get("dpi", 300))
+    dpi = int(args.dpi if args.dpi is not None else manifest.get("dpi", 300))
+    coordinate_dpi = int(manifest.get("coordinate_dpi", dpi))
+    if dpi <= 0:
+        raise FigureExtractorError("DPI must be a positive integer")
+    if coordinate_dpi <= 0:
+        raise FigureExtractorError("Coordinate DPI must be a positive integer")
     figures = selected_figures(manifest, args.ids)
     output_root = args.output_root.expanduser().resolve() if args.output_root else None
 
     with fitz.open(pdf_path) as document:
-        validate_manifest(document, figures, dpi)
+        validate_manifest(document, figures, coordinate_dpi)
         rendered: List[Tuple[str, Path]] = []
         for figure in figures:
             figure_id = str(figure["id"])
@@ -213,7 +225,7 @@ def command_extract(args: argparse.Namespace) -> int:
                 print(f"skip  {figure_id:>6}  {output} (use --force to overwrite)")
                 rendered.append((figure_id, output))
                 continue
-            rect = crop_rect_points(figure["crop"], dpi)
+            rect = crop_rect_points(figure["crop"], coordinate_dpi)
             width, height = render_clip(
                 document, int(figure["page"]), rect, dpi, output
             )
@@ -365,7 +377,14 @@ def command_detect(args: argparse.Namespace) -> int:
     pdf_path = source_pdf(manifest_path, manifest, args.pdf)
     if not pdf_path.is_file():
         raise FigureExtractorError(f"Source PDF not found: {pdf_path}")
-    dpi = int(args.dpi or manifest.get("dpi", 300))
+    coordinate_dpi = int(
+        args.dpi
+        if args.dpi is not None
+        else manifest.get("coordinate_dpi", manifest.get("dpi", 300))
+    )
+    if coordinate_dpi <= 0:
+        raise FigureExtractorError("Coordinate DPI must be a positive integer")
+    dpi = coordinate_dpi
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     candidates: List[Dict[str, Any]] = []
@@ -429,6 +448,7 @@ def command_detect(args: argparse.Namespace) -> int:
                 "project_root": str(root),
                 "pdf": str(pdf_path),
                 "dpi": dpi,
+                "coordinate_dpi": coordinate_dpi,
                 "figures": candidates,
             },
             ensure_ascii=False,
@@ -481,7 +501,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="only detect captions belonging to this chapter",
     )
-    detect.add_argument("--dpi", type=int, help="candidate output DPI")
+    detect.add_argument(
+        "--dpi",
+        type=int,
+        help="candidate coordinate and preview output DPI",
+    )
     detect.add_argument(
         "--output-dir",
         type=Path,

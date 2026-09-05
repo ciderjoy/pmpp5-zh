@@ -14,6 +14,8 @@
 \usepackage{hyperref}
 \usepackage{bookmark}
 \usepackage{mdframed}
+\usepackage{etoc}
+\usepackage{etoolbox}
 
 \renewenvironment{quote}{%
   \begin{mdframed}[
@@ -62,6 +64,30 @@
 }
 
 \newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+
+\newcommand{\chaptercontents}{%
+  \begingroup
+    % 原书的章节小目录只列出当前章的一级标题，不重复显示小节。
+    \etocsetnexttocdepth{1}%
+    \etocsettocstyle{%
+      \begin{mdframed}[
+        backgroundcolor=gray!8,
+        linecolor=gray!35,
+        linewidth=0.4pt,
+        skipabove=0.8em,
+        skipbelow=1.2em,
+        innertopmargin=0.55em,
+        innerbottommargin=0.55em,
+        innerleftmargin=0.9em,
+        innerrightmargin=0.9em
+      ]%
+      \noindent\textbf{本章目录}\par\vspace{0.25em}%
+    }{%
+      \end{mdframed}%
+    }%
+    \localtableofcontents
+  \endgroup
+}
 
 \newcommand{\placeholderfigure}[2]{%
   \begin{figure}[htbp]

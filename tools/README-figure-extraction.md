@@ -73,7 +73,9 @@ open build/figure-candidates/ch3/index.html
 
 ## 确认并修正候选
 
-候选坐标使用 300 DPI 像素，并以 PDF 的 CropBox（正文裁切框）左上角为原点：
+当前正式图片以 600 DPI 输出；清单中的已确认坐标仍使用 300 DPI 像素，
+并以 PDF 的 CropBox（正文裁切框）左上角为原点。`figure-crops.json` 中的
+`coordinate_dpi` 记录坐标基准，`dpi` 记录正式输出分辨率：
 
 ```json
 {
@@ -92,9 +94,14 @@ open build/figure-candidates/ch3/index.html
 字段含义：
 
 - `page`：PDF 物理页，从 1 开始；
-- `x`、`y`：裁剪区域左上角；
-- `width`、`height`：裁剪区域尺寸；
+- `coordinate_dpi`：清单中裁剪坐标的基准 DPI；
+- `dpi`：正式 PNG 图片的输出 DPI；
+- `x`、`y`：以 `coordinate_dpi` 为基准的裁剪区域左上角；
+- `width`、`height`：以 `coordinate_dpi` 为基准的裁剪区域尺寸；
 - `output`：项目根目录下的正式输出路径。
+
+工具会先根据 `coordinate_dpi` 将清单坐标换算为 PDF point，再按照 `dpi`
+渲染 PNG。因此提高输出 DPI 不会改变已经确认的物理裁剪区域。
 
 本书的 MediaBox 比 CropBox 四周各宽 72pt。直接使用 `pdftocairo` 渲染整张
 MediaBox 后量出的 300 DPI 坐标，需要把 `x`、`y` 各减去 300，才能写入本工具的
