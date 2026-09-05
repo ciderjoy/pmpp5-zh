@@ -11,6 +11,7 @@
 
 .venv/
 build/figure-*/
+code/build/
 
 # 产物
 main.pdf
