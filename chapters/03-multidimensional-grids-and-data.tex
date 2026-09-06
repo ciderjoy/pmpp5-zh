@@ -1,6 +1,5 @@
 \chapter{多维网格与数据}
 \label{chap:multidimensional-grids-and-data}
-\chaptercontents
 
 \setcounter{footnote}{0}
 
@@ -184,7 +183,7 @@ $(1,0)$ 的 \code{blockIdx.y}=1，\code{blockIdx.x}=0。\textbf{需要注意，�
 
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=0.8\textwidth]{figs/ch3/3-2.png}
+  \includegraphics[width=\textwidth]{figs/ch3/3-2.png}
   \caption{使用二维线程网格处理输入图片 \code{Pin}（$62\times76$）}
   \label{fig:3-2}
 \end{figure}
@@ -223,6 +222,10 @@ dim3 dimBlock(16, 16, 1);
 colorToGrayscaleConversion<<<dimGrid, dimBlock>>>(
     Pout_d, Pin_d, m, n);
 \end{lstlisting}
+
+\footnote{\noindent\textbf{译者注：}原书此处的主机调用顺序与图 3.4 中的内核形参声明
+\code{Pout, Pin} 相反。为使示例按该声明正确工作，本译稿将调用顺序校正为
+\code{Pout_d, Pin_d}；这一处改动特此注明。}
 
 为简单起见，本例把线程块维度固定为 $16\times16$。另一方面，网格维度取决于
 图片的尺寸。处理一张 $1500\times2000$（300 万像素）的图片时，需要生成
@@ -330,7 +333,8 @@ void colorToGrayscaleConversion(unsigned char* Pout,
     }
 }
   \end{lstlisting}
-  \caption{\code{colorToGrayscaleConversion} 内核及其二维线程到数据的映射}
+  \caption{\code{colorToGrayscaleConversion} 内核及其二维线程到数据的映射
+  （依据原书图 3.4 重绘）}
   \label{fig:3-4}
 \end{figure}
 
@@ -351,7 +355,7 @@ void colorToGrayscaleConversion(unsigned char* Pout,
 \code{Pout} 的像素索引，因为输出灰度图像中的每个像素占一个字节
 （\code{unsigned char}）。以 $62\times76$ 的图片为例，块 $(1,0)$ 中线程 $(0,0)$ 计算得到的
 \code{Pout} 像素的一维索引为：
-
+{\color{red}
 
 \[
 \begin{aligned}
@@ -373,7 +377,7 @@ P_{\mathrm{out}}[16,0]
   &=\code{Pout[1216]}.
 \end{aligned}
 \]
-
+}
 对于 \code{Pin}，需要把灰度像素索引乘以 3（图中第 13 行），因为每个彩色像素
 由三个元素存储：分别是 r、g、b，每个元素占一个字节。所得的
 \code{rgbOffset} 是 \code{Pin} 中该彩色像素的起始位置。程序从 \code{Pin}

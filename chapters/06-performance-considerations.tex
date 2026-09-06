@@ -47,26 +47,8 @@ CUDA 设备的全局内存由 DRAM 实现，这一点我们在第五章已经看
 
 \begin{figure}[htbp]
   \centering
-  \tiny
-  \begin{tabular}{c}
-    \begin{tabular}{cccc}
-      \fbox{$M_{0,0}$} & \fbox{$M_{0,1}$} & \fbox{$M_{0,2}$} & \fbox{$M_{0,3}$}\\
-      \fbox{$M_{1,0}$} & \fbox{$M_{1,1}$} & \fbox{$M_{1,2}$} & \fbox{$M_{1,3}$}\\
-      \fbox{$M_{2,0}$} & \fbox{$M_{2,1}$} & \fbox{$M_{2,2}$} & \fbox{$M_{2,3}$}\\
-      \fbox{$M_{3,0}$} & \fbox{$M_{3,1}$} & \fbox{$M_{3,2}$} & \fbox{$M_{3,3}$}
-    \end{tabular}\\[0.5em]
-    $\Downarrow\quad\text{按行展开并映射到递增地址}\quad\Downarrow$\\[0.5em]
-    \resizebox{0.92\textwidth}{!}{%
-      \begin{tabular}{cccccccccccccccc}
-        $M_{0,0}$ & $M_{0,1}$ & $M_{0,2}$ & $M_{0,3}$ &
-        $M_{1,0}$ & $M_{1,1}$ & $M_{1,2}$ & $M_{1,3}$ &
-        $M_{2,0}$ & $M_{2,1}$ & $M_{2,2}$ & $M_{2,3}$ &
-        $M_{3,0}$ & $M_{3,1}$ & $M_{3,2}$ & $M_{3,3}$\\[-0.2em]
-        \multicolumn{16}{c}{\rule{0.92\textwidth}{0.35pt}}
-      \end{tabular}%
-    }
-  \end{tabular}
-  \caption{按照行主序把矩阵元素放入线性数组（依据原书图 6.1 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch6/6-1.png}
+  \caption{按照行主序把矩阵元素放入线性数组}
   \label{fig:6-1}
 \end{figure}
 
@@ -132,49 +114,8 @@ $M_{0,0}$ 和 $M_{1,0}$ 在二维矩阵中看起来相邻，但在线性寻址�
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    \begin{minipage}{0.92\textwidth}
-      \centering
-      \begin{tabular}{c@{\hspace{1.2em}}c}
-        \begin{minipage}{0.43\textwidth}
-          \begin{lstlisting}[language=C++]
-unsigned int row = blockIdx.y*blockDim.y
-                 + threadIdx.y;
-unsigned int col = blockIdx.x*blockDim.x
-                 + threadIdx.x;
-for (unsigned int k = 0; k < Width; ++k)
-  Pvalue += M[row*Width+k]*N[k*Width+col];
-          \end{lstlisting}
-        \end{minipage}
-        &
-        \begin{minipage}{0.38\textwidth}
-          \centering
-          \textbf{逻辑视图}\\[0.3em]
-          \begin{tabular}{cccc}
-            $\uparrow T_0$ & $\uparrow T_1$ & $\uparrow T_2$ & $\uparrow T_3$\\
-            \fbox{$N_{0,0}$} & \fbox{$N_{0,1}$} & \fbox{$N_{0,2}$} & \fbox{$N_{0,3}$}\\
-            \fbox{$N_{1,0}$} & \fbox{$N_{1,1}$} & \fbox{$N_{1,2}$} & \fbox{$N_{1,3}$}\\
-            \fbox{$N_{2,0}$} & \fbox{$N_{2,1}$} & \fbox{$N_{2,2}$} & \fbox{$N_{2,3}$}\\
-            \fbox{$N_{3,0}$} & \fbox{$N_{3,1}$} & \fbox{$N_{3,2}$} & \fbox{$N_{3,3}$}
-          \end{tabular}\\[-0.1em]
-          $\downarrow$ 访问方向
-        \end{minipage}
-      \end{tabular}\\[0.5em]
-      \textbf{物理视图：行主序布局中的连续加载}\\[0.3em]
-      \resizebox{0.92\textwidth}{!}{%
-        \begin{tabular}{cccccccccccccccc}
-          \fbox{$N_{0,0}$} & \fbox{$N_{0,1}$} & \fbox{$N_{0,2}$} & \fbox{$N_{0,3}$} &
-          \fbox{$N_{1,0}$} & \fbox{$N_{1,1}$} & \fbox{$N_{1,2}$} & \fbox{$N_{1,3}$} &
-          \fbox{$N_{2,0}$} & \fbox{$N_{2,1}$} & \fbox{$N_{2,2}$} & \fbox{$N_{2,3}$} &
-          \fbox{$N_{3,0}$} & \fbox{$N_{3,1}$} & \fbox{$N_{3,2}$} & \fbox{$N_{3,3}$}\\
-          \multicolumn{4}{c}{$\uparrow T_0\quad\uparrow T_1\quad\uparrow T_2\quad\uparrow T_3$}
-          & \multicolumn{12}{c}{\text{后续迭代同样访问连续元素}}
-        \end{tabular}%
-      }
-    \end{minipage}
-  \end{tabular}
-  \caption{合并的全局内存访问模式（依据原书图 6.2 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch6/6-2.png}
+  \caption{合并的全局内存访问模式}
   \label{fig:6-2}
 \end{figure}
 
@@ -203,49 +144,8 @@ for (unsigned int k = 0; k < Width; ++k)
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    \begin{minipage}{0.92\textwidth}
-      \centering
-      \begin{tabular}{c@{\hspace{1.2em}}c}
-        \begin{minipage}{0.43\textwidth}
-          \begin{lstlisting}[language=C++]
-unsigned int row = blockIdx.y*blockDim.y
-                 + threadIdx.y;
-unsigned int col = blockIdx.x*blockDim.x
-                 + threadIdx.x;
-for (unsigned int k = 0; k < Width; ++k)
-  Pvalue += M[row*Width+k]*N[col*Width+k];
-          \end{lstlisting}
-        \end{minipage}
-        &
-        \begin{minipage}{0.38\textwidth}
-          \centering
-          \textbf{逻辑视图}\\[0.3em]
-          \begin{tabular}{cccc}
-            $\uparrow T_0$ & $\uparrow T_1$ & $\uparrow T_2$ & $\uparrow T_3$\\
-            \fbox{$N_{0,0}$} & \fbox{$N_{0,1}$} & \fbox{$N_{0,2}$} & \fbox{$N_{0,3}$}\\
-            \fbox{$N_{1,0}$} & \fbox{$N_{1,1}$} & \fbox{$N_{1,2}$} & \fbox{$N_{1,3}$}\\
-            \fbox{$N_{2,0}$} & \fbox{$N_{2,1}$} & \fbox{$N_{2,2}$} & \fbox{$N_{2,3}$}\\
-            \fbox{$N_{3,0}$} & \fbox{$N_{3,1}$} & \fbox{$N_{3,2}$} & \fbox{$N_{3,3}$}
-          \end{tabular}\\[-0.1em]
-          $\downarrow$ 访问方向
-        \end{minipage}
-      \end{tabular}\\[0.5em]
-      \textbf{物理视图：列主序布局中的跨步加载}\\[0.3em]
-      \resizebox{0.92\textwidth}{!}{%
-        \begin{tabular}{cccccccccccccccc}
-          \fbox{$N_{0,0}$} & \fbox{$N_{1,0}$} & \fbox{$N_{2,0}$} & \fbox{$N_{3,0}$} &
-          \fbox{$N_{0,1}$} & \fbox{$N_{1,1}$} & \fbox{$N_{2,1}$} & \fbox{$N_{3,1}$} &
-          \fbox{$N_{0,2}$} & \fbox{$N_{1,2}$} & \fbox{$N_{2,2}$} & \fbox{$N_{3,2}$} &
-          \fbox{$N_{0,3}$} & \fbox{$N_{1,3}$} & \fbox{$N_{2,3}$} & \fbox{$N_{3,3}$}\\
-          \multicolumn{16}{c}{$\uparrow T_0\qquad\qquad
-          \uparrow T_1\qquad\qquad\uparrow T_2\qquad\qquad\uparrow T_3$}
-        \end{tabular}%
-      }
-    \end{minipage}
-  \end{tabular}
-  \caption{未合并的全局内存访问模式（依据原书图 6.3 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch6/6-3.png}
+  \caption{未合并的全局内存访问模式}
   \label{fig:6-3}
 \end{figure}
 
@@ -283,34 +183,8 @@ $N$ 元素可能相隔数百甚至数千个位置。硬件会判断这些访问�
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\hspace{1em}}c}
-    \fbox{\begin{minipage}{0.38\textwidth}\centering
-      \textbf{(a) 不使用转角}\\[0.4em]
-      $N$：列主序全局内存\\
-      \begin{tabular}{cccc}
-        \fbox{$N_{0,0}$} & \fbox{$N_{1,0}$} & \fbox{$N_{2,0}$} & \fbox{$N_{3,0}$}\\
-        \fbox{$N_{0,1}$} & \fbox{$N_{1,1}$} & \fbox{$N_{2,1}$} & \fbox{$N_{3,1}$}
-      \end{tabular}\\[0.3em]
-      相邻线程 $\longrightarrow$ 跨距访问\\
-      共享内存 $\longrightarrow$ $N_s$
-    \end{minipage}}
-    &
-    \fbox{\begin{minipage}{0.38\textwidth}\centering
-      \textbf{(b) 使用转角}\\[0.4em]
-      $N$：列主序全局内存\\
-      \begin{tabular}{c}
-        $\downarrow T_0\quad\downarrow T_1\quad\downarrow T_2\quad\downarrow T_3$\\
-        \fbox{$N_{0,0}$}\\[-0.2em]
-        \fbox{$N_{1,0}$}\\[-0.2em]
-        \fbox{$N_{2,0}$}\\[-0.2em]
-        \fbox{$N_{3,0}$}
-      \end{tabular}\\[0.3em]
-      相邻线程 $\longrightarrow$ 连续位置\\
-      共享内存 $\longrightarrow$ $N_s$
-    \end{minipage}}
-  \end{tabular}
-  \caption{通过转角合并对列主序矩阵 $N$ 的访问（依据原书图 6.4 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch6/6-4.png}
+  \caption{通过转角合并对列主序矩阵 $N$ 的访问}
   \label{fig:6-4}
 \end{figure}
 
@@ -338,24 +212,8 @@ $N$ 元素可能相隔数百甚至数千个位置。硬件会判断这些访问�
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\hspace{1.5em}}c}
-    \fbox{\begin{minipage}{0.36\textwidth}\centering
-      \textbf{拥堵}\\[0.4em]
-      车\quad{}车\quad{}车\quad{}车\quad{}车\\[-0.1em]
-      \rule{0.88\linewidth}{0.4pt}\\[-0.1em]
-      车\quad{}车\quad{}车\quad{}车\quad{}车\\[0.3em]
-      请求过多 $\longrightarrow$ 通行时间增加
-    \end{minipage}}
-    &
-    \fbox{\begin{minipage}{0.36\textwidth}\centering
-      \textbf{合乘}\\[0.4em]
-      \fbox{车：线程 0、1、2、3}\\[0.4em]
-      多个请求合并为一次传输\\[0.3em]
-      $\longrightarrow$ 减少道路流量
-    \end{minipage}}
-  \end{tabular}
-  \caption{降低高速公路系统中的交通拥堵（依据原书图 6.5 重绘的概念示意）}
+  \includegraphics[width=0.78\textwidth]{figs/ch6/6-5.png}
+  \caption{降低高速公路系统中的交通拥堵}
   \label{fig:6-5}
 \end{figure}
 
@@ -378,22 +236,8 @@ $N$ 元素可能相隔数百甚至数千个位置。硬件会判断这些访问�
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    \textbf{好：时间表相似}\\[-0.2em]
-    \begin{tabular}{c|cccc}
-      & 睡觉 & 上班 & 工作 & 晚餐\\ \hline
-      工作人员 A & \rule{1.0cm}{0.3em} & \rule{1.4cm}{0.3em} & \rule{1.4cm}{0.3em} & \rule{0.8cm}{0.3em}\\
-      工作人员 B & \rule{1.0cm}{0.3em} & \rule{1.4cm}{0.3em} & \rule{1.4cm}{0.3em} & \rule{0.8cm}{0.3em}
-    \end{tabular}\\[0.7em]
-    \textbf{差：时间表差异很大}\\[-0.2em]
-    \begin{tabular}{c|cccc}
-      & 聚会 & 睡觉 & 工作 & 晚餐\\ \hline
-      工作人员 A & \rule{1.1cm}{0.3em} & \rule{0.8cm}{0.3em} & \rule{1.5cm}{0.3em} & \rule{0.2cm}{0.3em}\\
-      工作人员 B & \rule{0.2cm}{0.3em} & \rule{1.3cm}{0.3em} & \rule{1.2cm}{0.3em} & \rule{1.0cm}{0.3em}
-    \end{tabular}
-  \end{tabular}
-  \caption{拼车需要参与者之间进行时间同步（依据原书图 6.6 重绘）}
+  \includegraphics[width=0.82\textwidth]{figs/ch6/6-6.png}
+  \caption{拼车需要参与者之间进行时间同步}
   \label{fig:6-6}
 \end{figure}
 
@@ -422,35 +266,8 @@ $N$ 元素可能相隔数百甚至数千个位置。硬件会判断这些访问�
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\hspace{0.5em}}c@{\hspace{0.5em}}c@{\hspace{0.5em}}c}
-    \fbox{\begin{minipage}{0.18\textwidth}\centering
-      \textbf{总线}\\[-0.2em]$\uparrow\downarrow$\\
-      Bank 0\\Bank 1\\Bank 2\\Bank 3\\[0.2em]
-      \textbf{通道 0}
-    \end{minipage}}
-    &
-    \fbox{\begin{minipage}{0.18\textwidth}\centering
-      \textbf{总线}\\[-0.2em]$\uparrow\downarrow$\\
-      Bank 0\\Bank 1\\Bank 2\\Bank 3\\[0.2em]
-      \textbf{通道 1}
-    \end{minipage}}
-    &
-    \fbox{\begin{minipage}{0.18\textwidth}\centering
-      \textbf{总线}\\[-0.2em]$\uparrow\downarrow$\\
-      Bank 0\\Bank 1\\Bank 2\\Bank 3\\[0.2em]
-      \textbf{通道 2}
-    \end{minipage}}
-    &
-    \fbox{\begin{minipage}{0.18\textwidth}\centering
-      \textbf{总线}\\[-0.2em]$\uparrow\downarrow$\\
-      Bank 0\\Bank 1\\Bank 2\\Bank 3\\[0.2em]
-      \textbf{通道 3}
-    \end{minipage}}
-  \end{tabular}\\[0.5em]
-  \fbox{\parbox[c][0.55cm][c]{0.72\textwidth}{\centering
-    处理器：通过多个通道并行访问 DRAM}}
-  \caption{DRAM 系统中的通道与 bank（依据原书图 6.7 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch6/6-7.png}
+  \caption{DRAM 系统中的通道与 bank}
   \label{fig:6-7}
 \end{figure}
 
@@ -488,36 +305,8 @@ Rate，DDR）总线在每个时钟周期传输两次数据，分别发生在时�
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    \textbf{浅色：空闲/访问延迟}\qquad
-    \textbf{深色：突发传输}\\[0.5em]
-    \begin{tabular}{l@{\quad}l}
-      单 bank 通道：&
-      \colorbox{gray!20}{\rule{1.4cm}{0.35cm}}\,
-      \colorbox{black}{\rule{0.55cm}{0.35cm}}\,
-      \colorbox{gray!20}{\rule{1.4cm}{0.35cm}}\,
-      \colorbox{black}{\rule{0.55cm}{0.35cm}}\\[0.8em]
-      双 bank：&
-      Bank 0\quad
-      \colorbox{gray!20}{\rule{1.0cm}{0.28cm}}\,
-      \colorbox{black}{\rule{0.55cm}{0.28cm}}\,
-      \colorbox{gray!20}{\rule{0.9cm}{0.28cm}}\,
-      \colorbox{black}{\rule{0.55cm}{0.28cm}}\\[-0.1em]
-      & Bank 1\quad
-      \hspace{0.8cm}\colorbox{gray!20}{\rule{0.9cm}{0.28cm}}\,
-      \colorbox{black}{\rule{0.55cm}{0.28cm}}\,
-      \colorbox{gray!20}{\rule{0.9cm}{0.28cm}}\,
-      \colorbox{black}{\rule{0.55cm}{0.28cm}}\\[-0.1em]
-      & 通道\quad
-      \colorbox{gray!20}{\rule{0.35cm}{0.28cm}}\,
-      \colorbox{black}{\rule{0.55cm}{0.28cm}}\,
-      \colorbox{black}{\rule{0.55cm}{0.28cm}}\,
-      \colorbox{black}{\rule{0.55cm}{0.28cm}}\,
-      \colorbox{black}{\rule{0.55cm}{0.28cm}}
-    \end{tabular}
-  \end{tabular}
-  \caption{通过多个 bank 提高通道数据传输带宽利用率（依据原书图 6.8 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch6/6-8.png}
+  \caption{通过多个 bank 提高通道数据传输带宽利用率}
   \label{fig:6-8}
 \end{figure}
 
@@ -560,17 +349,8 @@ $M[3]$）存储在通道 1 的 bank 0 中；再接下来的 8 字节（$M[4]$ �
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c|c|c|c}
-    \textbf{通道 0} & \textbf{通道 1} & \textbf{通道 2} & \textbf{通道 3}\\ \hline
-    Bank 0: $M[0],M[1]$ & Bank 0: $M[2],M[3]$ &
-    Bank 0: $M[4],M[5]$ & Bank 0: $M[6],M[7]$\\
-    Bank 1: $M[8],M[9]$ & Bank 1: $M[10],M[11]$ &
-    Bank 1: $M[12],M[13]$ & Bank 1: $M[14],M[15]$\\
-    Bank 0: $M[16],M[17]$ & Bank 0: $M[18],M[19]$ &
-    $\cdots$ & $\cdots$
-  \end{tabular}
-  \caption{把数组元素交错分布到通道和 bank（依据原书图 6.9 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch6/6-9.png}
+  \caption{把数组元素交错分布到通道和 bank}
   \label{fig:6-9}
 \end{figure}
 
@@ -600,33 +380,8 @@ $2\times2$ 瓦片完成。
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\hspace{1.5em}}c@{\hspace{1.5em}}c}
-    \begin{tabular}{cccc}
-      \fbox{$M_{0,0}$} & \fbox{$M_{0,1}$} & $M_{0,2}$ & $M_{0,3}$\\
-      \fbox{$M_{1,0}$} & \fbox{$M_{1,1}$} & $M_{1,2}$ & $M_{1,3}$\\
-      $M_{2,0}$ & $M_{2,1}$ & $M_{2,2}$ & $M_{2,3}$\\
-      $M_{3,0}$ & $M_{3,1}$ & $M_{3,2}$ & $M_{3,3}$
-    \end{tabular}
-    &
-    $\times$
-    &
-    \begin{tabular}{cccc}
-      \fbox{$N_{0,0}$} & \fbox{$N_{0,1}$} & $N_{0,2}$ & $N_{0,3}$\\
-      \fbox{$N_{1,0}$} & \fbox{$N_{1,1}$} & $N_{1,2}$ & $N_{1,3}$\\
-      $N_{2,0}$ & $N_{2,1}$ & $N_{2,2}$ & $N_{2,3}$\\
-      $N_{3,0}$ & $N_{3,1}$ & $N_{3,2}$ & $N_{3,3}$
-    \end{tabular}\\[0.5em]
-    \multicolumn{3}{c}{$\Downarrow$ 四个线程块并行加载各自的输入瓦片 $\Downarrow$}\\[0.5em]
-    \multicolumn{3}{c}{
-      \begin{tabular}{cccc}
-        \fbox{$P_{0,0}$} & \fbox{$P_{0,1}$} & $P_{0,2}$ & $P_{0,3}$\\
-        \fbox{$P_{1,0}$} & \fbox{$P_{1,1}$} & $P_{1,2}$ & $P_{1,3}$\\
-        $P_{2,0}$ & $P_{2,1}$ & $P_{2,2}$ & $P_{2,3}$\\
-        $P_{3,0}$ & $P_{3,1}$ & $P_{3,2}$ & $P_{3,3}$
-      \end{tabular}}
-  \end{tabular}
-  \caption{矩阵乘法中线程块并行加载输入瓦片的示例（依据原书图 6.10 重绘）}
+  \includegraphics[width=0.78\textwidth]{figs/ch6/6-10.png}
+  \caption{矩阵乘法中线程块并行加载输入瓦片的示例}
   \label{fig:6-10}
 \end{figure}
 
@@ -646,35 +401,39 @@ $2\times2$ 瓦片完成。
   \centering
   \scriptsize
   \renewcommand{\arraystretch}{1.25}
-  \begin{tabularx}{0.96\textwidth}{>{\raggedright\arraybackslash}p{0.18\textwidth}
-    *{4}{>{\centering\arraybackslash}X}}
-    \toprule
-    加载阶段 & \code{Block0,0} & \code{Block0,1} &
-    \code{Block1,0} & \code{Block1,1}\\
-    \midrule
-    阶段 0（二维索引） &
+  \arrayrulecolor{gray!30}
+  \begin{tabularx}{0.96\textwidth}{|
+    >{\raggedright\arraybackslash}p{0.18\textwidth}|
+    *{4}{>{\centering\arraybackslash}X|}}
+    \rowcolor{black}
+    \textcolor{white}{加载阶段} &
+    \textcolor{white}{\code{Block0,0}} &
+    \textcolor{white}{\code{Block0,1}} &
+    \textcolor{white}{\code{Block1,0}} &
+    \textcolor{white}{\code{Block1,1}}\\ \hline
+    \cellcolor{gray!15}阶段 0（二维索引） &
     \shortstack{$M_{0,0},M_{0,1}$\\$M_{1,0},M_{1,1}$} &
     \shortstack{$M_{0,0},M_{0,1}$\\$M_{1,0},M_{1,1}$} &
     \shortstack{$M_{2,0},M_{2,1}$\\$M_{3,0},M_{3,1}$} &
-    \shortstack{$M_{2,0},M_{2,1}$\\$M_{3,0},M_{3,1}$}\\
-    阶段 0（线性索引） &
-    \shortstack{$M[0],M[1]$\\$M[4],M[5]$} &
-    \shortstack{$M[0],M[1]$\\$M[4],M[5]$} &
-    \shortstack{$M[8],M[9]$\\$M[12],M[13]$} &
-    \shortstack{$M[8],M[9]$\\$M[12],M[13]$}\\
-    阶段 1（二维索引） &
+    \shortstack{$M_{2,0},M_{2,1}$\\$M_{3,0},M_{3,1}$}\\ \hline
+    \cellcolor{gray!25}阶段 0（线性索引） &
+    \cellcolor{gray!5}\shortstack{$M[0],M[1]$\\$M[4],M[5]$} &
+    \cellcolor{gray!5}\shortstack{$M[0],M[1]$\\$M[4],M[5]$} &
+    \cellcolor{gray!5}\shortstack{$M[8],M[9]$\\$M[12],M[13]$} &
+    \cellcolor{gray!5}\shortstack{$M[8],M[9]$\\$M[12],M[13]$}\\ \hline
+    \cellcolor{gray!15}阶段 1（二维索引） &
     \shortstack{$M_{0,2},M_{0,3}$\\$M_{1,2},M_{1,3}$} &
     \shortstack{$M_{0,2},M_{0,3}$\\$M_{1,2},M_{1,3}$} &
     \shortstack{$M_{2,2},M_{2,3}$\\$M_{3,2},M_{3,3}$} &
-    \shortstack{$M_{2,2},M_{2,3}$\\$M_{3,2},M_{3,3}$}\\
-    阶段 1（线性索引） &
-    \shortstack{$M[2],M[3]$\\$M[6],M[7]$} &
-    \shortstack{$M[2],M[3]$\\$M[6],M[7]$} &
-    \shortstack{$M[10],M[11]$\\$M[14],M[15]$} &
-    \shortstack{$M[10],M[11]$\\$M[14],M[15]$}\\
-    \bottomrule
+    \shortstack{$M_{2,2},M_{2,3}$\\$M_{3,2},M_{3,3}$}\\ \hline
+    \cellcolor{gray!25}阶段 1（线性索引） &
+    \cellcolor{gray!5}\shortstack{$M[2],M[3]$\\$M[6],M[7]$} &
+    \cellcolor{gray!5}\shortstack{$M[2],M[3]$\\$M[6],M[7]$} &
+    \cellcolor{gray!5}\shortstack{$M[10],M[11]$\\$M[14],M[15]$} &
+    \cellcolor{gray!5}\shortstack{$M[10],M[11]$\\$M[14],M[15]$}\\ \hline
   \end{tabularx}
-  \caption{各阶段由线程块加载的 $M$ 元素（依据原书图 6.11 重绘）}
+  \arrayrulecolor{black}
+  \caption{各阶段由线程块加载的 $M$ 元素}
   \label{fig:6-11}
 \end{figure}
 
@@ -734,7 +493,7 @@ __global__ void vecAdd_kernel(float* x, float* y, float* z, int N) {
     ((float4*)z)[i] = z4;
 }
   \end{lstlisting}
-  \caption{使用向量加载的向量加法内核（依据原书图 6.12 重绘）}
+  \caption{使用向量加载的向量加法内核}
   \label{fig:6-12}
 \end{figure}
 
@@ -1129,70 +888,67 @@ for(unsigned int i = 0; i < N; ++i) {
   \centering
   \scriptsize
   \renewcommand{\arraystretch}{1.2}
-  \begin{tabularx}{0.99\textwidth}{
-    >{\raggedright\arraybackslash}p{0.14\textwidth}
-    >{\raggedright\arraybackslash}p{0.16\textwidth}
-    >{\raggedright\arraybackslash}p{0.18\textwidth}
-    >{\raggedright\arraybackslash}p{0.18\textwidth}
-    >{\raggedright\arraybackslash}X}
-    \toprule
-    类别 & 优化 & 对计算核心的收益 & 对内存的收益 & 主要策略\\
-    \midrule
+  \arrayrulecolor{black}
+  \begin{tabularx}{0.99\textwidth}{|
+    >{\raggedright\arraybackslash}p{0.14\textwidth}|
+    >{\raggedright\arraybackslash}p{0.16\textwidth}|
+    >{\raggedright\arraybackslash}p{0.18\textwidth}|
+    >{\raggedright\arraybackslash}p{0.18\textwidth}|
+    >{\raggedright\arraybackslash}X|}
+    \hline
+    \textbf{类别} & \textbf{优化} & \textbf{对计算核心的收益} &
+    \textbf{对内存的收益} & \textbf{主要策略}\\ \hline
     计算利用率 & 占用率调优
       & 更多工作可隐藏流水线延迟
       & 更多并行内存访问可隐藏 DRAM 延迟
-      & 调整每块线程数、每块共享内存和每线程寄存器的使用量\\
+      & 调整每块线程数、每块共享内存和每线程寄存器的使用量\\ \hline
     计算利用率 & 循环展开
       & 减少分支指令，暴露更多可独立调度的指令序列
       & 可能把局部数组索引转成常量，减少内存流量
-      & 优先使用常量边界的循环；通常由编译器完成\\
+      & 优先使用常量边界的循环；通常由编译器完成\\ \hline
     计算利用率 & 减少控制流分歧
       & 提高 SIMD 执行效率，减少空闲核心
       & --
-      & 重新安排线程到工作和/或数据的分配；重新安排数据布局\\
-    \midrule
+      & 重新安排线程到工作和/或数据的分配；重新安排数据布局\\ \hline
     内存利用率 & 使用合并的全局内存访问
       & 减少等待全局内存访问的流水线停顿
       & 减少全局内存流量，更充分利用突发和缓存行
       & 重新安排线程到数据的映射；重新安排数据布局；以合并方式搬入共享内存后
-      在共享内存中执行不规则访问（例如转角、打包）\\
+      在共享内存中执行不规则访问（例如转角、打包）\\ \hline
     内存利用率 & 共享内存分块
       & 减少等待全局内存访问的流水线停顿
       & 减少全局内存流量
-      & 把线程块内重用的数据放入共享内存，使其只在全局内存与 SM 之间传输一次\\
+      & 把线程块内重用的数据放入共享内存，使其只在全局内存与 SM 之间传输一次\\ \hline
     内存利用率 & 寄存器分块
       & 减少等待内存访问的流水线停顿
       & 减少共享内存流量
-      & 把 warp 或线程内重用的数据放入寄存器，使其只在共享内存与寄存器之间传输一次\\
+      & 把 warp 或线程内重用的数据放入寄存器，使其只在共享内存与寄存器之间传输一次\\ \hline
     内存利用率 & 向量加载和存储
       & 减少管理内存访问的指令
       & 更多并行内存访问可隐藏 DRAM 延迟
-      & 让每个线程一次加载 16 B 的连续数据块\\
+      & 让每个线程一次加载 16 B 的连续数据块\\ \hline
     内存利用率 & 避免共享内存 bank 冲突
       & 减少等待共享内存访问的流水线停顿
       & 减少共享内存流量并提高 bank 利用率
-      & 重新安排线程到数据的映射；重新安排数据布局（例如加入填充）\\
+      & 重新安排线程到数据的映射；重新安排数据布局（例如加入填充）\\ \hline
     内存利用率 & 私有化（后文介绍）
       & 减少等待原子更新的流水线停顿
       & 减少竞争并串行化原子更新
-      & 先对数据的私有副本执行部分更新，完成后再更新公共副本\\
-    \midrule
+      & 先对数据的私有副本执行部分更新，完成后再更新公共副本\\ \hline
     同步延迟 & Warp 级原语
       & 减少线程块范围的同步
       & 减少全局和共享内存流量
-      & 先在 warp 级别执行需要屏障的操作，再在线程块级别汇总结果\\
+      & 先在 warp 级别执行需要屏障的操作，再在线程块级别汇总结果\\ \hline
     同步延迟 & 双缓冲
       & 消除强制假依赖的屏障
       & --
-      & 用不同缓冲区分别保存写入值和前一轮读取值\\
-    \midrule
+      & 用不同缓冲区分别保存写入值和前一轮读取值\\ \hline
     一般优化 & 线程粗化
       & 取决于并行化开销
       & 取决于并行化开销
-      & 给每个线程分配多个并行工作单元，避免不必要的并行化开销\\
-    \bottomrule
+      & 给每个线程分配多个并行工作单元，避免不必要的并行化开销\\ \hline
   \end{tabularx}
-  \caption{常见性能优化检查清单（依据原书图 6.13 重绘）}
+  \caption{常见性能优化检查清单}
   \label{fig:6-13}
 \end{figure}
 
