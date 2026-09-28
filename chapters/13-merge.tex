@@ -32,13 +32,7 @@
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\quad}*{9}{c}}
-    $A$ & 1 & 5 & 7 & 9 & 11 \\
-    $B$ & 7 & 10$_1$ & 10$_2$ & 12 \\
-    \multicolumn{10}{c}{$\Downarrow$ 按数值稳定归并 $\Downarrow$}\\[0.2em]
-    $C$ & 1 & 5 & 7$_A$ & 7$_B$ & 9 & 10$_1$ & 10$_2$ & 11 & 12
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch13/13-1.png}
   \caption{归并操作示例}
   \label{fig:13-1}
 \end{figure}
@@ -143,22 +137,7 @@ $0\leq j<n$ 的 $j$，使 $C[k]$ 的值来自 $B[j]$（情形 2）。
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\hspace{3em}}c}
-    \begin{tabular}{c}
-      $A=[1,5,8,\boxed{9},11]$\quad $B=[7,\boxed{10},10,12]$\\
-      $C=[1,5,7,8,\boxed{9},10,10,11,12]$\\
-      $k=4,\ i=3,\ j=k-i=1$\\[0.2em]
-      (a) $C[k]$ 来自 $A[i]$
-    \end{tabular}
-    &
-    \begin{tabular}{c}
-      $A=[1,5,7,8,9,\boxed{11}]$\quad $B=[7,\boxed{10},10,12]$\\
-      $C=[1,5,7,7,8,9,\boxed{10},10,11,12]$\\
-      $k=6,\ j=1,\ i=k-j=5$\\[0.2em]
-      (b) $C[k]$ 来自 $B[j]$
-    \end{tabular}
-  \end{tabular}
+  \includegraphics[width=0.75\textwidth]{figs/ch13/13-3.png}
   \caption{观察 1 的两种情形}
   \label{fig:13-3}
 \end{figure}
@@ -215,16 +194,7 @@ $k$ 在 $B$ 中的协同秩。
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    $A=[\underbrace{1,5,8}_{\text{线程 0}}\mid
-       \underbrace{9,11}_{\text{线程 1}}]$\qquad
-    $B=[\underbrace{7}_{\text{线程 0}}\mid
-       \underbrace{10,10,12}_{\text{线程 1}}]$\\[0.35em]
-    $C=[\underbrace{1,5,7,8}_{k_1=4}\mid
-       \underbrace{9,10,10,11,12}_{k_2=9}]$\\[0.35em]
-    线程 1：$(i_1,j_1)=(3,1)$，$(i_2,j_2)=(5,4)$
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch13/13-4.png}
   \caption{协同秩函数的执行示例}
   \label{fig:13-4}
 \end{figure}
@@ -307,14 +277,7 @@ $i_{\rm low}=k-n$。同理，$j_{\rm low}$ 不能小于 $k-m$，这是归并中�
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    $A=[1,7,8,9,11]$\qquad $B=[7,10,10,12]$\\
-    $C=[\underbrace{1,7,7}_{T_0}\mid\underbrace{8,9,11}_{T_1}\mid
-       \underbrace{10,10,12}_{T_2}]$\\[0.3em]
-    线程 1 求 $k=3$ 的协同秩：初值 $(i,j)=(3,0)$，
-    搜索范围 $i\in[0,3]$、$j\in[0,0]$
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch13/13-6.png}
   \caption{线程 1 的协同秩函数示例：第 0 次迭代}
   \label{fig:13-6}
 \end{figure}
@@ -345,13 +308,7 @@ $j_{\rm low}=0$、$j=2$。
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    第 1 次迭代：$(i,j)=(1,2)$，$A[0]=1\leq B[2]=10$，但
-    $B[1]=10\geq A[1]=7$\\
-    因而 $\delta=1$，下一轮 $(i,j)=(2,1)$，
-    $i_{\rm low}=1$、$j_{\rm low}=0$
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch13/13-7.png}
   \caption{线程 1 的协同秩函数示例：第 1 次迭代}
   \label{fig:13-7}
 \end{figure}
@@ -365,13 +322,7 @@ $i_{\rm low}=1$、$i=2$。
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    第 2 次迭代：$(i,j)=(2,1)$\\
-    $A[i-1]=A[1]=7\leq B[1]=10$，且
-    $B[j-1]=B[0]=7<A[2]=8$\\
-    两个条件均满足，返回 $i=2$，并由 $j=k-i=1$ 得到另一协同秩
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch13/13-8.png}
   \caption{线程 1 的协同秩函数示例：第 2 次迭代}
   \label{fig:13-8}
 \end{figure}
@@ -455,18 +406,7 @@ $C[6]$。这些访问不能合并，内存带宽利用率很差。
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    全局内存：$A=[\boxed{\ A_0\ }\mid\boxed{\ A_1\ }\mid\boxed{\ A_2\ }]$
-    \qquad
-    $B=[\boxed{\ B_0\ }\mid\boxed{\ B_1\ }\mid\boxed{\ B_2\ }]$\\[0.35em]
-    $\Downarrow$ 每块从自己的 $A_b$、$B_b$ 中各载入至多 $x$ 个元素 $\Downarrow$\\[0.35em]
-    块 $b$ 的共享内存：$A_S[0\ldots x-1]$，$B_S[0\ldots x-1]$\\[0.35em]
-    $\Downarrow$ 实际消费二者合计 $x$ 个元素 $\Downarrow$\\[0.35em]
-    输出：$C=[\boxed{\ C_0\ (y\text{ 个})\ }\mid
-                 \boxed{\ C_1\ (y\text{ 个})\ }\mid
-                 \boxed{\ C_2\ (y\text{ 个})\ }]$
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch13/13-10.png}
   \caption{分块归并内核的设计}
   \label{fig:13-10}
 \end{figure}
@@ -632,17 +572,7 @@ while 前初始化为 0。第 0 轮从 \code{A[A_curr]} 开始载入；以后各
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    块级 $A$ 子数组：
-    $[\underbrace{\text{前一轮已消费}}_{\code{A_consumed}}\mid
-      \underbrace{\text{本轮载入块}}_{\text{从 }\code{A_curr+A_consumed}\text{ 开始}}\mid
-      \text{其余}]$\\[0.4em]
-    块级 $B$ 子数组：
-    $[\underbrace{\text{前一轮已消费}}_{\code{B_consumed}}\mid
-      \underbrace{\text{本轮载入块}}_{\text{从 }\code{B_curr+B_consumed}\text{ 开始}}\mid
-      \text{其余}]$
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch13/13-14.png}
   \caption{运行示例中 while 循环第 1 次迭代的载入位置}
   \label{fig:13-14}
 \end{figure}
@@ -690,32 +620,7 @@ co_rank(tile_size, A_S, tile_size, B_S, tile_size)
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\hspace{1.5em}}c}
-    \begin{tabular}{c}
-      (a) 第 0 轮载入\\
-      $A_S:[\boxed{\text{完整 }A\text{ 块}}]$\\
-      $B_S:[\boxed{\text{完整 }B\text{ 块}}]$
-    \end{tabular}
-    &
-    \begin{tabular}{c}
-      (b) 第 0 轮结束\\
-      $[\text{已消费}\mid\underbrace{\text{保留}}_{A_S\_start}]$\\
-      $[\text{已消费}\mid\underbrace{\text{保留}}_{B_S\_start}]$
-    \end{tabular}\\[1em]
-    \begin{tabular}{c}
-      (c) 第 1 轮补齐并回绕\\
-      $[\text{新载入}\mid\underbrace{\text{保留}}_{A_S\_start}\mid\text{新载入}]$\\
-      $[\text{新载入}\mid\underbrace{\text{保留}}_{B_S\_start}\mid\text{新载入}]$
-    \end{tabular}
-    &
-    \begin{tabular}{c}
-      (d) 第 1 轮结束\\
-      起点按消费量取模推进：\\
-      $A_S\_start\leftarrow(A_S\_start+A_S\_consumed)\bmod x$\\
-      $B_S\_start\leftarrow(B_S\_start+B_S\_consumed)\bmod x$
-    \end{tabular}
-  \end{tabular}
+  \includegraphics[width=0.85\textwidth]{figs/ch13/13-15.png}
   \caption{管理共享内存输入块的环形缓冲区方案}
   \label{fig:13-15}
 \end{figure}
@@ -806,20 +711,7 @@ B_S_start = (B_S_start + B_S_consumed) % tile_size;
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\hspace{3em}}c}
-    \begin{tabular}{c}
-      (a) 实际环形缓冲区\\
-      $[\text{输入块尾部}\mid\underbrace{\text{输入块头部}}_{A_S\_start}\mid\cdots]$\\
-      下标越过末端会回绕，可能有 $a_{next}<a_{curr}$
-    \end{tabular}
-    &
-    \begin{tabular}{c}
-      (b) 简化的连续模型\\
-      $[A_S\_start\mid\cdots\mid a_{curr}\mid\cdots\mid a_{next}]$\\
-      所有值视为偏移，始终有 $a_{next}\geq a_{curr}$
-    \end{tabular}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch13/13-17.png}
   \caption{环形缓冲区中协同秩的简化模型}
   \label{fig:13-17}
 \end{figure}

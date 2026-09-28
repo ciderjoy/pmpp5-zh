@@ -135,27 +135,7 @@ int fibonacci_bottomup(int n) {
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\qquad}c}
-    \begin{tabular}{c}
-      \fbox{1 1 1 1 1}$\rightarrow$\fbox{2 2 2 2 2}$\rightarrow$\fbox{3 3 3 3 3}\\
-      (a) 固定大小的行波前
-    \end{tabular}&
-    \begin{tabular}{c}
-      \fbox{1 2 3 4 5}\\[-0.1em]
-      \fbox{1 2 3 4 5}\\[-0.1em]
-      \fbox{1 2 3 4 5}\\
-      (b) 固定大小的列波前
-    \end{tabular}\\[0.8em]
-    \begin{tabular}{c}
-      \fbox{1}\ \fbox{2 2}\ \fbox{3 3 3}\ \fbox{4 4}\ \fbox{5}\\
-      (c) 先增长后收缩的反对角波前
-    \end{tabular}&
-    \begin{tabular}{c}
-      \fbox{1 1}$\rightarrow$\fbox{2 2 2}$\rightarrow$\fbox{3 3}$\rightarrow$\fbox{4}\\
-      (d) 可变大小的不规则波前
-    \end{tabular}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch16/16-2.png}
   \caption{波前模式示例；单元格数字表示波前编号，箭头表示依赖方向}
   \label{fig:16-2}
 \end{figure}
@@ -292,21 +272,7 @@ $y$ 维块数直接等于顶点总数，因为每块只覆盖距离表的一行�
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c@{\qquad}c}
-    \begin{tabular}{c}
-      \fbox{$a\xrightarrow{4}b\xrightarrow{9}c$}\\
-      \fbox{$a\xrightarrow{7}g\xrightarrow{7}f\xrightarrow{6}e\xrightarrow{6}d$}\\
-      \fbox{$h\xrightarrow{3}c$}
-    \end{tabular}&
-    \begin{tabular}{c|cccc}
-      &a&b&c&$\cdots$\\\hline
-      a&0&4&$\infty$&$\cdots$\\
-      b&$\infty$&0&9&$\cdots$\\
-      c&$\infty$&$\infty$&0&$\cdots$\\
-      $\vdots$&$\vdots$&$\vdots$&$\vdots$&$\ddots$
-    \end{tabular}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch16/16-5.png}
   \caption{有向加权图（左）与初始化后的距离表（右）}
   \label{fig:16-5}
 \end{figure}
@@ -377,12 +343,7 @@ H_{i,j-1}-\textit{insertion\_penalty},\\
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{ccc}
-    $H_{i-1,j-1}$&$H_{i-1,j}$&\\
-    $\searrow$&$\downarrow$&\\[-0.2em]
-    $H_{i,j-1}$&$\rightarrow$&\fbox{$H_{i,j}$}
-  \end{tabular}
+  \includegraphics[width=0.85\textwidth]{figs/ch16/16-6.png}
   \caption{Smith-Waterman 得分矩阵中一个单元的依赖关系}
   \label{fig:16-6}
 \end{figure}
@@ -421,26 +382,7 @@ Smith-Waterman 的基本 GPU 并行化为每条反对角波前启动一个内核
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\qquad}c@{\qquad}c}
-    \begin{tabular}{c}
-      \fbox{整个矩阵}\\
-      每条单元反对角线一次内核\\
-      (a) 基本波前并行
-    \end{tabular}&
-    \begin{tabular}{c}
-      \fbox{数据片 00}\ \fbox{数据片 01}\\
-      \fbox{数据片 10}\ \fbox{数据片 11}\\
-      片间全局同步，片内局部同步\\
-      (b) 线程块级分块
-    \end{tabular}&
-    \begin{tabular}{ccc}
-      线程 0&线程 0&线程 0\\
-      线程 1&线程 1&线程 1\\
-      线程 2&线程 2&线程 2\\
-      (c) 数据片内线程分配&&
-    \end{tabular}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch16/16-7.png}
   \caption{基本波前并行、线程块级分块，以及数据片内线程分配；矩阵第 0 行和第 0 列为 0 边界}
   \label{fig:16-7}
 \end{figure}
@@ -634,19 +576,7 @@ $2n-1$ 次迭代。第二，位于不同数据片反对角线上的相邻片之�
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c@{\qquad}c}
-    \begin{tabular}{c}
-      \fbox{左方正方形数据片}\\
-      活动线程数：$1,2,\ldots,n,\ldots,2,1$\\
-      右上依赖较早产生，可能被逐出
-    \end{tabular}&
-    \begin{tabular}{c}
-      \fbox{右方正方形数据片}\\
-      初始波前需要左片右上边界\\
-      后期波前才需要左片较新边界
-    \end{tabular}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch16/16-13.png}
   \caption{使用正方形数据片进行线程块级分块的缺点}
   \label{fig:16-13}
 \end{figure}
@@ -661,20 +591,7 @@ $3\times3$ 正方形片的中间行左移 1 格、底行左移 2 格，得到 $3
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c@{\qquad}c@{\qquad}c}
-    \begin{tabular}{|c|c|c|}\hline
-      0&0&0\\\hline 1&1&1\\\hline 2&2&2\\\hline
-    \end{tabular}&
-    $\xrightarrow{\text{每行依次左移}}$&
-    \begin{tabular}{ccc}
-      &&\fbox{0}\ \fbox{0}\ \fbox{0}\\
-      &\fbox{1}\ \fbox{1}\ \fbox{1}\\
-      \fbox{2}\ \fbox{2}\ \fbox{2}
-    \end{tabular}\\
-    (a) 正方形片&&(b) 平行四边形超数据片\\[0.5em]
-    \multicolumn{3}{c}{(c) 每条片内反对角线恒有 3 个活动线程}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch16/16-14.png}
   \caption{超平面变换}
   \label{fig:16-14}
 \end{figure}
@@ -887,16 +804,7 @@ __device__ inline void initialize_tile(int* swTile, int tile_width) {
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c@{\qquad}c@{\qquad}c}
-    \fbox{倾斜超数据片}&$\rightarrow$&
-    \begin{tabular}{|ccc|c|}\hline
-      0&0&0&填充\\
-      1&1&1&填充\\
-      2&2&2&填充\\\hline
-    \end{tabular}\\
-    \multicolumn{3}{c}{填充让连续线程的步长与 bank 数互素或错开，避免 bank 冲突}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch16/16-20.png}
   \caption{在共享内存中填充超数据片的示例}
   \label{fig:16-20}
 \end{figure}
@@ -960,20 +868,7 @@ Smith-Waterman 的数据片反对角线，但仍会迫使每个块等待前两�
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c@{\qquad}c}
-    \begin{tabular}{c}
-      标志数组：$[1,1,0,0,\ldots]$\\
-      \fbox{上方片完成}$\searrow$\fbox{当前片}$\swarrow$\fbox{左方片完成}\\
-      当前片结束后置位自己的标志
-    \end{tabular}&
-    \begin{tabular}{c}
-      全局同步：所有块等待最慢块\\
-      \rule{7em}{0.45em}\quad\rule{3em}{0.45em}\\
-      依赖同步：就绪块立即继续\\
-      \rule{10em}{0.45em}
-    \end{tabular}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch16/16-21.png}
   \caption{块间同步（左）及其提高 SM 利用率的效果（右）}
   \label{fig:16-21}
 \end{figure}

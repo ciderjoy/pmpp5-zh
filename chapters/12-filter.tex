@@ -34,21 +34,7 @@
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \setlength{\tabcolsep}{2.7pt}
-  \begin{tabular}{c|*{16}{c}}
-    输入&$k_0$&\textbf{$k_1$}&$k_2$&\textbf{$k_3$}&\textbf{$k_4$}&$k_5$&
-      \textbf{$k_6$}&$k_7$&\textbf{$k_8$}&$k_9$&\textbf{$k_{10}$}&
-      \textbf{$k_{11}$}&$k_{12}$&$k_{13}$&\textbf{$k_{14}$}&$k_{15}$
-  \end{tabular}
-  \\[0.45em]
-  \begin{tabular}{c|*{8}{c}}
-    不稳定输出&$k_4$&$k_{10}$&$k_3$&$k_1$&$k_6$&$k_{14}$&$k_{11}$&$k_8$\\
-  \end{tabular}
-  \\[0.75em]
-  \begin{tabular}{c|*{8}{c}}
-    稳定输出&$k_1$&$k_3$&$k_4$&$k_6$&$k_8$&$k_{10}$&$k_{11}$&$k_{14}$\\
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch12/12-1.png}
   \caption{异地过滤模式的不稳定变体与稳定变体}
   \label{fig:12-1}
 \end{figure}
@@ -267,15 +253,7 @@ __global__ void filter_kernel(unsigned int* input, unsigned int* output,
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c@{\quad}c@{\quad}c@{\quad}c}
-    \fbox{线程块 0：$k_0$--$k_3$}&\fbox{线程块 1：$k_4$--$k_7$}&
-    \fbox{线程块 2：$k_8$--$k_{11}$}&\fbox{线程块 3：$k_{12}$--$k_{15}$}\\[0.45em]
-    \fbox{$k_3\;k_1$}&\fbox{$k_6\;k_4$}&\fbox{$k_{10}\;k_{11}\;k_8$}&\fbox{$k_{14}$}\\[-0.1em]
-    \multicolumn{4}{c}{\scriptsize 共享内存中的每块私有输出列表与私有计数器}\\[0.35em]
-    \multicolumn{4}{c}{$\searrow\qquad\searrow\qquad\swarrow\qquad\swarrow$}\\[-0.1em]
-    \multicolumn{4}{c}{\fbox{公共输出：$k_6\;k_4\;k_{14}\;k_{10}\;k_{11}\;k_8\;k_3\;k_1$}}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch12/12-5.png}
   \caption{采用私有化的不稳定过滤}
   \label{fig:12-5}
 \end{figure}
@@ -366,16 +344,7 @@ __global__ void filter_kernel(unsigned int* input, unsigned int* output,
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \setlength{\tabcolsep}{2.8pt}
-  \begin{tabular}{c|*{16}{c}}
-    输入&$k_0$&$k_1$&$k_2$&$k_3$&$k_4$&$k_5$&$k_6$&$k_7$&
-      $k_8$&$k_9$&$k_{10}$&$k_{11}$&$k_{12}$&$k_{13}$&$k_{14}$&$k_{15}$\\\hline
-    保留?&0&1&0&1&1&0&1&0&1&0&1&1&0&0&1&0\\
-    偏移&0&0&1&1&2&3&3&4&4&5&5&6&7&7&7&8
-  \end{tabular}
-  \\[0.55em]
-  \fbox{输出：$k_1\;k_3\;k_4\;k_6\;k_8\;k_{10}\;k_{11}\;k_{14}$}
+  \includegraphics[width=\textwidth]{figs/ch12/12-7.png}
   \caption{稳定过滤操作的并行化}
   \label{fig:12-7}
 \end{figure}
@@ -436,15 +405,7 @@ __global__ void filter_kernel(unsigned int* input, unsigned int* output,
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c@{\quad}c@{\quad}c@{\quad}c}
-    \fbox{块 0：$k_0$--$k_3$}&\fbox{块 1：$k_4$--$k_7$}&
-    \fbox{块 2：$k_8$--$k_{11}$}&\fbox{块 3：$k_{12}$--$k_{15}$}\\[0.45em]
-    \fbox{$k_1\;k_3$}&\fbox{$k_4\;k_6$}&\fbox{$k_8\;k_{10}\;k_{11}$}&\fbox{$k_{14}$}\\[-0.1em]
-    \multicolumn{4}{c}{\scriptsize 在共享内存中按块压紧}\\[0.35em]
-    \multicolumn{4}{c}{$\downarrow\quad$由连续线程按连续区段写出$\quad\downarrow$}\\[0.25em]
-    \multicolumn{4}{c}{\fbox{$k_1\;k_3\;k_4\;k_6\;k_8\;k_{10}\;k_{11}\;k_{14}$}}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch12/12-9.png}
   \caption{使用共享内存改进内存合并}
   \label{fig:12-9}
 \end{figure}
@@ -460,14 +421,7 @@ __global__ void filter_kernel(unsigned int* input, unsigned int* output,
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c@{\qquad}c}
-    \fbox{块 0：$k_0$--$k_7$}&\fbox{块 1：$k_8$--$k_{15}$}\\[0.45em]
-    \fbox{$k_1\;k_3\;k_4\;k_6$}&\fbox{$k_8\;k_{10}\;k_{11}\;k_{14}$}\\[-0.1em]
-    \multicolumn{2}{c}{\scriptsize 每块 4 个线程，每线程负责 2 个键；共享内存内压紧}\\[0.35em]
-    \multicolumn{2}{c}{$\downarrow\qquad$两个较大的连续写入区段$\qquad\downarrow$}\\[0.25em]
-    \multicolumn{2}{c}{\fbox{$k_1\;k_3\;k_4\;k_6\;k_8\;k_{10}\;k_{11}\;k_{14}$}}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch12/12-10.png}
   \caption{用线程粗化进一步改进内存合并；本玩具示例采用两个线程块，每块四个线程}
   \label{fig:12-10}
 \end{figure}
@@ -503,15 +457,7 @@ $k_1$ 原来所在的位置。因此，必须保证线程 1 先读完 $k_1$，�
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{*{4}{c@{\hspace{1.4em}}}c}
-    \textbf{块 0}&\textbf{块 1}&\textbf{块 2}&$\cdots$&\textbf{块 $N-1$}\\[0.25em]
-    \fbox{读输入$_0$}&\fbox{读输入$_1$}&\fbox{读输入$_2$}&$\cdots$&\fbox{读输入$_{N-1}$}\\
-    $\downarrow$&$\downarrow$&$\downarrow$&&$\downarrow$\\
-    \fbox{扫描$_0$}$\rightarrow$&\fbox{扫描$_1$}$\rightarrow$&\fbox{扫描$_2$}$\rightarrow$&$\cdots\rightarrow$&\fbox{扫描$_{N-1}$}\\
-    $\downarrow$&$\downarrow$&$\downarrow$&&$\downarrow$\\
-    \fbox{写输出$_0$}&\fbox{写输出$_1$}&\fbox{写输出$_2$}&$\cdots$&\fbox{写输出$_{N-1}$}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch12/12-11.png}
   \caption{稳定过滤的依赖关系图}
   \label{fig:12-11}
 \end{figure}

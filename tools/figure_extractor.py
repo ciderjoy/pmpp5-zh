@@ -28,7 +28,7 @@ import fitz
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_MANIFEST = SCRIPT_DIR / "figure-crops.json"
-FIGURE_RE = re.compile(r"\bFIGURE\s+(\d+)\.(\d+)\b", re.IGNORECASE)
+FIGURE_RE = re.compile(r"\bFIGURE\s+([0-9]+|[A-Z])\.(\d+)\b", re.IGNORECASE)
 
 
 class FigureExtractorError(RuntimeError):
@@ -321,13 +321,14 @@ def find_caption_rect(page: fitz.Page, figure_id: str) -> Optional[fitz.Rect]:
     return None
 
 
-def detect_caption_ids(page: fitz.Page, chapter: Optional[int]) -> List[str]:
+def detect_caption_ids(page: fitz.Page, chapter: Optional[str]) -> List[str]:
     found: List[str] = []
+    wanted = chapter.strip().upper() if chapter else None
     for match in FIGURE_RE.finditer(page.get_text("text")):
-        chapter_number = int(match.group(1))
-        if chapter is not None and chapter_number != chapter:
+        chapter_label = match.group(1).upper()
+        if wanted is not None and chapter_label != wanted:
             continue
-        figure_id = f"{chapter_number}-{int(match.group(2))}"
+        figure_id = f"{chapter_label}-{int(match.group(2))}"
         if figure_id not in found:
             found.append(figure_id)
     return found
@@ -428,13 +429,19 @@ def command_detect(args: argparse.Namespace) -> int:
                     f"guess {figure_id:>6}  page {page_index + 1:>3}  "
                     f"{width}x{height}  {preview}"
                 )
-                chapter_number = figure_id.split("-", 1)[0]
+                chapter_label = figure_id.split("-", 1)[0]
+                if chapter_label.isdigit():
+                    output_rel = f"figs/ch{chapter_label}/{figure_id}.png"
+                else:
+                    output_rel = (
+                        f"figs/appendix-{chapter_label.lower()}/{figure_id}.png"
+                    )
                 candidates.append(
                     {
                         "id": figure_id,
                         "page": page_index + 1,
                         "crop": crop,
-                        "output": f"figs/ch{chapter_number}/{figure_id}.png",
+                        "output": output_rel,
                         "review": "candidate",
                     }
                 )
@@ -498,8 +505,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     detect.add_argument(
         "--chapter",
-        type=int,
-        help="only detect captions belonging to this chapter",
+        type=str,
+        help="only detect captions belonging to this chapter (数字或附录字母，如 7、A)",
     )
     detect.add_argument(
         "--dpi",

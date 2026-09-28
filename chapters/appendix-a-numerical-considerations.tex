@@ -78,22 +78,8 @@ $2^{e-1}-1$，形成移码表示。二进制补码系统通过先把数值逐位
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{ccc}
-    \hline
-    \textbf{二进制补码} & \textbf{十进制值} & \textbf{移 3 码} \\
-    \hline
-    101 & $-3$ & 000 \\
-    110 & $-2$ & 001 \\
-    111 & $-1$ & 010 \\
-    000 & $0$  & 011 \\
-    001 & $1$  & 100 \\
-    010 & $2$  & 101 \\
-    011 & $3$  & 110 \\
-    100 & 保留模式 & 111 \\
-    \hline
-  \end{tabular}
-  \caption{按移 3 码次序排列的移 3 编码。依据原书图 A.1 重绘。}
+  \includegraphics[width=\textwidth]{figs/appendix-a/A-1.png}
+  \caption{按移 3 码次序排列的移 3 编码。}
   \label{fig:a-1}
 \end{figure}
 
@@ -126,18 +112,8 @@ $(S,E,M)$ 中的 $E$ 有 $n$ 位，该数的值为
 
 \begin{figure}[htbp]
   \centering
-  \begin{minipage}{0.28\linewidth}
-    \centering
-    \small
-    \begin{tabular}{cc}
-      \hline
-      位模式 & 数值 \\
-      \hline
-      000&0\\001&1\\010&2\\011&3\\100&4\\101&5\\110&6\\111&7\\
-      \hline
-    \end{tabular}
-  \end{minipage}
-  \caption{3 位无符号整数格式的可表示数。依据原书图 A.2 重绘。}
+  \includegraphics[width=0.55\textwidth]{figs/appendix-a/A-2.png}
+  \caption{3 位无符号整数格式的可表示数。}
   \label{fig:a-2}
 \end{figure}
 
@@ -146,12 +122,8 @@ $(S,E,M)$ 中的 $E$ 有 $n$ 位，该数的值为
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=0.9cm,y=0.55cm]
-    \draw[->] (-1.4,0) -- (9.4,0);
-    \foreach \x in {-1,...,9} {\draw (\x,0.08)--(\x,-0.08) node[below=2pt]{\scriptsize\x};}
-    \foreach \x in {0,...,7} {\fill[teal!70!black] (\x,0) circle (2.2pt);}
-  \end{tikzpicture}
-  \caption{3 位无符号整数格式的可表示数在数轴上的位置。依据原书图 A.3 重绘。}
+  \includegraphics[width=\textwidth]{figs/appendix-a/A-3.png}
+  \caption{3 位无符号整数格式的可表示数在数轴上的位置。}
   \label{fig:a-3}
 \end{figure}
 
@@ -163,34 +135,8 @@ $(S,E,M)$ 中的 $E$ 有 $n$ 位，该数的值为
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \setlength{\tabcolsep}{2.2pt}
-  \resizebox{\linewidth}{!}{%
-  \begin{tabular}{cc|cc|cc|cc}
-    \hline
-    $E$ & $M$ & \multicolumn{2}{c|}{\textbf{无零}} &
-      \multicolumn{2}{c|}{\textbf{突发下溢}} & \multicolumn{2}{c}{\textbf{反规格化}}\\
-    &&$S=0$&$S=1$&$S=0$&$S=1$&$S=0$&$S=1$\\
-    \hline
-    00&00&$2^{-1}$&$-(2^{-1})$&0&0&0&0\\
-    00&01&$2^{-1}+1\cdot2^{-3}$&$-(2^{-1}+1\cdot2^{-3})$&0&0&$1\cdot2^{-2}$&$-1\cdot2^{-2}$\\
-    00&10&$2^{-1}+2\cdot2^{-3}$&$-(2^{-1}+2\cdot2^{-3})$&0&0&$2\cdot2^{-2}$&$-2\cdot2^{-2}$\\
-    00&11&$2^{-1}+3\cdot2^{-3}$&$-(2^{-1}+3\cdot2^{-3})$&0&0&$3\cdot2^{-2}$&$-3\cdot2^{-2}$\\
-    \hline
-    01&00&$2^0$&$-(2^0)$&$2^0$&$-(2^0)$&$2^0$&$-(2^0)$\\
-    01&01&$2^0+1\cdot2^{-2}$&$-(2^0+1\cdot2^{-2})$&$2^0+1\cdot2^{-2}$&$-(2^0+1\cdot2^{-2})$&$2^0+1\cdot2^{-2}$&$-(2^0+1\cdot2^{-2})$\\
-    01&10&$2^0+2\cdot2^{-2}$&$-(2^0+2\cdot2^{-2})$&$2^0+2\cdot2^{-2}$&$-(2^0+2\cdot2^{-2})$&$2^0+2\cdot2^{-2}$&$-(2^0+2\cdot2^{-2})$\\
-    01&11&$2^0+3\cdot2^{-2}$&$-(2^0+3\cdot2^{-2})$&$2^0+3\cdot2^{-2}$&$-(2^0+3\cdot2^{-2})$&$2^0+3\cdot2^{-2}$&$-(2^0+3\cdot2^{-2})$\\
-    \hline
-    10&00&$2^1$&$-(2^1)$&$2^1$&$-(2^1)$&$2^1$&$-(2^1)$\\
-    10&01&$2^1+1\cdot2^{-1}$&$-(2^1+1\cdot2^{-1})$&$2^1+1\cdot2^{-1}$&$-(2^1+1\cdot2^{-1})$&$2^1+1\cdot2^{-1}$&$-(2^1+1\cdot2^{-1})$\\
-    10&10&$2^1+2\cdot2^{-1}$&$-(2^1+2\cdot2^{-1})$&$2^1+2\cdot2^{-1}$&$-(2^1+2\cdot2^{-1})$&$2^1+2\cdot2^{-1}$&$-(2^1+2\cdot2^{-1})$\\
-    10&11&$2^1+3\cdot2^{-1}$&$-(2^1+3\cdot2^{-1})$&$2^1+3\cdot2^{-1}$&$-(2^1+3\cdot2^{-1})$&$2^1+3\cdot2^{-1}$&$-(2^1+3\cdot2^{-1})$\\
-    \hline
-    11&\multicolumn{7}{c}{保留模式}\\
-    \hline
-  \end{tabular}}
-  \caption{无零、突发下溢和反规格化格式的可表示数。依据原书图 A.4 重绘。}
+  \includegraphics[width=\textwidth]{figs/appendix-a/A-4.png}
+  \caption{无零、突发下溢和反规格化格式的可表示数。}
   \label{fig:a-4}
 \end{figure}
 
@@ -199,13 +145,8 @@ $(S,E,M)$ 中的 $E$ 有 $n$ 位，该数的值为
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=2.25cm,y=0.55cm]
-    \draw[->] (0,0)--(4.15,0);
-    \foreach \x in {0,1,2,3,4}{\draw (\x,0.08)--(\x,-0.08) node[below=2pt]{\scriptsize\x};}
-    \foreach \x in {0.5,0.625,0.75,0.875,1,1.25,1.5,1.75,2,2.5,3,3.5}
-      {\fill[teal!70!black] (\x,0) circle (2.1pt);}
-  \end{tikzpicture}
-  \caption{无零表示中的正可表示数。依据原书图 A.5 重绘。}
+  \includegraphics[width=\textwidth]{figs/appendix-a/A-5.png}
+  \caption{无零表示中的正可表示数。}
   \label{fig:a-5}
 \end{figure}
 
@@ -251,12 +192,8 @@ $2^m$ 倍。某些数值方法依靠很小的数据值准确检测收敛条件�
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=2.25cm,y=0.55cm]
-    \draw[->] (0,0)--(4.15,0);
-    \foreach \x in {0,1,2,3,4}{\draw (\x,0.08)--(\x,-0.08) node[below=2pt]{\scriptsize\x};}
-    \foreach \x in {0,1,1.25,1.5,1.75,2,2.5,3,3.5}{\fill[teal!70!black] (\x,0) circle (2.1pt);}
-  \end{tikzpicture}
-  \caption{突发下溢格式的正可表示数。依据原书图 A.6 重绘。}
+  \includegraphics[width=\textwidth]{figs/appendix-a/A-6.png}
+  \caption{突发下溢格式的正可表示数。}
   \label{fig:a-6}
 \end{figure}
 
@@ -278,13 +215,8 @@ $0.01\times2^0=2^{-2}$。图 \ref{fig:a-7} 给出反规格化格式的可表示�
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=2.25cm,y=0.55cm]
-    \draw[->] (0,0)--(4.15,0);
-    \foreach \x in {0,1,2,3,4}{\draw (\x,0.08)--(\x,-0.08) node[below=2pt]{\scriptsize\x};}
-    \foreach \x in {0,0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.5,3,3.5}
-      {\fill[teal!70!black] (\x,0) circle (2.1pt);}
-  \end{tikzpicture}
-  \caption{反规格化格式的正可表示数。依据原书图 A.7 重绘。}
+  \includegraphics[width=\textwidth]{figs/appendix-a/A-7.png}
+  \caption{反规格化格式的正可表示数。}
   \label{fig:a-7}
 \end{figure}
 
@@ -314,18 +246,8 @@ precision，dp）数共 64 位，包括 1 位 $S$、11 位 $E$ 和 52 位 $M$。
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{ccc}
-    \hline
-    \textbf{指数} & \textbf{尾数} & \textbf{含义}\\
-    \hline
-    $11\ldots1$ & $\ne0$ & NaN\\
-    $11\ldots1$ & $=0$ & $(-1)^S\times\infty$\\
-    $00\ldots0$ & $\ne0$ & 反规格化数\\
-    $00\ldots0$ & $=0$ & 0\\
-    \hline
-  \end{tabular}
-  \caption{IEEE 标准格式中的特殊位模式。依据原书图 A.8 重绘。}
+  \includegraphics[width=\textwidth]{figs/appendix-a/A-8.png}
+  \caption{IEEE 标准格式中的特殊位模式。}
   \label{fig:a-8}
 \end{figure}
 
@@ -468,23 +390,8 @@ $1.00_B\times2^1$，但硬件因使用近似算法而产生 $1.10_B\times2^1$，
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \renewcommand{\arraystretch}{1.15}
-  \begin{tabular}{c@{\ $\Longrightarrow$\ }c}
-    $\begin{aligned}3X+5Y+2Z&=19\\2X+3Y+Z&=11\\X+2Y+2Z&=11\end{aligned}$
-      & $\begin{aligned}X+\frac53Y+\frac23Z&=\frac{19}3\\X+\frac32Y+\frac12Z&=\frac{11}2\\X+2Y+2Z&=11\end{aligned}$\\
-    原方程 & 步骤 1：各方程除以 $X$ 的系数\\[0.7em]
-    $\begin{aligned}X+\frac53Y+\frac23Z&=\frac{19}3\\-\frac16Y-\frac16Z&=-\frac56\\\frac13Y+\frac43Z&=\frac{14}3\end{aligned}$
-      & $\begin{aligned}X+\frac53Y+\frac23Z&=\frac{19}3\\Y+Z&=5\\Y+4Z&=14\end{aligned}$\\
-    步骤 2：从方程 2、3 减去方程 1 & 步骤 3：方程 2 除以 $-1/6$，方程 3 除以 $1/3$\\[0.7em]
-    $\begin{aligned}X+\frac53Y+\frac23Z&=\frac{19}3\\Y+Z&=5\\3Z&=9\end{aligned}$
-      & $\begin{aligned}X+\frac53Y+\frac23Z&=\frac{19}3\\Y+Z&=5\\Z&=3\end{aligned}$\\
-    步骤 4：方程 3 减去方程 2 & 步骤 5：方程 3 除以 3，求得 $Z$\\[0.7em]
-    $\begin{aligned}X+\frac53Y+\frac23Z&=\frac{19}3\\Y&=2\\Z&=3\end{aligned}$
-      & $\begin{aligned}X&=1\\Y&=2\\Z&=3\end{aligned}$\\
-    步骤 6：把 $Z$ 回代方程 2，求得 $Y$ & 步骤 7：把 $Y,Z$ 回代方程 1，求得 $X$
-  \end{tabular}
-  \caption{用高斯消元和回代求解线性方程组。依据原书图 A.9 重绘。}
+  \includegraphics[width=0.85\textwidth]{figs/appendix-a/A-9.png}
+  \caption{用高斯消元和回代求解线性方程组。}
   \label{fig:a-9}
 \end{figure}
 
@@ -509,23 +416,8 @@ $Y=2$ 回代方程 1，得到 $X=1$，至此得到原方程组的完整解。步
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \renewcommand{\arraystretch}{1.15}
-  \begin{tabular}{c@{\ $\Longrightarrow$\ }c}
-    $\left[\begin{array}{ccc|c}3&5&2&19\\2&3&1&11\\1&2&2&11\end{array}\right]$
-      & $\left[\begin{array}{ccc|c}1&5/3&2/3&19/3\\1&3/2&1/2&11/2\\1&2&2&11\end{array}\right]$\\
-    原矩阵 & 步骤 1\\[0.5em]
-    $\left[\begin{array}{ccc|c}1&5/3&2/3&19/3\\0&-1/6&-1/6&-5/6\\0&1/3&4/3&14/3\end{array}\right]$
-      & $\left[\begin{array}{ccc|c}1&5/3&2/3&19/3\\0&1&1&5\\0&1&4&14\end{array}\right]$\\
-    步骤 2 & 步骤 3\\[0.5em]
-    $\left[\begin{array}{ccc|c}1&5/3&2/3&19/3\\0&1&1&5\\0&0&3&9\end{array}\right]$
-      & $\left[\begin{array}{ccc|c}1&5/3&2/3&19/3\\0&1&1&5\\0&0&1&3\end{array}\right]$\\
-    步骤 4 & 步骤 5\\[0.5em]
-    $\left[\begin{array}{ccc|c}1&5/3&2/3&19/3\\0&1&0&2\\0&0&1&3\end{array}\right]$
-      & $\left[\begin{array}{ccc|c}1&0&0&1\\0&1&0&2\\0&0&1&3\end{array}\right]$\\
-    步骤 6 & 步骤 7
-  \end{tabular}
-  \caption{矩阵视角下的高斯消元和回代。依据原书图 A.10 重绘。}
+  \includegraphics[width=0.85\textwidth]{figs/appendix-a/A-10.png}
+  \caption{矩阵视角下的高斯消元和回代。}
   \label{fig:a-10}
 \end{figure}
 
@@ -573,25 +465,8 @@ $Y=2$ 回代方程 1，得到 $X=1$，至此得到原方程组的完整解。步
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \renewcommand{\arraystretch}{1.15}
-  \begin{tabular}{c@{\ $\Longrightarrow$\ }c}
-    $\left[\begin{array}{ccc|c}0&5&2&16\\2&3&1&11\\1&2&2&11\end{array}\right]$
-      & $\left[\begin{array}{ccc|c}2&3&1&11\\0&5&2&16\\1&2&2&11\end{array}\right]$\\
-    原矩阵 & 选主元：交换第 1、2 行\\[0.5em]
-    $\left[\begin{array}{ccc|c}1&3/2&1/2&11/2\\0&5&2&16\\1&2&2&11\end{array}\right]$
-      & $\left[\begin{array}{ccc|c}1&3/2&1/2&11/2\\0&5&2&16\\0&1/2&3/2&11/2\end{array}\right]$\\
-    步骤 1：第 1 行除以 2 & 步骤 2：第 3 行减去第 1 行\\[0.5em]
-    $\left[\begin{array}{ccc|c}1&3/2&1/2&11/2\\0&1&2/5&16/5\\0&1&3&11\end{array}\right]$
-      & $\left[\begin{array}{ccc|c}1&3/2&1/2&11/2\\0&1&2/5&16/5\\0&0&13/5&39/5\end{array}\right]$\\
-    步骤 3 & 步骤 4\\[0.5em]
-    $\left[\begin{array}{ccc|c}1&3/2&1/2&11/2\\0&1&2/5&16/5\\0&0&1&3\end{array}\right]$
-      & $\left[\begin{array}{ccc|c}1&3/2&1/2&11/2\\0&1&0&2\\0&0&1&3\end{array}\right]$\\
-    步骤 5：求得 $Z$ & 步骤 6：求得 $Y$\\[0.5em]
-    \multicolumn{2}{c}{$\left[\begin{array}{ccc|c}1&0&0&1\\0&1&0&2\\0&0&1&3\end{array}\right]$}\\
-    \multicolumn{2}{c}{步骤 7：求得 $X$}
-  \end{tabular}
-  \caption{带选主元的高斯消元。依据原书图 A.11 重绘。}
+  \includegraphics[width=0.85\textwidth]{figs/appendix-a/A-11.png}
+  \caption{带选主元的高斯消元。}
   \label{fig:a-11}
 \end{figure}
 

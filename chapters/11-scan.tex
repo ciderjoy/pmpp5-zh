@@ -109,16 +109,8 @@ $k$ 轮后，它保存以该位置为末端、最多含 $2^k$ 个输入的和。
 归约树。
 
 \begin{figure}[htbp]
-  \centering\scriptsize
-  \begin{tabular}{c|l}
-    初始 & $x_0\quad x_1\quad x_2\quad x_3\quad\cdots\quad x_{15}$\\
-    距离 1 & $x_0\quad \sum_{0}^{1}x\quad \sum_{1}^{2}x\quad
-      \sum_{2}^{3}x\quad\cdots\quad\sum_{14}^{15}x$\\
-    距离 2 & $x_0\quad \sum_{0}^{1}x\quad \sum_{0}^{2}x\quad
-      \sum_{0}^{3}x\quad\cdots\quad\sum_{12}^{15}x$\\
-    距离 4 & 前 8 个位置逐步完成，后部每项合并左侧相距 4 的部分和\\
-    距离 8 & 所有位置成为 $y_i=\sum_{j=0}^{i}x_j$
-  \end{tabular}
+  \centering
+  \includegraphics[width=0.85\textwidth]{figs/ch11/11-2.png}
   \caption{基于 Kogge--Stone 加法器设计的并行包含式扫描}
   \label{fig:11-2}
 \end{figure}
@@ -189,15 +181,8 @@ $x_1+x_2+x_3+x_4$，线程 6 会多计 $x_1+x_2$，下一轮又会重复计入�
 缓冲区轮流担任输入和输出即可。
 
 \begin{figure}[htbp]
-  \centering\small
-  \begin{tabular}{c|c|c}
-    阶段 & 输入缓冲区 & 输出缓冲区\\\hline
-    装载 & 全局内存 $\rightarrow$ buffer1 & ---\\
-    轮 0（距离 1） & buffer1 & buffer2\\
-    轮 1（距离 2） & buffer2 & buffer1\\
-    轮 2（距离 4） & buffer1 & buffer2\\
-    后续 & \multicolumn{2}{c}{每轮交换两个指针}
-  \end{tabular}
+  \centering
+  \includegraphics[width=\textwidth]{figs/ch11/11-4.png}
   \caption{把双缓冲应用于 Kogge--Stone 并行扫描}
   \label{fig:11-4}
 \end{figure}
@@ -257,14 +242,8 @@ warp 先扫描自己的子区段，再合并各 warp 的结果，得到整个块
 结果。第三阶段把 7 加到第二段、14 加到第三段、20 加到第四段，补齐所有结果。
 
 \begin{figure}[htbp]
-  \centering\small
-  \begin{tabular}{c|c|c|c|c}
-    & 段 0 & 段 1 & 段 2 & 段 3\\\hline
-    输入 & 2,1,3,1 & 0,4,1,2 & 0,3,1,2 & 4,1,2,4\\
-    段内扫描 & 2,3,6,7 & 0,4,5,7 & 0,3,4,6 & 4,5,7,11\\
-    段和扫描 & \multicolumn{4}{c}{7,14,20,31}\\
-    加前缀后 & 2,3,6,7 & 7,11,12,14 & 14,17,18,20 & 24,25,27,31
-  \end{tabular}
+  \centering
+  \includegraphics[width=\textwidth]{figs/ch11/11-6.png}
   \caption{扫描--扫描--加法分解示例}
   \label{fig:11-6}
 \end{figure}
@@ -275,11 +254,7 @@ warp 的总和加到自己的扫描结果上。
 
 \begin{figure}[htbp]
   \centering
-  \fbox{\begin{minipage}{0.88\textwidth}\centering
-    块输入 $\longrightarrow$ 各 warp 独立扫描\\[0.4em]
-    warp 末线程收集段和 $\longrightarrow$ warp 0 扫描段和\\[0.4em]
-    每个 warp 加上前序 warp 的累计和 $\longrightarrow$ 块级扫描结果
-  \end{minipage}}
+  \includegraphics[width=\textwidth]{figs/ch11/11-7.png}
   \caption{用扫描--扫描--加法把块级扫描分解为 warp 级扫描}
   \label{fig:11-7}
 \end{figure}
@@ -408,12 +383,7 @@ $(1024\times10)/32=320$ 个步，相对顺序执行的 1024 个步减少约 $3.2
 
 \begin{figure}[htbp]
   \centering
-  \fbox{\begin{minipage}{0.88\textwidth}\centering
-    共享内存中的块区段\\[0.35em]
-    $\Downarrow$ 每线程取得一个连续子区段并顺序扫描\\[0.35em]
-    子区段末值 $\Downarrow$ 块级并行扫描线程和\\[0.35em]
-    每线程加上前序线程累计和 $\Downarrow$ 完整块级扫描结果
-  \end{minipage}}
+  \includegraphics[width=\textwidth]{figs/ch11/11-11.png}
   \caption{用扫描--扫描--加法把线程粗化应用于并行扫描}
   \label{fig:11-11}
 \end{figure}
@@ -604,12 +574,7 @@ NVIDIA H100 的峰值浮点吞吐量为 66.9 TFLOPS，峰值全局内存带宽�
 
 \begin{figure}[htbp]
   \centering
-  \fbox{\begin{minipage}{0.9\textwidth}\centering
-    全局输入划分为连续块区段\\[0.35em]
-    $\Downarrow$ 各线程块独立扫描（第一次扫描）\\[0.35em]
-    收集块和 $\Downarrow$ 扫描块和（第二次扫描）\\[0.35em]
-    各块加上前序块累计和 $\Downarrow$ 全局扫描结果
-  \end{minipage}}
+  \includegraphics[width=\textwidth]{figs/ch11/11-14.png}
   \caption{用扫描--扫描--加法把全局扫描分解为块级扫描}
   \label{fig:11-14}
 \end{figure}
@@ -634,12 +599,7 @@ NVIDIA H100 的峰值浮点吞吐量为 66.9 TFLOPS，峰值全局内存带宽�
 
 \begin{figure}[htbp]
   \centering
-  \fbox{\begin{minipage}{0.9\textwidth}\centering
-    全局输入划分为连续块区段\\[0.35em]
-    $\Downarrow$ 各线程块归约自己的区段\\[0.35em]
-    块和 $\Downarrow$ 全局扫描块和\\[0.35em]
-    各块把前序累计和放入区段首项并执行块内扫描 $\Downarrow$ 全局结果
-  \end{minipage}}
+  \includegraphics[width=\textwidth]{figs/ch11/11-15.png}
   \caption{用归约--扫描--扫描把全局扫描分解为块级扫描}
   \label{fig:11-15}
 \end{figure}
@@ -668,13 +628,8 @@ $279\times10^9$ 元素/秒，是理想值的三分之二，优于扫描--扫描-
 yan2013streamscan,merrill2016single}。
 
 \begin{figure}[htbp]
-  \centering\small
-  \begin{tabular}{p{0.27\textwidth}|p{0.29\textwidth}|p{0.29\textwidth}}
-    (a) 集中式 & (b) 单次回看 & (c) 极端解耦回看\\\hline
-    所有块把和交给块 0；块 0 扫描后再分发。需要扫描前后两次网格屏障。
-    & 块 $b$ 等待块 $b-1$ 的扫描和，累加自己的和后传给块 $b+1$。
-    & 每个块回看并归约此前所有已产生的块和；同步少，但会重复计算。
-  \end{tabular}
+  \centering
+  \includegraphics[width=\textwidth]{figs/ch11/11-16.png}
   \caption{单个内核内实现块间扫描的三种方法}
   \label{fig:11-16}
 \end{figure}
@@ -833,16 +788,8 @@ $16n-1=15$。它用 $8+4+2+1=15$ 次操作得到总和。一般地，归约阶�
 次操作。
 
 \begin{figure}[htbp]
-  \centering\scriptsize
-  \begin{tabular}{c|l}
-    归约距离 1 & 更新 $1,3,5,7,9,11,13,15$\\
-    归约距离 2 & 更新 $3,7,11,15$\\
-    归约距离 4 & 更新 $7,15$\\
-    归约距离 8 & 更新 $15$，得到 $\sum_{0}^{15}x_i$\\\hline
-    反向距离 4 & 用位置 7 补全位置 11\\
-    反向距离 2 & 用位置 3、7、11 补全位置 5、9、13\\
-    反向距离 1 & 补全位置 $2,4,6,8,10,12,14$
-  \end{tabular}
+  \centering
+  \includegraphics[width=0.75\textwidth]{figs/ch11/11-19.png}
   \caption{基于 Brent--Kung 加法器设计的并行包含式扫描}
   \label{fig:11-19}
 \end{figure}
@@ -852,14 +799,8 @@ $16n-1=15$。它用 $8+4+2+1=15$ 次操作得到总和。一般地，归约阶�
 15 已经是最终扫描值，其余位置还需补入左侧的若干连续部分和。
 
 \begin{figure}[htbp]
-  \centering\scriptsize
-  \begin{tabular}{c|cccccccc}
-    位置 & 0 & 1 & 2 & 3 & 5 & 7 & 11 & 15\\\hline
-    归约后 & $x_0$ & $x_0..x_1$ & $x_2$ & $x_0..x_3$ & $x_4..x_5$
-      & $x_0..x_7$ & $x_8..x_{11}$ & $x_0..x_{15}$\\
-    反向树后 & $x_0$ & $x_0..x_1$ & $x_0..x_2$ & $x_0..x_3$ & $x_0..x_5$
-      & $x_0..x_7$ & $x_0..x_{11}$ & $x_0..x_{15}$
-  \end{tabular}
+  \centering
+  \includegraphics[width=\textwidth]{figs/ch11/11-20.png}
   \caption{反向树各层之后数组中部分和的演化（概念示意）}
   \label{fig:11-20}
 \end{figure}

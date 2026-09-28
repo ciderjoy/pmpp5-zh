@@ -1,5 +1,6 @@
 \chapter{多维网格与数据}
 \label{chap:multidimensional-grids-and-data}
+\chaptercontents
 
 \setcounter{footnote}{0}
 
@@ -333,8 +334,7 @@ void colorToGrayscaleConversion(unsigned char* Pout,
     }
 }
   \end{lstlisting}
-  \caption{\code{colorToGrayscaleConversion} 内核及其二维线程到数据的映射
-  （依据原书图 3.4 重绘）}
+  \caption{\code{colorToGrayscaleConversion} 内核及其二维线程到数据的映射}
   \label{fig:3-4}
 \end{figure}
 
@@ -553,7 +553,7 @@ void blurKernel(unsigned char *in, unsigned char *out, int w, int h) {
     }
 }
   \end{lstlisting}
-  \caption{图像模糊内核（依据原书图 3.8 重绘）}
+  \caption{图像模糊内核}
   \label{fig:3-8}
 \end{figure}
 
@@ -714,8 +714,7 @@ __global__ void MatrixMulKernel(float* M, float* N,
     }
 }
   \end{lstlisting}
-  \caption{每个线程计算一个 $P$ 元素的矩阵乘法内核
-  （依据原书图 3.11 重绘）}
+  \caption{每个线程计算一个 $P$ 元素的矩阵乘法内核}
   \label{fig:3-11}
 \end{figure}
 

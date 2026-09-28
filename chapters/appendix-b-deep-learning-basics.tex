@@ -76,23 +76,8 @@ $W$ 的元素先与 $x$ 的相应元素相乘，成对乘积再在点积中相�
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=1.15cm,y=1.0cm,>=Stealth]
-    \draw[->] (0,0)--(5.2,0) node[right] {$x_1$};
-    \draw[->] (0,0)--(0,4.3) node[above] {$x_2$};
-    \draw[thick] (-0.6,4.3)--(4.3,-0.5);
-    \node[font=\small,rotate=-40] at (3.6,0.8) {$w_1x_1+w_2x_2+b=0$};
-    \node[font=\small] at (3.45,3.5) {$w_1x_1+w_2x_2+b>0$};
-    \node[font=\small] at (1.1,-0.55) {$w_1x_1+w_2x_2+b<0$};
-    \node[left,font=\scriptsize] at (0,3.15) {$(0,-b/w_2)$};
-    \node[below,font=\scriptsize] at (3.15,0) {$(-b/w_1,0)$};
-    \foreach \p in {(0.45,1.05),(0.75,0.72),(1.1,1.35),(1.35,0.85),(1.7,1.25),(1.95,0.65)}
-      \fill[cyan!40!blue] \p circle (2.3pt);
-    \foreach \p in {(2.25,1.55),(2.55,2.1),(2.75,1.35),(3.05,2.5),(3.25,1.8),(3.5,2.2)}
-      \fill[blue!80] \p circle (2.3pt);
-    \node[align=left] at (7.8,2.4) {$y=\operatorname{sign}((w_1,w_2)\cdot(x_1,x_2)+b)$\\
-      $\phantom{y}=\operatorname{sign}(w_1x_1+w_2x_2+b)$};
-  \end{tikzpicture}
-  \caption{输入为二维向量的感知机线性分类器示例。依据原书图 B.1 重绘。}
+  \includegraphics[width=\textwidth]{figs/appendix-b/B-1.png}
+  \caption{输入为二维向量的感知机线性分类器示例。}
   \label{fig:b-1}
 \end{figure}
 
@@ -132,34 +117,8 @@ $2x_1+2x_2-3=0$ 能正确分类大多数点；但某些 $x_1,x_2$ 都大于 0.5�
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[>=Stealth,font=\scriptsize]
-    \begin{scope}[x=2.6cm,y=2.6cm]
-      \draw[->] (0,0)--(1.25,0) node[right] {$x_1$};
-      \draw[->] (0,0)--(0,1.25) node[above] {$x_2$};
-      \draw[blue!70,thick] (0,0) rectangle (1,1);
-      \fill[cyan!20] (0.5,0.5) rectangle (1,1);
-      \draw[thick] (0.3,1.2)--(1.2,0.3);
-      \node at (0.6,-0.22) {(a) 单层};
-    \end{scope}
-    \begin{scope}[shift={(5.1,0)}]
-      \node[draw,circle,fill=blue!20,minimum size=6mm] (p11) at (0,2.1) {$\operatorname{sign}$};
-      \node[draw,circle,fill=blue!20,minimum size=6mm] (p12) at (0,0.7) {$\operatorname{sign}$};
-      \node[draw,circle,fill=green!20,minimum size=6mm] (p2) at (3.0,1.4) {$\operatorname{sign}$};
-      \node[left] (x1) at (-1.4,2.1) {$x_1$};
-      \node[left] (x2) at (-1.4,0.7) {$x_2$};
-      \draw[->] (x1)--node[above] {$1$}(p11);
-      \draw[->] (x2)--node[above] {$1$}(p12);
-      \node[above] at (p11.north) {$b=-0.5$};
-      \node[below] at (p12.south) {$b=-0.5$};
-      \draw[->] (p11)--node[above] {$2$}(p2);
-      \draw[->] (p12)--node[below] {$2$}(p2);
-      \node[above] at (p2.north) {$b=-3$};
-      \draw[->] (p2)--+(1,0) node[right] {$z$};
-      \node at (1.1,-0.22) {(b) 两层};
-    \end{scope}
-  \end{tikzpicture}
-  \caption{多层感知机示例：（a）单条直线只能近似划分输入；（b）两层感知机精确实现所需
-  分类。依据原书图 B.2 重绘。}
+  \includegraphics[width=0.85\textwidth]{figs/appendix-b/B-2.png}
+  \caption{多层感知机示例：（a）单条直线只能近似划分输入；（b）两层感知机精确实现所需 分类。}
   \label{fig:b-2}
 \end{figure}
 
@@ -195,40 +154,8 @@ $(1,-1)$ 和 $(-1,1)$。现在可以画直线 $z_1+z_2+1=0$ 或它的小幅变�
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=1.05cm,y=1.05cm,>=Stealth,font=\scriptsize]
-    \begin{scope}
-      \draw[->] (0,0)--(3.2,0) node[right] {$x_1$};
-      \draw[->] (0,0)--(0,3.2) node[above] {$x_2$};
-      \draw[blue!70,thick] (0,0) rectangle (2.7,2.7);
-      \foreach \p in {(0.3,0.3),(0.7,0.7),(1.1,0.35),(1.5,0.8),(2.2,0.35),(2.5,0.8),
-        (0.3,2.3),(0.8,2.0),(1.3,2.4),(1.8,2.0),(2.3,2.4),(2.55,1.9)}
-        \fill[cyan!35!blue] \p circle (2.4pt);
-      \foreach \p in {(0.45,1.25),(0.8,1.55),(1.25,1.25),(1.65,1.55),(2.05,1.2),(2.4,1.5)}
-        \fill[blue!80] \p circle (2.4pt);
-      \node at (1.35,-0.45) {(a) 输入空间};
-    \end{scope}
-    \begin{scope}[shift={(5.0,0)}]
-      \draw[->] (0,0)--(3.2,0) node[right] {$y_1$};
-      \draw[->] (0,0)--(0,3.2) node[above] {$y_2$};
-      \draw[blue!70,thick] (0.35,0.35) rectangle (2.65,2.65);
-      \foreach \p in {(0.35,0.35),(0.35,1.5),(0.35,2.65),(1.5,0.35),(1.5,1.5),(1.5,2.65),
-        (2.65,0.35),(2.65,1.5),(2.65,2.65)} \fill[blue!65] \p circle (2.5pt);
-      \draw[thick] (-0.2,1.0)--(2.6,3.8);
-      \draw[thick] (-0.2,2.0)--(2.6,-0.8);
-      \node at (1.35,-0.45) {(b) 两个第二层感知机};
-    \end{scope}
-    \begin{scope}[shift={(10.0,0)}]
-      \draw[->] (0,0)--(3.2,0) node[right] {$z_1$};
-      \draw[->] (0,0)--(0,3.2) node[above] {$z_2$};
-      \draw[blue!70,thick] (0.35,0.35) rectangle (2.65,2.65);
-      \fill[blue!80] (0.35,0.35) circle (2.7pt);
-      \fill[cyan!35!blue] (0.35,2.65) circle (2.7pt);
-      \fill[cyan!35!blue] (2.65,0.35) circle (2.7pt);
-      \draw[thick] (-0.1,1.2)--(1.8,-0.7);
-      \node at (1.35,-0.45) {(c) 最终分类};
-    \end{scope}
-  \end{tikzpicture}
-  \caption{需要两层以上感知机的分类模式。依据原书图 B.3 重绘。}
+  \includegraphics[width=\textwidth]{figs/appendix-b/B-3.png}
+  \caption{需要两层以上感知机的分类模式。}
   \label{fig:b-3}
 \end{figure}
 
@@ -499,47 +426,8 @@ $32\times32$ 像素的二维数组。最后一层计算输出，即原图属于�
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=0.64cm,y=0.64cm,>=Stealth,font=\scriptsize]
-    \node[draw,fill=gray!18,minimum width=1.5cm,minimum height=2.2cm,align=center] (in) at (0,1.4)
-      {输入\\$32\times32$\\\Large A};
-    \foreach \i in {0,...,5} {
-      \draw[fill=blue!12] (2.2+0.10*\i,0.35+0.13*\i) rectangle +(1.15,1.85);
-    }
-    \node[align=center] at (2.8,3.05) {C1：6 幅\\$28\times28$};
-    \foreach \i in {0,...,5} {
-      \draw[fill=green!12] (4.4+0.10*\i,0.65+0.13*\i) rectangle +(0.95,1.45);
-    }
-    \node[align=center] at (4.9,3.05) {S2：6 幅\\$14\times14$};
-    \foreach \i in {0,...,7} {
-      \draw[fill=blue!18] (6.45+0.09*\i,0.65+0.10*\i) rectangle +(0.78,1.25);
-    }
-    \node[align=center] at (6.9,3.05) {C3：16 幅\\$10\times10$};
-    \foreach \i in {0,...,7} {
-      \draw[fill=green!18] (8.45+0.08*\i,0.85+0.08*\i) rectangle +(0.60,0.92);
-    }
-    \node[align=center] at (8.9,3.05) {S4：16 幅\\$5\times5$};
-    \node[draw,fill=orange!15,minimum width=0.8cm,minimum height=1.65cm,align=center] (c5) at (10.7,1.45)
-      {C5\\120};
-    \node[draw,fill=orange!22,minimum width=0.8cm,minimum height=1.35cm,align=center] (f6) at (12.2,1.45)
-      {F6\\84};
-    \node[draw,fill=red!12,minimum width=0.8cm,minimum height=1.05cm,align=center] (out) at (13.7,1.45)
-      {输出\\10};
-    \draw[->] (in.east)--(2.1,1.45);
-    \draw[->] (3.55,1.45)--(4.3,1.45);
-    \draw[->] (5.55,1.45)--(6.35,1.45);
-    \draw[->] (7.55,1.45)--(8.35,1.45);
-    \draw[->] (9.55,1.45)--(c5);
-    \draw[->] (c5)--(f6);
-    \draw[->] (f6)--(out);
-    \node at (2.9,-0.15) {卷积};
-    \node at (4.9,-0.15) {下采样};
-    \node at (6.9,-0.15) {卷积};
-    \node at (8.9,-0.15) {下采样};
-    \node at (11.45,-0.15) {全连接};
-    \node at (13.7,-0.15) {高斯连接};
-  \end{tikzpicture}
-  \caption{用于手写数字识别的卷积神经网络 LeNet-5。输入字母 A 应被分类为 10 个类别
-  （数字）皆非。依据原书图 B.4 重绘。}
+  \includegraphics[width=\textwidth]{figs/appendix-b/B-4.png}
+  \caption{用于手写数字识别的卷积神经网络 LeNet-5。输入字母 A 应被分类为 10 个类别 （数字）皆非。}
   \label{fig:b-4}
 \end{figure}
 
@@ -559,27 +447,8 @@ $6\times16=96$ 组滤波器。
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=0.72cm,y=0.72cm,>=Stealth,font=\scriptsize]
-    \foreach \i/\vals in {0/{1,2;1,1},1/{0,2;0,3},2/{1,2;0,1}} {
-      \node[draw,fill=orange!12,minimum width=1.25cm,minimum height=0.85cm,align=center]
-        (x\i) at (0,3.2-1.25*\i) {输入 $X_\i$\\$\vals$};
-    }
-    \foreach \j in {0,1} {
-      \node[draw,fill=green!15,minimum width=1.3cm,minimum height=0.85cm,align=center]
-        (y\j) at (8.2,2.55-1.4*\j) {输出 $Y_\j$\\卷积和};
-    }
-    \foreach \i in {0,1,2} {
-      \foreach \j in {0,1} {
-        \node[draw,fill=blue!10,minimum width=1.15cm,minimum height=0.65cm,align=center]
-          (w\i\j) at (3.5+1.65*\j,3.2-1.25*\i) {$W_{\j,\i}$\\$2\times2$};
-        \draw[->] (x\i)--(w\i\j);
-        \draw[->] (w\i\j)--(y\j);
-      }
-    }
-    \node[align=center] at (4.3,-0.75) {每个输入/输出特征图对使用一组滤波器；\\
-      同一输出特征图累加全部输入特征图的卷积。};
-  \end{tikzpicture}
-  \caption{卷积层的前向传播路径。依据原书图 B.5 重绘。}
+  \includegraphics[width=\textwidth]{figs/appendix-b/B-5.png}
+  \caption{卷积层的前向传播路径。}
   \label{fig:b-5}
 \end{figure}
 
@@ -627,8 +496,7 @@ void convLayer_forward(int M, int C, int H, int W, int K,
             }
 }
   \end{lstlisting}
-  \caption{卷积层前向传播路径的 C 实现。依据原书图 B.6 逐字符重排；滤波器参数沿用第
-  19 章的 \code{F} 命名，以免与图像宽度 \code{W} 混淆。}
+  \caption{卷积层前向传播路径的 C 实现。滤波器参数沿用第 19 章的 \code{F} 命名，以免与图像宽度 \code{W} 混淆。}
   \label{fig:b-6}
 \end{figure}
 
@@ -672,8 +540,7 @@ void subsamplingLayer_forward(int M, int H, int W, int K,
             }
 }
   \end{lstlisting}
-  \caption{下采样层前向传播路径的顺序 C 实现；该层还包含激活函数。依据原书图 B.7
-  重排并作勘误。}
+  \caption{下采样层前向传播路径的顺序 C 实现；该层还包含激活函数。并作勘误。}
   \label{fig:b-7}
 \end{figure}
 
@@ -723,30 +590,8 @@ $\partial E/\partial w$，如图 \ref{fig:b-8}(a) 所示。例如，全连接层
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=1cm,y=1cm,>=Stealth,font=\small]
-    \begin{scope}
-      \node[draw,circle,fill=green!22,minimum size=2.0cm] (layer) at (3.3,1.4) {层};
-      \node[draw,fill=blue!12,align=center] (x) at (0.4,1.4) {输入特征\\$x$};
-      \node[draw,fill=blue!12,align=center] (y) at (6.2,1.4) {输出梯度\\$\partial E/\partial y$};
-      \node[draw,fill=gray!15,align=center] (w) at (3.3,3.8) {权重梯度\\$\partial E/\partial w$};
-      \draw[->] (x)--(layer);
-      \draw[->] (y)--(layer);
-      \draw[->] (layer)--(w);
-      \node at (3.3,-0.1) {(a) 计算权重梯度};
-    \end{scope}
-    \begin{scope}[shift={(8.0,0)}]
-      \node[draw,circle,fill=green!22,minimum size=2.0cm] (layer2) at (3.3,1.4) {层};
-      \node[draw,fill=blue!12,align=center] (dx) at (0.4,1.4) {输入梯度\\$\partial E/\partial x$};
-      \node[draw,fill=blue!12,align=center] (dy) at (6.2,1.4) {输出梯度\\$\partial E/\partial y$};
-      \node[draw,fill=gray!15,align=center] (ww) at (3.3,3.8) {权重\\$w$};
-      \draw[->] (dy)--(layer2);
-      \draw[->] (ww)--(layer2);
-      \draw[->] (layer2)--(dx);
-      \node at (3.3,-0.1) {(b) 计算输入梯度};
-    \end{scope}
-  \end{tikzpicture}
-  \caption{CNN 一层中（a）$\partial E/\partial w$ 和（b）$\partial E/\partial x$ 的
-  反向传播。依据原书图 B.8 重绘。}
+  \includegraphics[width=\textwidth]{figs/appendix-b/B-8.png}
+  \caption{CNN 一层中（a）$\partial E/\partial w$ 和（b）$\partial E/\partial x$ 的 反向传播。}
   \label{fig:b-8}
 \end{figure}
 
@@ -782,31 +627,8 @@ $y_{a,b}\mathrel{+}=x_{a+p,b+q}W_{p,q}$ 反推，反向式应使用 $W(p,q)$。�
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=0.54cm,y=0.54cm,>=Stealth,font=\scriptsize]
-    \begin{scope}
-      \foreach \i in {0,...,6}{\draw (\i,0)--(\i,6);\draw (0,\i)--(6,\i);}
-      \fill[blue!55] (3,3) rectangle (4,4);
-      \node[white] at (3.5,3.5) {$x_{h,w}$};
-      \node[above] at (3,6.2) {$w=0$};
-      \node[above] at (6,6.2) {$w=W-1$};
-      \node[left] at (-0.1,5.5) {$h=0$};
-      \node[left] at (-0.1,0.5) {$h=H-1$};
-    \end{scope}
-    \begin{scope}[shift={(10,0.8)}]
-      \foreach \i in {0,...,5}{\draw (\i,0)--(\i,5);\draw (0,\i)--(5,\i);}
-      \foreach \a in {1,2,3}{\foreach \b in {1,2,3}{\fill[blue!35] (\a,\b) rectangle +(1,1);}}
-      \node[white] at (1.5,3.5) {$y_{h-2,w-2}$};
-      \node[white] at (3.5,1.5) {$y_{h,w}$};
-      \node[above] at (0,5.2) {$w=0$};
-      \node[above] at (5,5.2) {$w=W-3$};
-      \node[left] at (-0.1,4.5) {$h=0$};
-      \node[left] at (-0.1,0.5) {$h=H-3$};
-    \end{scope}
-    \draw[->,thick] (3.8,3.7)--node[above,sloped] {$\times W_{2,2}$}(11.2,4.3);
-    \draw[->,thick] (3.8,3.3)--node[below,sloped] {$\times W_{0,0}$}(13.2,2.3);
-  \end{tikzpicture}
-  \caption{卷积层反向传播的索引关系：输入 $x_{h,w}$ 在前向传播中影响的 9 个输出梯度，
-  在反向传播中通过相应权重汇入 $\partial E/\partial x_{h,w}$。依据原书图 B.9 重绘。}
+  \includegraphics[width=\textwidth]{figs/appendix-b/B-9.png}
+  \caption{卷积层反向传播的索引关系：输入 $x_{h,w}$ 在前向传播中影响的 9 个输出梯度， 在反向传播中通过相应权重汇入 $\partial E/\partial x_{h,w}$。}
   \label{fig:b-9}
 \end{figure}
 
@@ -847,8 +669,7 @@ void convLayer_backward_X_grad(int M, int C, int H_in, int W_in,
             }
 }
   \end{lstlisting}
-  \caption{卷积层反向路径中 $\partial E/\partial x$ 的计算。依据原书图 B.10 重排并作
-  勘误。}
+  \caption{卷积层反向路径中 $\partial E/\partial x$ 的计算。并作 勘误。}
   \label{fig:b-10}
 \end{figure}
 
@@ -888,8 +709,7 @@ void convLayer_backward_W_grad(int M, int C, int H, int W,
                 }
 }
   \end{lstlisting}
-  \caption{卷积层反向路径中 $\partial E/\partial W$ 的计算。依据原书图 B.11 重排并作
-  勘误。}
+  \caption{卷积层反向路径中 $\partial E/\partial W$ 的计算。并作 勘误。}
   \label{fig:b-11}
 \end{figure}
 

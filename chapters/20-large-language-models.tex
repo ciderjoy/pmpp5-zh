@@ -4,24 +4,6 @@
 
 \setcounter{footnote}{0}
 
-\newcommand{\chTwentyBox}[1]{%
-  \fbox{\rule{0pt}{1.65em}\makebox[7.2em][c]{\small #1}}%
-}
-\newcommand{\chTwentySmallBox}[1]{%
-  \fbox{\rule{0pt}{1.35em}\makebox[4.8em][c]{\scriptsize #1}}%
-}
-\newcommand{\chTwentyCell}[1]{%
-  \fbox{\rule{0pt}{1.25em}\makebox[1.7em][c]{\scriptsize $#1$}}%
-}
-\newcommand{\chTwentyTextCell}[1]{%
-  \fbox{\rule{0pt}{1.25em}\makebox[1.7em][c]{\scriptsize #1}}%
-}
-\newcommand{\chTwentyNewCell}[1]{%
-  \fcolorbox{black}{gray!25}{%
-    \rule{0pt}{1.25em}\makebox[1.7em][c]{\scriptsize $#1$}}%
-}
-\newcommand{\chTwentyArrow}{\ensuremath{\longrightarrow}}
-
 在 Google 研究人员于 2017 年提出 Transformer \cite{ch20-1} 之前，语言任务主要建立
 在 IBM 开创的统计语言建模技术之上（例如 \cite{ch20-2}）。2018 年，Google 推出了
 基于 Transformer 的 BERT 语言模型，并在自然语言任务中取得了前所未有的结果。此后，
@@ -76,33 +58,8 @@ Transformer，可参考文献 \cite{ch20-1}。
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c}
-    \chTwentyBox{Tokenizer（分词器）}
-    \quad $\downarrow$ \quad
-    \chTwentyBox{Embedding（嵌入）}
-    \quad $\downarrow$ \quad
-    \chTwentyBox{位置编码}\\[0.5em]
-    $\downarrow$\\[-0.2em]
-    \fbox{\begin{minipage}{0.75\textwidth}
-      \centering
-      \textbf{Transformer 层（重复多次）}\\[0.3em]
-      \chTwentySmallBox{多头注意力}
-      \quad $\longrightarrow$ \quad
-      \chTwentySmallBox{Add \& Norm}
-      \quad $\longrightarrow$ \quad
-      \chTwentySmallBox{前馈网络}
-      \quad $\longrightarrow$ \quad
-      \chTwentySmallBox{Add \& Norm}\\[0.35em]
-      残差连接与层归一化贯穿各子层
-    \end{minipage}}\\[0.5em]
-    $\downarrow$\\[-0.2em]
-    \chTwentyBox{Un-embedding（反嵌入）}
-    \quad $\longrightarrow$ \quad
-    \chTwentyBox{下一个 token 的概率分布}
-  \end{tabular}
-  \caption{仅解码器 Transformer 的基线架构（依据原书图 20.1 临时重绘，未包含
-  KV cache）。}
+  \includegraphics[width=0.75\textwidth]{figs/ch20/20-1.png}
+  \caption{仅解码器 Transformer 的基线架构（，未包含 KV cache）。}
   \label{fig:20-1}
 \end{figure}
 
@@ -218,21 +175,8 @@ generation，RAG）：检索相关文档，把更具体、更及时的上下文�
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c@{\quad}c@{\quad}c@{\quad}c}
-    $X_{N\times d}$ & $\xrightarrow{\;W_Q\;}$ & $Q_{N\times d}$ &
-    $\xrightarrow{\quad}$\\[0.35em]
-    \rotatebox{90}{$\begin{matrix}\xrightarrow{\;W_K\;}\\[-0.2em]
-    \xrightarrow{\;W_V\;}\end{matrix}$} & &
-    $\begin{matrix}K_{N\times d}\\ V_{N\times d}\end{matrix}$ &\\[0.5em]
-    \multicolumn{4}{c}{$S=QK^{\mathsf T}\ (N\times N)
-      \quad\xrightarrow{\;+\ M\;}\quad
-      P=\operatorname{softmax}(S+M)\ (N\times N)
-      \quad\xrightarrow{\;\times V\;}\quad
-      O_{N\times d}$}
-  \end{tabular}
-  \caption{一个注意力头计算中涉及的矩阵（依据原书图 20.2 临时重绘）。
-  为简化图示，省略了作用于 $S=QK^{\mathsf T}$ 的缩放因子 $1/\sqrt d$。}
+  \includegraphics[width=\textwidth]{figs/ch20/20-2.png}
+  \caption{一个注意力头计算中涉及的矩阵。 为简化图示，省略了作用于 $S=QK^{\mathsf T}$ 的缩放因子 $1/\sqrt d$。}
   \label{fig:20-2}
 \end{figure}
 
@@ -306,33 +250,8 @@ $P=\operatorname{softmax}(QK^{\mathsf T}+M)$ 的每一行，都是 token $r$ 的
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c@{\qquad}c}
-    \fbox{\begin{minipage}{0.39\textwidth}
-      \centering
-      \textbf{摘要/预填充阶段}\\[0.3em]
-      系统提示词 + 用户输入 + RAG 文档\\
-      $\downarrow$ tokenizer / embedding\\
-      $X$：一整个 token 序列\\
-      $\downarrow$\\
-      一次 Transformer 前向传播\\
-      $\downarrow$\\
-      第一个输出 token
-    \end{minipage}}
-    &
-    \fbox{\begin{minipage}{0.39\textwidth}
-      \centering
-      \textbf{生成/解码阶段}\\[0.3em]
-      把新 token 追加到上下文\\
-      $\downarrow$\\
-      每次处理一个新 token\\
-      $\downarrow$\\
-      生成下一个 token\\
-      $\circlearrowleft$ 直到 EOS
-    \end{minipage}}
-  \end{tabular}
-  \caption{LLM 推理的摘要（prefill）阶段和生成（decode）阶段
-  （依据原书图 20.3 临时重绘）。}
+  \includegraphics[width=0.85\textwidth]{figs/ch20/20-3.png}
+  \caption{LLM 推理的摘要（prefill）阶段和生成（decode）阶段 。}
   \label{fig:20-3}
 \end{figure}
 
@@ -488,36 +407,8 @@ $l_{r,c}$。代码前半部分先找出分配给线程块的那一行的最大�
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \resizebox{0.98\textwidth}{!}{%
-  \begin{tabular}{c@{\qquad}c@{\qquad}c}
-    \begin{tabular}{c}
-      $X_N$\\[-0.2em]
-      \chTwentyCell{x_0}\\
-      \chTwentyCell{x_1}\\
-      \vdots\\
-      \chTwentyNewCell{x_N}
-    \end{tabular}
-    &
-    $\xrightarrow{\;W_Q,W_K,W_V\;}$
-    &
-    \begin{tabular}{c}
-      $Q_N,\ K_N,\ V_N$\\[-0.2em]
-      前 $N$ 行保持不变\\
-      新增最后一行
-    \end{tabular}\\[1em]
-    \multicolumn{3}{c}{
-      \begin{tabular}{c}
-        $QK^{\mathsf T}$ 从 $N\times N$ 变为 $(N+1)\times(N+1)$\\[-0.1em]
-        \chTwentyTextCell{旧} \chTwentyTextCell{旧} \chTwentyTextCell{新}\\
-        \chTwentyTextCell{旧} \chTwentyTextCell{旧} \chTwentyTextCell{新}\\
-        \chTwentyTextCell{新} \chTwentyTextCell{新} \chTwentyTextCell{新}
-      \end{tabular}
-    }
-  \end{tabular}
-  }%
-  \caption{从一次 LLM 迭代到下一次迭代时减少矩阵乘法工作的机会
-  （依据原书图 20.5 临时重绘；灰色表示新增或需要处理的部分）。}
+  \includegraphics[width=\textwidth]{figs/ch20/20-5.png}
+  \caption{从一次 LLM 迭代到下一次迭代时减少矩阵乘法工作的机会 （灰色表示新增或需要处理的部分）。}
   \label{fig:20-5}
 \end{figure}
 
@@ -547,32 +438,8 @@ softmax 的输出也可以从上一次迭代增量更新。softmax 作用于 $QK
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c@{\quad}c@{\quad}c}
-    \begin{tabular}{c}
-      新输入行\\
-      $X'$\\[0.3em]
-      $\downarrow$\\
-      $Q'$、$K'$、$V'$
-    \end{tabular}
-    &
-    $\longrightarrow$
-    &
-    \begin{tabular}{c}
-      KV cache 中的旧 $K,V$\\
-      $\left[\begin{array}{c}K\\V\end{array}\right]
-      \quad+\quad
-      \left[\begin{array}{c}K'\\V'\end{array}\right]$\\[0.4em]
-      $\begin{gathered}
-        \downarrow\\[-0.1em]
-        S'=Q'[K;K']^{\mathsf T}\\
-        P'=\operatorname{softmax}(S'+M)\\
-        O'=P'[V;V']
-      \end{gathered}$
-    \end{tabular}
-  \end{tabular}
-  \caption{使用 KV cache 的生成阶段涉及的向量和矩阵
-  （依据原书图 20.6 临时重绘）。}
+  \includegraphics[width=0.85\textwidth]{figs/ch20/20-6.png}
+  \caption{使用 KV cache 的生成阶段涉及的向量和矩阵 。}
   \label{fig:20-6}
 \end{figure}
 
@@ -586,24 +453,8 @@ $K$ 和 $V$ 记忆化，也就是保存起来供以后复用，这便形成了 K
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c}
-    \fbox{\begin{minipage}{0.82\textwidth}
-      \centering
-      \textbf{Prefill（摘要）}\\
-      初始 token 序列 $\longrightarrow$ 各 Transformer 层\\
-      $K,V$ 矩阵 $\longrightarrow$ 每层自己的 KV cache
-    \end{minipage}}\\[0.7em]
-    $\Downarrow$\\[-0.2em]
-    \fbox{\begin{minipage}{0.82\textwidth}
-      \centering
-      \textbf{Decode/Generation（生成）}\\
-      新 token 的嵌入 $\longrightarrow$ 新 $Q',K',V'$\\
-      $K',V'$ 追加到 cache $\longrightarrow$ 计算 $O'$ $\longrightarrow$ 下一个 token
-    \end{minipage}}
-  \end{tabular}
-  \caption{使用 KV cache 的 LLM 摘要与生成阶段
-  （依据原书图 20.7 临时重绘）。}
+  \includegraphics[width=0.85\textwidth]{figs/ch20/20-7.png}
+  \caption{使用 KV cache 的 LLM 摘要与生成阶段 。}
   \label{fig:20-7}
 \end{figure}
 
@@ -645,53 +496,8 @@ FlashAttention 对注意力头进行数学上的重新表达，使每个注意�
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \resizebox{0.98\textwidth}{!}{%
-  \begin{tabular}{c@{\qquad}c@{\qquad}c}
-    \begin{tabular}{c}
-      $Q\ (N\times d)$\\
-      \fbox{\begin{tabular}{cccc}
-        \chTwentyNewCell{q}&\chTwentyNewCell{q}&\chTwentyNewCell{q}&\chTwentyNewCell{q}\\
-        \chTwentyNewCell{q}&\chTwentyNewCell{q}&\chTwentyNewCell{q}&\chTwentyNewCell{q}\\
-        \chTwentyCell{q}&\chTwentyCell{q}&\chTwentyCell{q}&\chTwentyCell{q}
-      \end{tabular}}\\[-0.2em]
-      $Q_i:\ B_r\times d$
-    \end{tabular}
-    &
-    \begin{tabular}{c}
-      $K^{\mathsf T}\ (d\times N)$\\
-      \fbox{\begin{tabular}{cccc}
-        \chTwentyNewCell{k}&\chTwentyCell{k}&\chTwentyCell{k}&\chTwentyCell{k}\\
-        \chTwentyNewCell{k}&\chTwentyCell{k}&\chTwentyCell{k}&\chTwentyCell{k}\\
-        \chTwentyNewCell{k}&\chTwentyCell{k}&\chTwentyCell{k}&\chTwentyCell{k}
-      \end{tabular}}\\[-0.2em]
-      $K^{\mathsf T}_j:\ d\times B_c$
-    \end{tabular}
-    &
-    \begin{tabular}{c}
-      $V\ (N\times d)$\\
-      \fbox{\begin{tabular}{cccc}
-        \chTwentyNewCell{v}&\chTwentyNewCell{v}&\chTwentyNewCell{v}&\chTwentyNewCell{v}\\
-        \chTwentyCell{v}&\chTwentyCell{v}&\chTwentyCell{v}&\chTwentyCell{v}\\
-        \chTwentyCell{v}&\chTwentyCell{v}&\chTwentyCell{v}&\chTwentyCell{v}
-      \end{tabular}}\\[-0.2em]
-      $V_j:\ B_c\times d$
-    \end{tabular}\\[1em]
-    \multicolumn{3}{c}{
-      $\displaystyle
-      Q_iK^{\mathsf T}_j\longrightarrow S_i
-      \xrightarrow{\ \operatorname{softmax}\ }P_i
-      \longrightarrow P_iV_j\longrightarrow O_i$}\\[0.8em]
-    \multicolumn{3}{c}{
-      \fbox{\begin{tabular}{c}
-        $Q_i,\ O_i$：寄存器分块\qquad
-        $K^{\mathsf T}_j,\ S_i/P_i,\ V_j$：共享内存分块\\
-        每次只处理 $B_c$ 列/行，并在线合并 softmax 状态
-      \end{tabular}}}
-  \end{tabular}
-  }%
-  \caption{FlashAttention 的分块方式。共享内存中的同一个 $S_i$ tile 先保存
-  $S$，再原地复用为 $P$（依据原书图 20.8 临时重绘）。}
+  \includegraphics[width=0.85\textwidth]{figs/ch20/20-8.png}
+  \caption{FlashAttention 的分块方式。共享内存中的同一个 $S_i$ tile 先保存 $S$，再原地复用为 $P$。}
   \label{fig:20-8}
 \end{figure}
 
@@ -1273,31 +1079,8 @@ Batching 是所有深度神经网络中都很常见的优化方法，传统上�
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c@{\qquad}c}
-    \fbox{\begin{minipage}{0.40\textwidth}
-      \centering
-      \textbf{共享模型权重}\\[0.3em]
-      请求 1 的 $X_1$ \\
-      请求 2 的 $X_2$ \\
-      请求 3 的 $X_3$\\[0.3em]
-      $\left.\begin{array}{c}X_1\\X_2\\X_3\end{array}\right\}
-      \xrightarrow{\quad W_Q,W_K,W_V\quad}
-      \left\{\begin{array}{c}Q_1,K_1,V_1\\
-      Q_2,K_2,V_2\\Q_3,K_3,V_3\end{array}\right.$
-    \end{minipage}}
-    &
-    \fbox{\begin{minipage}{0.40\textwidth}
-      \centering
-      \textbf{独立 KV cache}\\[0.3em]
-      请求 1 $\longrightarrow$ $\mathrm{KVCache}_1$\\
-      请求 2 $\longrightarrow$ $\mathrm{KVCache}_2$\\
-      请求 3 $\longrightarrow$ $\mathrm{KVCache}_3$\\[0.3em]
-      注意力计算必须访问各自上下文
-    \end{minipage}}
-  \end{tabular}
-  \caption{LLM 推理中的 batching：QKV 投影可以共享权重，而注意力仍需为不同
-  会话维护独立 KV cache（依据原书图 20.17 临时重绘）。}
+  \includegraphics[width=\textwidth]{figs/ch20/20-17.png}
+  \caption{LLM 推理中的 batching：QKV 投影可以共享权重，而注意力仍需为不同 会话维护独立 KV cache。}
   \label{fig:20-17}
 \end{figure}
 
@@ -1366,26 +1149,8 @@ $(Q'K^{\mathsf T})V$ 的浮点运算量为 $2Nh_qd$，这里忽略 softmax。于
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c}
-    \fbox{\begin{minipage}{0.82\textwidth}
-      \centering
-      \textbf{Draft model}\\
-      已接受的上下文 $\longrightarrow$
-      \texttt{Programming}\quad\texttt{Massively}\quad\texttt{Efficient}
-    \end{minipage}}\\[0.6em]
-    $\Downarrow\ \text{并行验证}$\\[-0.1em]
-    \fbox{\begin{minipage}{0.82\textwidth}
-      \centering
-      \textbf{Target model}\\
-      \texttt{Programming}\;（接受）
-      \qquad \texttt{Massively}\;（接受）
-      \qquad \texttt{Efficient}\;（拒绝）\\[0.3em]
-      接受前两个 token，拒绝第三个，然后开始下一轮草稿预测
-    \end{minipage}}
-  \end{tabular}
-  \caption{推测解码：草稿模型预测多个 token，目标模型并行验证
-  （依据原书图 20.18 临时重绘）。}
+  \includegraphics[width=0.75\textwidth]{figs/ch20/20-18.png}
+  \caption{推测解码：草稿模型预测多个 token，目标模型并行验证 。}
   \label{fig:20-18}
 \end{figure}
 
@@ -1412,45 +1177,8 @@ MLA）的内存组织。
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c@{\qquad}c}
-    \fbox{\begin{minipage}{0.37\textwidth}
-      \centering
-      \textbf{MHA}\\[0.25em]
-      $Q_1\ Q_2\ Q_3\ Q_4$\\
-      $K_1\ K_2\ K_3\ K_4$\\
-      $V_1\ V_2\ V_3\ V_4$\\
-      每个头都有独立的 $K,V$
-    \end{minipage}}
-    &
-    \fbox{\begin{minipage}{0.37\textwidth}
-      \centering
-      \textbf{MQA}\\[0.25em]
-      $Q_1\ Q_2\ Q_3\ Q_4$\\
-      $\quad K_{\!*}$\\
-      $\quad V_{\!*}$\\
-      所有头共享一组 $K,V$
-    \end{minipage}}\\[1em]
-    \fbox{\begin{minipage}{0.37\textwidth}
-      \centering
-      \textbf{GQA}\\[0.25em]
-      $Q_1\ Q_2\ |\ Q_3\ Q_4$\\
-      $K_1\quad\ |\ K_2$\\
-      $V_1\quad\ |\ V_2$\\
-      每组 query 头共享 $K,V$
-    \end{minipage}}
-    &
-    \fbox{\begin{minipage}{0.37\textwidth}
-      \centering
-      \textbf{MLA}\\[0.25em]
-      $Q_1\ Q_2\ Q_3\ Q_4$\\
-      $\downarrow$ 低秩联合压缩\\
-      $\quad z_{\mathrm{latent}}$\\
-      需要时再上投影恢复 $K,V$
-    \end{minipage}}
-  \end{tabular}
-  \caption{MHA、MQA、GQA 和 MLA 中 $Q$、$K$、$V$ 的共享关系
-  （依据原书图 20.19 临时重绘）。}
+  \includegraphics[width=0.85\textwidth]{figs/ch20/20-19.png}
+  \caption{MHA、MQA、GQA 和 MLA 中 $Q$、$K$、$V$ 的共享关系 。}
   \label{fig:20-19}
 \end{figure}
 

@@ -37,19 +37,8 @@ $x_3$。整个矩阵的 16 个元素中只有 8 个非零，一半的存储被�
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{r|cccc|}
-    \multicolumn{1}{c}{} & \multicolumn{1}{c}{$x_0$} & \multicolumn{1}{c}{$x_1$}
-      & \multicolumn{1}{c}{$x_2$} & \multicolumn{1}{c}{$x_3$}\\
-    \cline{2-5}
-    行 0 & \colorbox{blue!22}{\strut\ 1\ } & \colorbox{blue!22}{\strut\ 7\ } & \strut\ 0\ & \strut\ 0\ \\
-    行 1 & \colorbox{blue!22}{\strut\ 5\ } & \strut\ 0\ & \colorbox{blue!22}{\strut\ 3\ } & \colorbox{blue!22}{\strut\ 9\ }\\
-    行 2 & \strut\ 0\ & \colorbox{blue!22}{\strut\ 2\ } & \colorbox{blue!22}{\strut\ 8\ } & \strut\ 0\ \\
-    行 3 & \strut\ 0\ & \strut\ 0\ & \strut\ 0\ & \colorbox{blue!22}{\strut\ 6\ }\\
-    \cline{2-5}
-  \end{tabular}
-  \caption{一个简单的稀疏矩阵示例。着色格子为非零元素；本章后续各节都以这个矩阵
-  作为统一示例，展示不同存储格式的表示方式}
+  \includegraphics[width=0.85\textwidth]{figs/ch17/17-1.png}
+  \caption{一个简单的稀疏矩阵示例。着色格子为非零元素；本章后续各节都以这个矩阵 作为统一示例，展示不同存储格式的表示方式}
   \label{fig:17-1}
 \end{figure}
 
@@ -82,44 +71,7 @@ $Y$ 通常是稠密向量（即绝大多数元素非零）时，这个运算被�
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c@{\ }c@{\ }c@{\ }c@{\ }c@{\ }c@{\ }c}
-    \begin{tabular}{|c|}
-      \hline
-      \strut\\[-0.2em]
-      \makebox[3.6cm][c]{稀疏矩阵 $A$}\\
-      \makebox[3.6cm][c]{\footnotesize（$M\times N$，绝大多数元素为零）}\\
-      \strut\\
-      \hline
-    \end{tabular}
-    & $\times$ &
-    \begin{tabular}{|c|}
-      \hline
-      \strut\\[-0.2em]
-      \makebox[0.9cm][c]{$X$}\\
-      \makebox[0.9cm][c]{\footnotesize 稠密}\\
-      \strut\\
-      \hline
-    \end{tabular}
-    & $+$ &
-    \begin{tabular}{|c|}
-      \hline
-      \strut\\[-0.2em]
-      \makebox[0.9cm][c]{$Y$}\\
-      \makebox[0.9cm][c]{\footnotesize 稠密}\\
-      \strut\\
-      \hline
-    \end{tabular}
-    & $=$ &
-    \begin{tabular}{|c|}
-      \hline
-      \strut\\[-0.2em]
-      \makebox[0.9cm][c]{结果}\\
-      \makebox[0.9cm][c]{\footnotesize 稠密}\\
-      \strut\\
-      \hline
-    \end{tabular}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch17/17-2.png}
   \caption{矩阵向量乘加运算示意。矩阵 $A$ 稀疏，而向量 $X$ 与 $Y$ 通常稠密}
   \label{fig:17-2}
 \end{figure}
@@ -160,20 +112,7 @@ $Y$ 通常是稠密向量（即绝大多数元素非零）时，这个运算被�
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{r|c|c|c|c|c|c|c|c|}
-    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
-      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}
-      & \multicolumn{1}{c}{5} & \multicolumn{1}{c}{6} & \multicolumn{1}{c}{7}\\
-    \cline{2-9}
-    \code{rowIdx} & 0 & 0 & 1 & 1 & 1 & 2 & 2 & 3\\
-    \cline{2-9}
-    \code{colIdx} & 0 & 1 & 0 & 2 & 3 & 1 & 2 & 3\\
-    \cline{2-9}
-    \code{value}  & 1 & 7 & 5 & 3 & 9 & 2 & 8 & 6\\
-    \cline{2-9}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch17/17-3.png}
   \caption{图 \ref{fig:17-1} 中矩阵的 COO 表示。三个数组等长，长度等于非零元素个数}
   \label{fig:17-3}
 \end{figure}
@@ -195,31 +134,8 @@ COO 把零元素清除得干干净净，但它引入了 \code{rowIdx} 和 \code{
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{r|c|c|c|c|c|c|c|c|}
-    \multicolumn{1}{c}{} & \multicolumn{1}{c}{$T_0$} & \multicolumn{1}{c}{$T_1$}
-      & \multicolumn{1}{c}{$T_2$} & \multicolumn{1}{c}{$T_3$} & \multicolumn{1}{c}{$T_4$}
-      & \multicolumn{1}{c}{$T_5$} & \multicolumn{1}{c}{$T_6$} & \multicolumn{1}{c}{$T_7$}\\
-    \cline{2-9}
-    \code{rowIdx} & \colorbox{red!18}{\strut 0} & \colorbox{red!18}{\strut 0}
-      & \colorbox{green!22}{\strut 1} & \colorbox{green!22}{\strut 1} & \colorbox{green!22}{\strut 1}
-      & \colorbox{yellow!35}{\strut 2} & \colorbox{yellow!35}{\strut 2} & \colorbox{blue!18}{\strut 3}\\
-    \cline{2-9}
-    \code{colIdx} & 0 & 1 & 0 & 2 & 3 & 1 & 2 & 3\\
-    \cline{2-9}
-    \code{value}  & 1 & 7 & 5 & 3 & 9 & 2 & 8 & 6\\
-    \cline{2-9}
-  \end{tabular}
-  \\[0.6em]
-  \begin{tabular}{c@{\quad$\longrightarrow$\quad}l}
-    $T_0,T_1$ & 都要更新 \code{y[0]}，必须用原子加\\
-    $T_2,T_3,T_4$ & 都要更新 \code{y[1]}，必须用原子加\\
-    $T_5,T_6$ & 都要更新 \code{y[2]}，必须用原子加\\
-    $T_7$ & 更新 \code{y[3]}
-  \end{tabular}
-  \caption{以 COO 格式并行化 SpMV：每个线程负责一个非零元素。同色的线程映射到同一行，
-  因而会写同一个输出元素}
+  \includegraphics[width=\textwidth]{figs/ch17/17-4.png}
+  \caption{以 COO 格式并行化 SpMV：每个线程负责一个非零元素。同色的线程映射到同一行， 因而会写同一个输出元素}
   \label{fig:17-4}
 \end{figure}
 
@@ -268,20 +184,7 @@ __global__ void spmv_coo_kernel(COOMatrix cooMatrix, float* x, float* y) {
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{r|c|c|c|c|c|c|c|c|}
-    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
-      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}
-      & \multicolumn{1}{c}{5} & \multicolumn{1}{c}{6} & \multicolumn{1}{c}{7}\\
-    \cline{2-9}
-    \code{rowIdx} & 1 & 3 & 0 & 2 & 1 & 0 & 2 & 1\\
-    \cline{2-9}
-    \code{colIdx} & 3 & 3 & 1 & 2 & 0 & 0 & 1 & 2\\
-    \cline{2-9}
-    \code{value}  & 9 & 6 & 7 & 8 & 5 & 1 & 2 & 3\\
-    \cline{2-9}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch17/17-6.png}
   \caption{重排后的 COO 表示。三个数组同步重排，表示的矩阵与图 \ref{fig:17-3} 完全相同}
   \label{fig:17-6}
 \end{figure}
@@ -331,36 +234,8 @@ CSR 与 COO 一样，把非零值放在一维的 \code{value} 数组里，把每
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{r|c|c|c|c|c|}
-    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
-      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}\\
-    \cline{2-6}
-    \code{rowPtrs} & 0 & 2 & 5 & 7 & 8\\
-    \cline{2-6}
-  \end{tabular}
-  \\[0.7em]
-  \begin{tabular}{r|c|c|c|c|c|c|c|c|}
-    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
-      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}
-      & \multicolumn{1}{c}{5} & \multicolumn{1}{c}{6} & \multicolumn{1}{c}{7}\\
-    \cline{2-9}
-    \code{colIdx} & \multicolumn{1}{|c}{\colorbox{red!18}{\strut 0}} & \colorbox{red!18}{\strut 1}
-      & \multicolumn{1}{|c}{\colorbox{green!22}{\strut 0}} & \colorbox{green!22}{\strut 2} & \colorbox{green!22}{\strut 3}
-      & \multicolumn{1}{|c}{\colorbox{yellow!35}{\strut 1}} & \colorbox{yellow!35}{\strut 2}
-      & \multicolumn{1}{|c|}{\colorbox{blue!18}{\strut 3}}\\
-    \cline{2-9}
-    \code{value} & \multicolumn{1}{|c}{\colorbox{red!18}{\strut 1}} & \colorbox{red!18}{\strut 7}
-      & \multicolumn{1}{|c}{\colorbox{green!22}{\strut 5}} & \colorbox{green!22}{\strut 3} & \colorbox{green!22}{\strut 9}
-      & \multicolumn{1}{|c}{\colorbox{yellow!35}{\strut 2}} & \colorbox{yellow!35}{\strut 8}
-      & \multicolumn{1}{|c|}{\colorbox{blue!18}{\strut 6}}\\
-    \cline{2-9}
-    \multicolumn{1}{c}{} & \multicolumn{2}{c}{\footnotesize 行 0} & \multicolumn{3}{c}{\footnotesize 行 1}
-      & \multicolumn{2}{c}{\footnotesize 行 2} & \multicolumn{1}{c}{\footnotesize 行 3}
-  \end{tabular}
-  \caption{图 \ref{fig:17-1} 中矩阵的 CSR 表示。非零元素按行分组，\code{rowPtrs}
-  记录每行在 \code{value}/\code{colIdx} 中的起始偏移}
+  \includegraphics[width=\textwidth]{figs/ch17/17-7.png}
+  \caption{图 \ref{fig:17-1} 中矩阵的 CSR 表示。非零元素按行分组，\code{rowPtrs} 记录每行在 \code{value}/\code{colIdx} 中的起始偏移}
   \label{fig:17-7}
 \end{figure}
 
@@ -382,30 +257,8 @@ CSR 与 COO 一样，把非零值放在一维的 \code{value} 数组里，把每
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{r|c|c|c|c|c|c|c|c|}
-    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
-      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}
-      & \multicolumn{1}{c}{5} & \multicolumn{1}{c}{6} & \multicolumn{1}{c}{7}\\
-    \cline{2-9}
-    \code{value} & 1 & 7 & 5 & 3 & 9 & 2 & 8 & 6\\
-    \cline{2-9}
-    \multicolumn{1}{c}{} & \multicolumn{1}{c}{$\uparrow$} & \multicolumn{1}{c}{}
-      & \multicolumn{1}{c}{$\uparrow$} & \multicolumn{1}{c}{} & \multicolumn{1}{c}{}
-      & \multicolumn{1}{c}{$\uparrow$} & \multicolumn{1}{c}{} & \multicolumn{1}{c}{$\uparrow$}\\
-    \multicolumn{1}{c}{} & \multicolumn{1}{c}{$T_0$} & \multicolumn{1}{c}{}
-      & \multicolumn{1}{c}{$T_1$} & \multicolumn{1}{c}{} & \multicolumn{1}{c}{}
-      & \multicolumn{1}{c}{$T_2$} & \multicolumn{1}{c}{} & \multicolumn{1}{c}{$T_3$}
-  \end{tabular}
-  \\[0.7em]
-  \begin{tabular}{c@{\quad}c@{\quad}c@{\quad}c}
-    \multicolumn{4}{c}{\footnotesize 各线程在点积循环中依次访问的下标}\\[0.3em]
-    $T_0$：0, 1 & $T_1$：2, 3, 4 & $T_2$：5, 6 & $T_3$：7
-  \end{tabular}
-  \caption{以 CSR 格式并行化 SpMV：每个线程负责一行。第一次迭代时，四个线程分别
-  访问 \code{value[0]}、\code{value[2]}、\code{value[5]} 和 \code{value[7]}，
-  彼此相隔很远}
+  \includegraphics[width=\textwidth]{figs/ch17/17-8.png}
+  \caption{以 CSR 格式并行化 SpMV：每个线程负责一行。第一次迭代时，四个线程分别 访问 \code{value[0]}、\code{value[2]}、\code{value[5]} 和 \code{value[7]}， 彼此相隔很远}
   \label{fig:17-8}
 \end{figure}
 
@@ -504,60 +357,7 @@ $*$ 的格子表示。注意 \code{colIdx} 数组也要同步填充，以保持�
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c}
-  \textbf{(a) 填充成矩形（每行补齐到 3 个元素）}\\[0.5em]
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{r|c|c|c|}
-    \cline{2-4}
-    行 0 & \colorbox{red!18}{\strut\ 1\ } & \colorbox{red!18}{\strut\ 7\ } & \strut\ *\ \\
-    \cline{2-4}
-    行 1 & \colorbox{green!22}{\strut\ 5\ } & \colorbox{green!22}{\strut\ 3\ } & \colorbox{green!22}{\strut\ 9\ }\\
-    \cline{2-4}
-    行 2 & \colorbox{yellow!35}{\strut\ 2\ } & \colorbox{yellow!35}{\strut\ 8\ } & \strut\ *\ \\
-    \cline{2-4}
-    行 3 & \colorbox{blue!18}{\strut\ 6\ } & \strut\ *\ & \strut\ *\ \\
-    \cline{2-4}
-  \end{tabular}
-  \qquad
-  \begin{tabular}{r|c|c|c|}
-    \cline{2-4}
-    行 0 & 0 & 1 & * \\
-    \cline{2-4}
-    行 1 & 0 & 2 & 3 \\
-    \cline{2-4}
-    行 2 & 1 & 2 & * \\
-    \cline{2-4}
-    行 3 & 3 & * & * \\
-    \cline{2-4}
-  \end{tabular}
-  \\[1.2em]
-  \textbf{(b) 按列主序铺开}\\[0.5em]
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{r|c|c|c|c|c|c|c|c|c|c|c|c|}
-    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
-      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}
-      & \multicolumn{1}{c}{5} & \multicolumn{1}{c}{6} & \multicolumn{1}{c}{7}
-      & \multicolumn{1}{c}{8} & \multicolumn{1}{c}{9} & \multicolumn{1}{c}{10}
-      & \multicolumn{1}{c}{11}\\
-    \cline{2-13}
-    \code{colIdx} & 0 & 0 & 1 & 3 & 1 & 2 & 2 & * & * & 3 & * & *\\
-    \cline{2-13}
-    \code{value}  & 1 & 5 & 2 & 6 & 7 & 3 & 8 & * & * & 9 & * & *\\
-    \cline{2-13}
-    \multicolumn{1}{c}{} & \multicolumn{4}{c}{\footnotesize 第 0 次迭代}
-      & \multicolumn{4}{c}{\footnotesize 第 1 次迭代} & \multicolumn{4}{c}{\footnotesize 第 2 次迭代}
-  \end{tabular}
-  \\[0.6em]
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{r|c|c|c|c|}
-    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
-      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3}\\
-    \cline{2-5}
-    \code{nnzPerRow} & 2 & 3 & 2 & 1\\
-    \cline{2-5}
-  \end{tabular}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch17/17-10.png}
   \caption{ELL 存储格式示例。先把各行填充到等长，再按列主序铺开；$*$ 表示填充元素}
   \label{fig:17-10}
 \end{figure}
@@ -574,29 +374,8 @@ $*$ 的格子表示。注意 \code{colIdx} 数组也要同步填充，以保持�
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{r|c|c|c|c|c|c|c|c|c|c|c|c|}
-    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
-      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}
-      & \multicolumn{1}{c}{5} & \multicolumn{1}{c}{6} & \multicolumn{1}{c}{7}
-      & \multicolumn{1}{c}{8} & \multicolumn{1}{c}{9} & \multicolumn{1}{c}{10}
-      & \multicolumn{1}{c}{11}\\
-    \cline{2-13}
-    \code{value} & \colorbox{red!18}{\strut 1} & \colorbox{green!22}{\strut 5}
-      & \colorbox{yellow!35}{\strut 2} & \colorbox{blue!18}{\strut 6}
-      & \colorbox{red!18}{\strut 7} & \colorbox{green!22}{\strut 3}
-      & \colorbox{yellow!35}{\strut 8} & \strut * & \strut *
-      & \colorbox{green!22}{\strut 9} & \strut * & \strut *\\
-    \cline{2-13}
-    \multicolumn{1}{c}{} & \multicolumn{1}{c}{$T_0$} & \multicolumn{1}{c}{$T_1$}
-      & \multicolumn{1}{c}{$T_2$} & \multicolumn{1}{c}{$T_3$}
-      & \multicolumn{1}{c}{$T_0$} & \multicolumn{1}{c}{$T_1$}
-      & \multicolumn{1}{c}{$T_2$} & \multicolumn{1}{c}{} & \multicolumn{1}{c}{}
-      & \multicolumn{1}{c}{$T_1$} & \multicolumn{1}{c}{} & \multicolumn{1}{c}{}
-  \end{tabular}
-  \caption{以 ELL 格式并行化 SpMV。第 0 次迭代中四个线程访问 \code{value[0..3]}，
-  地址连续，访问得以合并}
+  \includegraphics[width=\textwidth]{figs/ch17/17-11.png}
+  \caption{以 ELL 格式并行化 SpMV。第 0 次迭代中四个线程访问 \code{value[0..3]}， 地址连续，访问得以合并}
   \label{fig:17-11}
 \end{figure}
 
@@ -704,58 +483,8 @@ ELL 的两个毛病——空间效率低和控制分歧——有一个共同的�
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c}
-  \textbf{(a) 原矩阵各行的非零元素（列号:值）}\\[0.5em]
-  \setlength{\tabcolsep}{5pt}
-  \begin{tabular}{r|l|c}
-    \hline
-    行 & 非零元素 & 个数\\
-    \hline
-    0 & (0:3) (3:1) & 2\\
-    1 & (0:2) (1:4) \colorbox{orange!30}{(2:1)} \colorbox{orange!30}{(5:5)} \colorbox{orange!30}{(7:7)} & 5\\
-    2 & (4:9) & 1\\
-    3 & (2:6) (6:2) & 2\\
-    4 & (1:8) (5:3) & 2\\
-    5 & (7:4) & 1\\
-    6 & (0:1) (2:5) \colorbox{orange!30}{(3:2)} \colorbox{orange!30}{(6:6)} & 4\\
-    \hline
-    \multicolumn{3}{l}{\footnotesize 着色部分被移入 COO 部分}\\
-  \end{tabular}
-  \\[1.2em]
-  \textbf{(b) ELL 部分（$K=2$，按列主序）}\\[0.5em]
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{r|c|c|c|c|c|c|c|c|c|c|c|c|c|c|}
-    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
-      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}
-      & \multicolumn{1}{c}{5} & \multicolumn{1}{c}{6} & \multicolumn{1}{c}{7}
-      & \multicolumn{1}{c}{8} & \multicolumn{1}{c}{9} & \multicolumn{1}{c}{10}
-      & \multicolumn{1}{c}{11} & \multicolumn{1}{c}{12} & \multicolumn{1}{c}{13}\\
-    \cline{2-15}
-    \code{colIdx} & 0 & 0 & 4 & 2 & 1 & 7 & 0 & 3 & 1 & * & 6 & 5 & * & 2\\
-    \cline{2-15}
-    \code{value}  & 3 & 2 & 9 & 6 & 8 & 4 & 1 & 1 & 4 & * & 2 & 3 & * & 5\\
-    \cline{2-15}
-    \multicolumn{1}{c}{} & \multicolumn{7}{c}{\footnotesize 第 0 次迭代}
-      & \multicolumn{7}{c}{\footnotesize 第 1 次迭代}
-  \end{tabular}
-  \\[1.2em]
-  \textbf{(c) COO 部分（被摘出的 5 个元素）}\\[0.5em]
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{r|c|c|c|c|c|}
-    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
-      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}\\
-    \cline{2-6}
-    \code{rowIdx} & 1 & 1 & 1 & 6 & 6\\
-    \cline{2-6}
-    \code{colIdx} & 2 & 5 & 7 & 3 & 6\\
-    \cline{2-6}
-    \code{value}  & 1 & 5 & 7 & 2 & 6\\
-    \cline{2-6}
-  \end{tabular}
-  \end{tabular}
-  \caption{混合 ELL-COO 表示示例。把超长行的尾部元素移入 COO 后，ELL 部分的填充
-  元素从 18 个降到 2 个，迭代次数从 5 次降到 2 次}
+  \includegraphics[width=\textwidth]{figs/ch17/17-13.png}
+  \caption{混合 ELL-COO 表示示例。把超长行的尾部元素移入 COO 后，ELL 部分的填充 元素从 18 个降到 2 个，迭代次数从 5 次降到 2 次}
   \label{fig:17-13}
 \end{figure}
 
@@ -818,47 +547,8 @@ SpMV/ELL 的控制分歧随之下降；而被摘走的那些元素落到了 COO 
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c}
-  \textbf{(a) 按行长降序排序}\\[0.5em]
-  \setlength{\tabcolsep}{5pt}
-  \begin{tabular}{r|c|l|c}
-    \hline
-    位置 & \code{row}（原行号） & 非零元素（列号:值） & 个数\\
-    \hline
-    0 & 1 & (0:5) (2:3) (3:9) & 3\\
-    1 & 0 & (0:1) (1:7) & 2\\
-    2 & 2 & (1:2) (2:8) & 2\\
-    3 & 3 & (3:6) & 1\\
-    \hline
-  \end{tabular}
-  \\[1.2em]
-  \textbf{(b) 按列主序铺开，无填充}\\[0.5em]
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{r|c|c|c|c|c|c|c|c|}
-    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
-      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}
-      & \multicolumn{1}{c}{5} & \multicolumn{1}{c}{6} & \multicolumn{1}{c}{7}\\
-    \cline{2-9}
-    \code{colIdx} & 0 & 0 & 1 & 3 & 2 & 1 & 2 & 3\\
-    \cline{2-9}
-    \code{value}  & 5 & 1 & 2 & 6 & 3 & 7 & 8 & 9\\
-    \cline{2-9}
-    \multicolumn{1}{c}{} & \multicolumn{4}{c}{\footnotesize 第 0 次迭代}
-      & \multicolumn{3}{c}{\footnotesize 第 1 次迭代} & \multicolumn{1}{c}{\footnotesize 第 2 次}
-  \end{tabular}
-  \\[0.7em]
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{r|c|c|c|c|}
-    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
-      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3}\\
-    \cline{2-5}
-    \code{iterPtr} & 0 & 4 & 7 & 8\\
-    \cline{2-5}
-  \end{tabular}
-  \end{tabular}
-  \caption{JDS 存储格式示例。行按长度排序后按列主序铺开，无须任何填充元素；
-  \code{iterPtr} 标记每次迭代对应的段起点，\code{row} 保存原始行号}
+  \includegraphics[width=\textwidth]{figs/ch17/17-14.png}
+  \caption{JDS 存储格式示例。行按长度排序后按列主序铺开，无须任何填充元素； \code{iterPtr} 标记每次迭代对应的段起点，\code{row} 保存原始行号}
   \label{fig:17-14}
 \end{figure}
 
@@ -869,27 +559,8 @@ SpMV/ELL 的控制分歧随之下降；而被摘走的那些元素落到了 COO 
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{r|c|c|c|c|c|c|c|c|}
-    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
-      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}
-      & \multicolumn{1}{c}{5} & \multicolumn{1}{c}{6} & \multicolumn{1}{c}{7}\\
-    \cline{2-9}
-    \code{value} & \colorbox{green!22}{\strut 5} & \colorbox{red!18}{\strut 1}
-      & \colorbox{yellow!35}{\strut 2} & \colorbox{blue!18}{\strut 6}
-      & \colorbox{green!22}{\strut 3} & \colorbox{red!18}{\strut 7}
-      & \colorbox{yellow!35}{\strut 8} & \colorbox{green!22}{\strut 9}\\
-    \cline{2-9}
-    \multicolumn{1}{c}{} & \multicolumn{1}{c}{$T_0$} & \multicolumn{1}{c}{$T_1$}
-      & \multicolumn{1}{c}{$T_2$} & \multicolumn{1}{c}{$T_3$}
-      & \multicolumn{1}{c}{$T_0$} & \multicolumn{1}{c}{$T_1$}
-      & \multicolumn{1}{c}{$T_2$} & \multicolumn{1}{c}{$T_0$}\\
-    \multicolumn{1}{c}{} & \multicolumn{4}{c}{\footnotesize 第 0 次迭代：4 个线程全部活跃}
-      & \multicolumn{3}{c}{\footnotesize 第 1 次：3 个} & \multicolumn{1}{c}{\footnotesize 第 2 次：1 个}
-  \end{tabular}
-  \caption{以 JDS 格式并行化 SpMV。因为行已按长度排序，同一 warp 内的线程迭代次数
-  接近，控制分歧显著降低}
+  \includegraphics[width=\textwidth]{figs/ch17/17-15.png}
+  \caption{以 JDS 格式并行化 SpMV。因为行已按长度排序，同一 warp 内的线程迭代次数 接近，控制分歧显著降低}
   \label{fig:17-15}
 \end{figure}
 
@@ -962,34 +633,7 @@ CSC 与 CSR 高度对称，只是把行和列的角色互换了。非零值仍�
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{r|c|c|c|c|c|}
-    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
-      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}\\
-    \cline{2-6}
-    \code{colPtrs} & 0 & 2 & 4 & 6 & 8\\
-    \cline{2-6}
-  \end{tabular}
-  \\[0.7em]
-  \begin{tabular}{r|c|c|c|c|c|c|c|c|}
-    \multicolumn{1}{c}{} & \multicolumn{1}{c}{0} & \multicolumn{1}{c}{1}
-      & \multicolumn{1}{c}{2} & \multicolumn{1}{c}{3} & \multicolumn{1}{c}{4}
-      & \multicolumn{1}{c}{5} & \multicolumn{1}{c}{6} & \multicolumn{1}{c}{7}\\
-    \cline{2-9}
-    \code{rowIdx} & \multicolumn{1}{|c}{\colorbox{red!18}{\strut 0}} & \colorbox{red!18}{\strut 1}
-      & \multicolumn{1}{|c}{\colorbox{green!22}{\strut 0}} & \colorbox{green!22}{\strut 2}
-      & \multicolumn{1}{|c}{\colorbox{yellow!35}{\strut 1}} & \colorbox{yellow!35}{\strut 2}
-      & \multicolumn{1}{|c}{\colorbox{blue!18}{\strut 1}} & \multicolumn{1}{c|}{\colorbox{blue!18}{\strut 3}}\\
-    \cline{2-9}
-    \code{value} & \multicolumn{1}{|c}{\colorbox{red!18}{\strut 1}} & \colorbox{red!18}{\strut 5}
-      & \multicolumn{1}{|c}{\colorbox{green!22}{\strut 7}} & \colorbox{green!22}{\strut 2}
-      & \multicolumn{1}{|c}{\colorbox{yellow!35}{\strut 3}} & \colorbox{yellow!35}{\strut 8}
-      & \multicolumn{1}{|c}{\colorbox{blue!18}{\strut 9}} & \multicolumn{1}{c|}{\colorbox{blue!18}{\strut 6}}\\
-    \cline{2-9}
-    \multicolumn{1}{c}{} & \multicolumn{2}{c}{\footnotesize 列 0} & \multicolumn{2}{c}{\footnotesize 列 1}
-      & \multicolumn{2}{c}{\footnotesize 列 2} & \multicolumn{2}{c}{\footnotesize 列 3}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch17/17-16.png}
   \caption{图 \ref{fig:17-1} 中矩阵的 CSC 表示。与 CSR 对称，只是行列角色互换}
   \label{fig:17-16}
 \end{figure}

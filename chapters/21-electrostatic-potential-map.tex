@@ -21,18 +21,8 @@
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=0.72cm,y=0.72cm,>=Stealth]
-    \foreach \x/\y in {0/0,0.8/0.4,1.6/0,2.4/0.55,3.2/0.1,0.4/1.15,1.25/1.5,2.1/1.2,3/1.45,3.8/0.9,0.1/2.1,0.9/2.55,1.8/2.15,2.7/2.65,3.6/2.2,0.55/3.25,1.5/3.55,2.45/3.25,3.35/3.65}
-      \draw[fill=cyan!35,draw=cyan!60!black] (\x,\y) circle (0.23);
-    \foreach \x/\y in {0.35/0.6,2.9/0.35,3.55/1.9,0.75/2.9,2.25/2.5,1.6/0.55}
-      \draw[fill=yellow!65!red,draw=black!60] (\x,\y) circle (0.13);
-    \draw[rounded corners,draw=black!50,dashed] (0.05,-0.25) rectangle (3.95,3.95);
-    \foreach \x/\y/\l in {4.55/0.35/{+},4.65/1.25/{-},4.45/2.2/{+},4.75/3.1/{-}}
-      \node[draw=black!55,fill=white,circle,inner sep=1.5pt] at (\x,\y) {\l};
-    \draw[->,thick] (4.25,1.7) -- (3.55,1.9);
-    \node[align=left,font=\small] at (6.05,1.7) {静电势图帮助判断\\离子可放置的位置};
-  \end{tikzpicture}
-  \caption{分子结构周围的静电势与离子放置概念示意。依据原书图 21.1 重绘；青色与黄色圆点表示两类分子原子，带正负号的小圆点表示待放置的离子。}
+  \includegraphics[width=0.75\textwidth]{figs/ch21/21-1.png}
+  \caption{分子结构周围的静电势与离子放置概念示意。青色与黄色圆点表示两类分子原子，带正负号的小圆点表示待放置的离子。}
   \label{fig:21-1}
 \end{figure}
 
@@ -40,19 +30,8 @@
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=0.62cm,y=0.62cm,>=Stealth]
-    \draw[step=1,gray!65] (0,0) grid (6,4);
-    \fill[red!75] (1.1,1.0) circle (0.28);
-    \fill[cyan!65] (4.45,2.8) circle (0.3);
-    \fill[green!65!black] (3,2) circle (0.08);
-    \draw[->,thick] (3,2) -- (1.1,1.0) node[midway,below,font=\scriptsize] {$r_{i,j}$};
-    \draw[->,thick] (3,2) -- (4.45,2.8);
-    \node[font=\small,align=left] at (1.5,4.75) {$\mathrm{potential}[j]$：正在求值的网格点 $j$};
-    \node[font=\small,align=left] at (4.6,0.25) {$\mathrm{atom}[i]$：原子 $i$};
-    \node[font=\small,align=left] at (3,5.3) {单个贡献：$\mathrm{atom}[i].\mathrm{charge}/r_{i,j}$};
-    \node[font=\small,align=left] at (3,-0.55) {DCS：对所有原子的贡献求和};
-  \end{tikzpicture}
-  \caption{原子 $i$ 对网格点 $j$ 的静电势贡献及 DCS 求和关系。依据原书图 21.2 重绘。}
+  \includegraphics[width=\textwidth]{figs/ch21/21-2.png}
+  \caption{原子 $i$ 对网格点 $j$ 的静电势贡献及 DCS 求和关系。}
   \label{fig:21-2}
 \end{figure}
 
@@ -85,7 +64,7 @@ void cenergy(float *energygrid, dim3 grid, float gridspacing, float z,
   }
 }
   \end{lstlisting}
-  \caption{二维切片的未优化 DCS C 代码。依据原书图 21.3 逐字符重排；代码中的数组标识符保持底本原貌。}
+  \caption{二维切片的未优化 DCS C 代码。代码中的数组标识符保持底本原貌。}
   \label{fig:21-3}
 \end{figure}
 
@@ -122,7 +101,7 @@ void cenergy(float *energygrid, dim3 grid, float gridspacing, float z,
   }
 }
   \end{lstlisting}
-  \caption{二维切片的优化 DCS C 代码。依据原书图 21.4 逐字符重排。}
+  \caption{二维切片的优化 DCS C 代码。}
   \label{fig:21-4}
 \end{figure}
 
@@ -157,7 +136,7 @@ void __global__ cenergy(float *energygrid, dim3 grid, float gridspacing,
   }
 }
   \end{lstlisting}
-  \caption{采用散布方法的 DCS 内核。依据原书图 21.5 逐字符重排。}
+  \caption{采用散布方法的 DCS 内核。}
   \label{fig:21-5}
 \end{figure}
 
@@ -188,7 +167,7 @@ void __global__ cenergy(float *energygrid, dim3 grid, float gridspacing,
   energygrid[grid.x*grid.y*k + grid.x*j + i] += energy;
 }
   \end{lstlisting}
-  \caption{采用聚集方法的 DCS 内核。依据原书图 21.6 逐字符重排；二维线程网格与二维势网格点一一对应。}
+  \caption{采用聚集方法的 DCS 内核。二维线程网格与二维势网格点一一对应。}
   \label{fig:21-6}
 \end{figure}
 
@@ -211,17 +190,8 @@ void __global__ cenergy(float *energygrid, dim3 grid, float gridspacing,
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=0.7cm,y=0.7cm,>=Stealth]
-    \draw[step=1,gray!60] (0,0) grid (8,3);
-    \node[font=\small] at (4,3.45) {同一行中的网格点具有相同的 $y$ 坐标};
-    \fill[cyan!65] (3.5,1.5) circle (0.28);
-    \node[font=\scriptsize,above] at (3.5,1.83) {原子 $i$};
-    \foreach \x in {0.5,1.5,2.5,3.5,4.5,5.5,6.5,7.5} {
-      \draw[->,thin] (3.5,1.5) -- (\x,0.5);
-    }
-    \node[font=\scriptsize,below] at (4,-0.15) {$dy=y-\mathrm{atoms}[n+1]$ 对这一行只需计算一次};
-  \end{tikzpicture}
-  \caption{多个网格点之间的计算结果复用。依据原书图 21.7 重绘。}
+  \includegraphics[width=\textwidth]{figs/ch21/21-7.png}
+  \caption{多个网格点之间的计算结果复用。}
   \label{fig:21-7}
 \end{figure}
 
@@ -263,7 +233,7 @@ void __global__ cenergy(float *energygrid, dim3 grid, float gridspacing,
   energygrid[grid.x*grid.y*k + grid.x*j + i+3] += energy3;
 }
   \end{lstlisting}
-  \caption{采用线程粗化的 DCS 内核，粗化因子为 4。依据原书图 21.8 逐字符重排。}
+  \caption{采用线程粗化的 DCS 内核，粗化因子为 4。}
   \label{fig:21-8}
 \end{figure}
 
@@ -278,22 +248,8 @@ void __global__ cenergy(float *energygrid, dim3 grid, float gridspacing,
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=0.52cm,y=0.52cm,>=Stealth]
-    \draw[step=1,gray!65] (0,0) grid (12,6);
-    \draw[very thick,blue!70] (0,3) rectangle (8,6);
-    \foreach \x/\y/\t in {0.5/5.5/0,1.5/5.5/1,2.5/5.5/2,3.5/5.5/3,4.5/5.5/4,5.5/5.5/5,6.5/5.5/6,7.5/5.5/7} {
-      \fill[blue!18] (\x-0.5,\y-0.5) rectangle +(1,1);
-      \node[font=\tiny] at (\x,\y) {线程 \t};
-    }
-    \foreach \x in {0.5,1.5,2.5,3.5,4.5,5.5,6.5,7.5} {
-      \draw[->,thin] (\x,5.1) -- (\x,4.1);
-      \draw[->,thin] (\x,3.9) -- (\x,2.1);
-    }
-    \node[font=\scriptsize,align=center] at (4,6.65) {先分配连续的 $\code{blockDim.x}$ 个网格点};
-    \node[font=\scriptsize,align=left,fill=white,inner sep=1pt] at (10.3,2.8) {同一线程\\后续网格点};
-    \draw[<->,thin] (8.2,0) -- (8.2,6) node[midway,right=5pt,font=\scriptsize] {后续分配};
-  \end{tikzpicture}
-  \caption{为合并写入组织线程和内存布局。依据原书图 21.9 重绘；相邻线程先取得连续的网格点，再按固定偏移取得后续点。}
+  \includegraphics[width=0.85\textwidth]{figs/ch21/21-9.png}
+  \caption{为合并写入组织线程和内存布局。相邻线程先取得连续的网格点，再按固定偏移取得后续点。}
   \label{fig:21-9}
 \end{figure}
 
@@ -335,7 +291,7 @@ void __global__ cenergy(float *energygrid, dim3 grid, float gridspacing,
   energygrid[grid.x*grid.y*k + grid.x*j + i + 3*blockDim.x] += energy3;
 }
   \end{lstlisting}
-  \caption{采用线程粗化和内存访问合并的 DCS 内核。依据原书图 21.10 逐字符重排。}
+  \caption{采用线程粗化和内存访问合并的 DCS 内核。}
   \label{fig:21-10}
 \end{figure}
 
@@ -344,25 +300,8 @@ void __global__ cenergy(float *energygrid, dim3 grid, float gridspacing,
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=0.65cm,y=0.65cm,>=Stealth]
-    \node[font=\small\bfseries] at (2,4.6) {(a) 直接求和};
-    \draw[step=1,fill=gray!10] (0,0) grid (4,4);
-    \fill[green!70!black] (0.7,0.7) circle (0.16); \fill[green!70!black] (2.1,3.3) circle (0.16);
-    \fill[green!70!black] (3.2,1.2) circle (0.16); \fill[green!70!black] (3.25,3.4) circle (0.16);
-    \fill[green!70!black] (0.9,2.5) circle (0.16); \fill[green!70!black] (2.8,2.1) circle (0.16);
-    \fill[blue!70] (2,2) circle (0.11);
-    \foreach \x/\y in {0.7/0.7,2.1/3.3,3.2/1.2,3.25/3.4,0.9/2.5,2.8/2.1} {\draw[->,thin] (2,2) -- (\x,\y);}
-    \node[font=\scriptsize,align=left] at (6.1,2.1) {每个网格点\\对所有电荷求和};
-    \node[font=\small\bfseries] at (2,-0.85) {(b) 截断求和};
-    \draw[step=1,fill=gray!10] (0,-5.7) grid (4,-1.7);
-    \fill[green!70!black] (0.7,-2.4) circle (0.16); \fill[green!70!black] (2.1,-2.3) circle (0.16);
-    \fill[green!70!black] (3.2,-3.5) circle (0.16); \fill[red!70] (0.9,-4.8) circle (0.16); \fill[red!70] (3.2,-5.0) circle (0.16);
-    \fill[blue!70] (1.6,-3.45) circle (0.11);
-    \draw[dashed] (1.6,-3.45) circle (1.15);
-    \draw[->,thin] (1.6,-3.45) -- (0.7,-2.4); \draw[->,thin] (1.6,-3.45) -- (2.1,-2.3);
-    \node[font=\scriptsize,align=left] at (6.1,-3.55) {只求和附近电荷；\\分箱后再处理};
-  \end{tikzpicture}
-  \caption{截断求和与直接求和的比较。依据原书图 21.11 重绘；深色远处原子在截断阶段不直接参与。}
+  \includegraphics[width=0.85\textwidth]{figs/ch21/21-11.png}
+  \caption{截断求和与直接求和的比较。深色远处原子在截断阶段不直接参与。}
   \label{fig:21-11}
 \end{figure}
 
@@ -404,61 +343,22 @@ void __global__ cenergy(float *energygrid, dim3 grid, float gridspacing,
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=0.45cm,y=0.45cm]
-    \draw[step=1,gray!55] (0,0) grid (10,8);
-    \foreach \x/\y in {1/1,2/6,4/2,5/5,8/1,9/6} {\fill[red!75] (\x+0.5,\y+0.5) circle (0.18);}
-    \foreach \x/\y in {4/4,5/3,5/4,6/4,6/5} {\fill[green!65!black] (\x+0.5,\y+0.5) circle (0.18);}
-    \fill[blue!70] (5.5,4.5) circle (0.12);
-    \draw[dashed] (5.5,4.5) circle (2.15);
-    \foreach \x/\y in {3/3,4/3,5/3,6/3,7/3,3/4,4/4,5/4,6/4,7/4,3/5,4/5,5/5,6/5,7/5} {\draw[thick,green!50!black] (\x,\y) rectangle +(1,1);}
-    \node[font=\scriptsize,align=left] at (12.5,4.5) {截断圆外的原子\\贡献很小；\\邻域分箱内的\\原子仍需逐个检查};
-    \node[font=\scriptsize] at (5.5,-0.45) {网格点所在分箱及其邻域分箱};
-  \end{tikzpicture}
-  \caption{网格点的邻域分箱。依据原书图 21.12 重绘；绿色框表示必须检查的候选分箱，虚线圆表示截断距离。}
+  \includegraphics[width=0.85\textwidth]{figs/ch21/21-12.png}
+  \caption{网格点的邻域分箱。绿色框表示必须检查的候选分箱，虚线圆表示截断距离。}
   \label{fig:21-12}
 \end{figure}
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=0.5cm,y=0.5cm,>=Stealth]
-    \foreach \x/\y in {0/0,1/1,2/2,1/-1,-1/1,-2/0,-1/-1,2/0,0/-2} {
-      \draw[fill=gray!18,draw=gray!70] (\x,\y) rectangle +(1,1);
-    }
-    \draw[fill=green!60!black] (0.5,0.5) rectangle +(1,1);
-    \draw[dashed] (0.5,0.5) circle (3.1);
-    \node[font=\scriptsize,above] at (1,3.75) {一个块处理的网格点区域};
-    \node[font=\scriptsize,align=left] at (7,1.8) {超级圆半径 =\\截断距离 +\\分箱对角线的一半};
-    \draw[->] (5.8,2) -- (2.8,2.3);
-    \node[font=\scriptsize] at (0.5,-2.7) {$4\,\text{\AA}$};
-    \draw[<->] (-0.1,-2.2) -- (0.9,-2.2);
-    \node[font=\scriptsize,align=left] at (7,-0.8) {二维示意；真实块覆盖 $8\times8\times8$ 的三维体积};
-  \end{tikzpicture}
-  \caption{为一个块处理的所有网格点识别邻域分箱。依据原书图 21.13 重绘；灰色方块是分箱，绿色方块表示块覆盖的中心分箱。}
+  \includegraphics[width=0.65\textwidth]{figs/ch21/21-13.png}
+  \caption{为一个块处理的所有网格点识别邻域分箱。灰色方块是分箱，绿色方块表示块覆盖的中心分箱。}
   \label{fig:21-13}
 \end{figure}
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=0.45cm,y=0.45cm,>=Stealth]
-    \begin{scope}[shift={(0,0)}]
-      \draw[step=1,gray!55] (0,0) grid (5,5);
-      \foreach \x/\y in {0/0,1/0,2/0,0/1,1/1,2/1,0/2,1/2,2/2} {\fill[green!55] (\x,\y) rectangle +(1,1);}
-      \draw[red,thick] (1.5,1.5) circle (1.85);
-      \fill[white] (1.5,1.5) circle (0.06);
-      \node[font=\scriptsize] at (1.5,-0.9) {相对偏移：$(-1,-1)$ 到 $(1,1)$};
-      \node[font=\scriptsize] at (1.5,5.55) {完全覆盖的 9 个分箱};
-    \end{scope}
-    \begin{scope}[shift={(7,0)}]
-      \draw[step=1,gray!55] (0,0) grid (5,5);
-      \foreach \x/\y in {0/0,1/0,2/0,0/1,1/1,2/1,0/2,1/2,2/2,3/0,3/1,3/2,0/3,1/3,2/3} {\fill[green!55] (\x,\y) rectangle +(1,1);}
-      \draw[red,thick] (1.5,1.5) circle (1.85);
-      \fill[white] (1.5,1.5) circle (0.06);
-      \node[font=\scriptsize] at (1.5,-0.9) {块中心坐标 $(X,Y)$ 加相对偏移};
-      \node[font=\scriptsize] at (1.5,5.55) {部分覆盖的分箱也要纳入};
-    \end{scope}
-    \node[font=\scriptsize,align=left] at (6,6.35) {9 个完全覆盖 + 12 个部分覆盖 = 21 个邻域分箱};
-  \end{tikzpicture}
-  \caption{使用相对偏移构造邻域列表。依据原书图 21.14 重绘；列表可放入常量内存，并由块内线程共同遍历。}
+  \includegraphics[width=\textwidth]{figs/ch21/21-14.png}
+  \caption{使用相对偏移构造邻域列表。列表可放入常量内存，并由块内线程共同遍历。}
   \label{fig:21-14}
 \end{figure}
 

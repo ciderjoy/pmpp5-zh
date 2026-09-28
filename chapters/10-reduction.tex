@@ -94,32 +94,7 @@ Thrust\cite{bell2012thrust,nvidia-thrust2025} 和 CUB\cite{nvidia-cub2025} 等 C
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\hspace{3em}}c}
-    \begin{tabular}{c}
-      \fbox{3}\ \fbox{1}\ \fbox{7}\ \fbox{0}\ \fbox{4}\ \fbox{1}\ \fbox{6}\ \fbox{3}\\[0.35em]
-      $\searrow\!\max\!\swarrow\quad\searrow\!\max\!\swarrow\quad
-       \searrow\!\max\!\swarrow\quad\searrow\!\max\!\swarrow$\\[-0.15em]
-      \fbox{3}\qquad\fbox{7}\qquad\fbox{4}\qquad\fbox{6}\\[0.35em]
-      $\searrow\!\max\!\swarrow\qquad\qquad\searrow\!\max\!\swarrow$\\[-0.15em]
-      \fbox{7}\hspace{4.8em}\fbox{6}\\[0.35em]
-      $\searrow\!\max\!\swarrow$\\[-0.15em]
-      \fbox{7}\\[0.4em]
-      (a) 并行最大值归约树
-    \end{tabular}
-    &
-    \begin{tabular}{c}
-      \fbox{4}\ \fbox{7}\ \fbox{2}\ \fbox{3}\ \fbox{8}\ \fbox{5}\ \fbox{9}\ \fbox{6}\\[0.35em]
-      $\searrow\!+\!\swarrow\quad\searrow\!+\!\swarrow\quad
-       \searrow\!+\!\swarrow\quad\searrow\!+\!\swarrow$\\[-0.15em]
-      \fbox{11}\qquad\fbox{5}\qquad\fbox{13}\qquad\fbox{15}\\[0.35em]
-      $\searrow\!+\!\swarrow\qquad\qquad\searrow\!+\!\swarrow$\\[-0.15em]
-      \fbox{16}\hspace{4.3em}\fbox{28}\\[0.35em]
-      $\searrow\!+\!\swarrow$\\[-0.15em]
-      \fbox{44}\\[0.4em]
-      (b) 并行求和归约树
-    \end{tabular}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch10/10-3.png}
   \caption{最大值归约与求和归约的并行归约树示例}
   \label{fig:10-3}
 \end{figure}
@@ -230,21 +205,7 @@ $N=1024$ 个输入值。第一步需要 $N/2=512$ 份执行资源，之后所需
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\hspace{1.2em}}c@{\hspace{1.2em}}c@{\hspace{1.2em}}c}
-    \multicolumn{4}{c}{\textbf{四分之一决赛}}\\[0.2em]
-    \fbox{荷兰 2:1 巴西} & \fbox{乌拉圭 1:1 加纳} &
-    \fbox{阿根廷 0:4 德国} & \fbox{巴拉圭 0:1 西班牙}\\[-0.05em]
-    7 月 2 日，纳尔逊·曼德拉湾 & 7 月 2 日，约翰内斯堡 &
-    7 月 3 日，开普敦 & 7 月 3 日，约翰内斯堡\\[0.4em]
-    \multicolumn{2}{c}{$\searrow$\quad\fbox{荷兰 3:2 乌拉圭}\quad$\swarrow$} &
-    \multicolumn{2}{c}{$\searrow$\quad\fbox{德国 0:1 西班牙}\quad$\swarrow$}\\[-0.05em]
-    \multicolumn{2}{c}{7 月 6 日，开普敦} & \multicolumn{2}{c}{7 月 7 日，德班}\\[0.15em]
-    \multicolumn{4}{c}{\textbf{半决赛}}\\[0.4em]
-    \multicolumn{4}{c}{$\searrow$\quad\fbox{荷兰 0:1 西班牙}\quad$\swarrow$}\\[-0.05em]
-    \multicolumn{4}{c}{7 月 11 日，约翰内斯堡（加时）}\\[0.15em]
-    \multicolumn{4}{c}{\textbf{决赛}\qquad$\Downarrow$\qquad\fbox{冠军：西班牙}}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch10/10-4.png}
   \caption{作为归约树的 2010 年世界杯淘汰赛末段赛程}
   \label{fig:10-4}
 \end{figure}
@@ -319,31 +280,8 @@ __global__ void SimpleSumReductionKernel(float* input, float* output) {
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \setlength{\tabcolsep}{2.2pt}
-  \begin{tabular}{c|*{16}{c}}
-    &0&1&2&3&4&5&6&7&8&9&10&11&12&13&14&15\\\hline
-    线程所有者&$T_0$&&$T_1$&&$T_2$&&$T_3$&&$T_4$&&$T_5$&&$T_6$&&$T_7$&\\
-    步 0，$s=1$&\colorbox{blue!25}{\strut$\Sigma$}&&\colorbox{blue!25}{\strut$\Sigma$}&&
-      \colorbox{blue!25}{\strut$\Sigma$}&&\colorbox{blue!25}{\strut$\Sigma$}&&
-      \colorbox{blue!25}{\strut$\Sigma$}&&\colorbox{blue!25}{\strut$\Sigma$}&&
-      \colorbox{blue!25}{\strut$\Sigma$}&&\colorbox{blue!25}{\strut$\Sigma$}&\\
-    步 1，$s=2$&\colorbox{blue!25}{\strut$\Sigma$}&&&&
-      \colorbox{blue!25}{\strut$\Sigma$}&&&&\colorbox{blue!25}{\strut$\Sigma$}&&&&
-      \colorbox{blue!25}{\strut$\Sigma$}&&&\\
-    步 2，$s=4$&\colorbox{blue!25}{\strut$\Sigma$}&&&&&&&&
-      \colorbox{blue!25}{\strut$\Sigma$}&&&&&&&\\
-    步 3，$s=8$&\colorbox{blue!25}{\strut$\Sigma$}&&&&&&&&&&&&&&&
-  \end{tabular}
-  \\[0.45em]
-  \begin{tabular}{c@{\quad}l}
-    步 0 & $\code{input[2k]}\leftarrow\code{input[2k]}+\code{input[2k+1]}$\\
-    步 1 & $\code{input[4k]}\leftarrow\code{input[4k]}+\code{input[4k+2]}$\\
-    步 2 & $\code{input[8k]}\leftarrow\code{input[8k]}+\code{input[8k+4]}$\\
-    步 3 & $\code{input[0]}\leftarrow\code{input[0]}+\code{input[8]}$
-  \end{tabular}
-  \caption{线程“所有者”到输入数组位置的分配，以及简单归约内核随时间推进的执行过程；
-  每一层对应一次循环迭代}
+  \includegraphics[width=0.85\textwidth]{figs/ch10/10-6.png}
+  \caption{线程“所有者”到输入数组位置的分配，以及简单归约内核随时间推进的执行过程； 每一层对应一次循环迭代}
   \label{fig:10-6}
 \end{figure}
 
@@ -371,7 +309,7 @@ $\Sigma$ 标出。例如，第一次迭代结束时，偶数下标位置被原�
 
 再看图 \ref{fig:10-5} 第 4 行的 if 语句。它的条件用于选出每次迭代中的活跃线程。
 图 \ref{fig:10-6} 表明，迭代 $n$ 中执行加法的是线程下标为 $2^n$ 的倍数的线程。
-条件 \code{threadIdx.x \% stride == 0} 正是在检查线程下标是否为步长的倍数，而
+条件 \texttt{threadIdx.x \% stride == 0} 正是在检查线程下标是否为步长的倍数，而
 \code{stride} 在各次迭代中依次为 $1,2,4,8,\ldots$，也就是迭代 $n$ 中的 $2^n$。
 所有线程都执行相同的内核代码；满足条件的活跃线程执行第 5 行加法，不满足条件的非活跃
 线程跳过它。迭代越往后，活跃线程越少；最后一次迭代只剩线程 0，由它生成归约结果。
@@ -444,27 +382,7 @@ $4(32+16+8+4+2+1)+2+1=255$。这也很直观，因为把 256 个值归约为一�
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \setlength{\tabcolsep}{2.2pt}
-  \begin{tabular}{c|*{16}{c}}
-    &0&1&2&3&4&5&6&7&8&9&10&11&12&13&14&15\\\hline
-    线程所有者&$T_0$&$T_1$&$T_2$&$T_3$&$T_4$&$T_5$&$T_6$&$T_7$&&&&&&&&\\
-    步 0，$s=8$&\colorbox{blue!25}{\strut$\Sigma$}&\colorbox{blue!25}{\strut$\Sigma$}&
-      \colorbox{blue!25}{\strut$\Sigma$}&\colorbox{blue!25}{\strut$\Sigma$}&
-      \colorbox{blue!25}{\strut$\Sigma$}&\colorbox{blue!25}{\strut$\Sigma$}&
-      \colorbox{blue!25}{\strut$\Sigma$}&\colorbox{blue!25}{\strut$\Sigma$}&&&&&&&&\\
-    步 1，$s=4$&\colorbox{blue!25}{\strut$\Sigma$}&\colorbox{blue!25}{\strut$\Sigma$}&
-      \colorbox{blue!25}{\strut$\Sigma$}&\colorbox{blue!25}{\strut$\Sigma$}&&&&&&&&&&&&\\
-    步 2，$s=2$&\colorbox{blue!25}{\strut$\Sigma$}&\colorbox{blue!25}{\strut$\Sigma$}&&&&&&&&&&&&&&\\
-    步 3，$s=1$&\colorbox{blue!25}{\strut$\Sigma$}&&&&&&&&&&&&&&&
-  \end{tabular}
-  \\[0.45em]
-  \begin{tabular}{c@{\quad}l}
-    步 0 & $\code{input[k]}\leftarrow\code{input[k]}+\code{input[k+8]}$，$0\le k<8$\\
-    步 1 & $\code{input[k]}\leftarrow\code{input[k]}+\code{input[k+4]}$，$0\le k<4$\\
-    步 2 & $\code{input[k]}\leftarrow\code{input[k]}+\code{input[k+2]}$，$0\le k<2$\\
-    步 3 & $\code{input[0]}\leftarrow\code{input[0]}+\code{input[1]}$
-  \end{tabular}
+  \includegraphics[width=0.85\textwidth]{figs/ch10/10-7.png}
   \caption{减少控制流分歧的更优线程到输入数组位置分配方式}
   \label{fig:10-7}
 \end{figure}
@@ -604,19 +522,7 @@ $(4\times5\times2+4+2+1)\times3=141$ 次全局内存请求。
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c@{\quad}l}
-    \textbf{全局内存} &
-      \colorbox{blue!25}{\strut\quad\quad\quad\quad\quad\quad\quad\quad\quad}\quad
-      初次加载两个输入元素\\[0.55em]
-    $\Downarrow$ & 每个线程先把两个输入相加\\[0.55em]
-    \textbf{共享内存} &
-      \colorbox{green!30}{\strut\quad\quad\quad\quad}\quad
-      后续部分和始终在共享内存中读写\\[0.45em]
-    & \colorbox{green!30}{\strut\quad\quad}\quad$\rightarrow$
-      \colorbox{green!30}{\strut\quad}\quad$\rightarrow$
-      \colorbox{green!30}{\strut\ }
-  \end{tabular}
+  \includegraphics[width=0.85\textwidth]{figs/ch10/10-9.png}
   \caption{使用共享内存减少全局内存访问}
   \label{fig:10-9}
 \end{figure}
@@ -709,20 +615,7 @@ T __shfl_down_sync(unsigned mask, T var, unsigned int delta);
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c|c|c|c|l}
-    warp 0 & warp 1 & warp 2 & warp 3 &\\\hline
-    \multicolumn{4}{c|}{\colorbox{blue!25}{\strut\hspace{20em}}} & 从全局内存加载到共享内存\\[0.45em]
-    \colorbox{green!30}{\strut\hspace{4em}} &
-    \colorbox{green!30}{\strut\hspace{4em}} &
-    \colorbox{green!30}{\strut\hspace{4em}} &
-    \colorbox{green!30}{\strut\hspace{4em}} & 块内迭代并同步\\[0.45em]
-    \colorbox{green!30}{\strut\hspace{4em}} &
-    \colorbox{green!30}{\strut\hspace{4em}} &&& 继续在共享内存中归约\\[0.45em]
-    \colorbox{orange!35}{\strut\hspace{4em}} &&&& 剩余 warp 改用寄存器 shuffle\\[0.35em]
-    \colorbox{orange!35}{\strut\hspace{2em}} &&&& $\Downarrow$\\[-0.1em]
-    \colorbox{orange!35}{\strut\hspace{0.6em}} &&&& 最终结果
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch10/10-12.png}
   \caption{在最后阶段使用 warp 内归约，以减少同步开销和共享内存访问}
   \label{fig:10-12}
 \end{figure}
@@ -843,21 +736,7 @@ CUDA 还提供 \code{__shfl_sync}、\code{__shfl_up_sync} 和 \code{__shfl_xor_s
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c|c|c|c|l}
-    warp 0 & warp 1 & warp 2 & warp 3 &\\\hline
-    \colorbox{orange!35}{\strut\hspace{4em}} &
-    \colorbox{orange!35}{\strut\hspace{4em}} &
-    \colorbox{orange!35}{\strut\hspace{4em}} &
-    \colorbox{orange!35}{\strut\hspace{4em}} & 各 warp 在寄存器中独立归约\\[0.5em]
-    \colorbox{orange!35}{\strut\hspace{2em}} &
-    \colorbox{orange!35}{\strut\hspace{2em}} &
-    \colorbox{orange!35}{\strut\hspace{2em}} &
-    \colorbox{orange!35}{\strut\hspace{2em}} & $\Downarrow$\\[0.5em]
-    \multicolumn{4}{c|}{\colorbox{green!30}{\strut\hspace{8em}}} & 各 warp 写入共享内存并块级同步\\[0.5em]
-    \colorbox{orange!35}{\strut\hspace{4em}} &&&& 第一个 warp 归约全部部分和\\[0.35em]
-    \colorbox{orange!35}{\strut\hspace{1em}} &&&& 最终结果
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch10/10-15.png}
   \caption{用两阶段 warp 内归约进一步减少同步开销和共享内存访问}
   \label{fig:10-15}
 \end{figure}
@@ -946,20 +825,7 @@ warp 虽然有效，但对延迟受限内核的收益未必明显，因为省下
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c}
-    \colorbox{blue!25}{\strut\hspace{29em}}\\[-0.1em]
-    \textbf{输入数组}\\[0.4em]
-    $\swarrow\hspace{9em}\downarrow\hspace{9em}\searrow$\\[-0.1em]
-    \begin{tabular}{c@{\hspace{3em}}c@{\hspace{3em}}c}
-      \fbox{区段 0} & \fbox{区段 1} & \fbox{区段 $k-1$}\\[0.35em]
-      $\Downarrow$ & $\Downarrow$ & $\Downarrow$\\[-0.1em]
-      块 0 的归约树 & 块 1 的归约树 & 块 $k-1$ 的归约树\\[0.35em]
-      $\searrow$ & $\downarrow$ & $\swarrow$
-    \end{tabular}\\[-0.1em]
-    \texttt{atomic add}\quad$\Downarrow$\\[-0.1em]
-    \fbox{最终结果}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch10/10-17.png}
   \caption{使用原子操作的多块归约}
   \label{fig:10-17}
 \end{figure}
@@ -1055,18 +921,7 @@ __global__ void reduce_kernel(float* input, float* output, unsigned int N) {
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c}
-    \textbf{32 个输入元素，每个线程负责 4 个}\\[0.25em]
-    \colorbox{blue!25}{\strut\hspace{28em}}\\[-0.05em]
-    $T_t:\ \code{input[t]},\ \code{input[t+8]},\
-      \ \code{input[t+16]},\ \code{input[t+24]}\quad(0\le t<8)$\\[0.2em]
-    $\Downarrow\quad$各线程独立执行三步累加$\quad\Downarrow$\\[0.25em]
-    \colorbox{green!30}{\strut\hspace{12em}}\\[-0.05em]
-    $\Downarrow$\quad{}块内归约树$\quad\Downarrow$\\[0.25em]
-    \fbox{8 个线程部分和}$\rightarrow$\fbox{4 个}$\rightarrow$
-    \fbox{2 个}$\rightarrow$\fbox{总和}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch10/10-19.png}
   \caption{归约中的线程粗化}
   \label{fig:10-19}
 \end{figure}
@@ -1112,29 +967,7 @@ __global__ void CoarsenedSumReductionKernel(float* input, float* output) {
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\hspace{4em}}c}
-    \begin{tabular}{c}
-      \textbf{两个原始块由硬件串行执行}\\[0.25em]
-      \colorbox{blue!25}{\strut\hspace{11em}}\quad 全部活跃\\
-      $\Downarrow$ 归约树，逐步闲置 $\Downarrow$\\
-      \fbox{块 0 完成}\\[0.35em]
-      \colorbox{blue!25}{\strut\hspace{11em}}\quad 全部活跃\\
-      $\Downarrow$ 归约树，逐步闲置 $\Downarrow$\\
-      \fbox{块 1 完成}\\[0.25em]
-      (a) 共 8 步：2 步充分利用，6 步利用不足
-    \end{tabular}
-    &
-    \begin{tabular}{c}
-      \textbf{一个粗化块完成两个原始块的工作}\\[0.25em]
-      \colorbox{blue!25}{\strut\hspace{16em}}\\
-      $\Downarrow$ 三步独立累加，全部线程活跃 $\Downarrow$\\
-      \colorbox{green!30}{\strut\hspace{8em}}\\
-      $\Downarrow$ 三步归约树，逐步闲置 $\Downarrow$\\
-      \fbox{粗化块完成}\\[0.25em]
-      (b) 共 6 步：3 步充分利用，3 步利用不足
-    \end{tabular}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch10/10-21.png}
   \caption{比较采用与不采用线程粗化的并行归约}
   \label{fig:10-21}
 \end{figure}

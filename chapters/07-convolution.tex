@@ -4,21 +4,6 @@
 
 \setcounter{footnote}{0}
 
-\newcommand{\convcell}[1]{%
-  \fbox{\rule{0pt}{1.35em}\makebox[1.55em][c]{\scriptsize $#1$}}%
-}
-\newcommand{\convshade}[1]{%
-  \fcolorbox{black}{gray!25}{%
-    \rule{0pt}{1.35em}\makebox[1.55em][c]{\scriptsize $#1$}}%
-}
-\newcommand{\tilecell}[1]{%
-  \fbox{\rule{0pt}{0.8em}\makebox[0.85em][c]{\scriptsize $#1$}}%
-}
-\newcommand{\tileshade}[1]{%
-  \fcolorbox{black}{gray!25}{%
-    \rule{0pt}{0.8em}\makebox[0.85em][c]{\scriptsize $#1$}}%
-}
-
 接下来的几章将讨论一组重要的并行计算模式。这些模式是许多并行应用中大量并行
 算法的基础。我们从卷积开始。卷积是一种常见的数组运算，广泛用于信号处理、数字
 录音、图像处理、视频处理和计算机视觉。在这些应用领域中，卷积通常作为一种滤波器，
@@ -63,25 +48,8 @@
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    \textbf{$x$}\quad
-    \convshade{8}\ \convshade{2}\ \convshade{5}\ \convshade{4}\
-    \convshade{1}\ \convshade{7}\ \convcell{3}\\[-0.1em]
-    \multicolumn{1}{c}{\scriptsize
-      $x[0]\quad x[1]\quad x[2]\quad x[3]\quad x[4]\quad x[5]\quad x[6]$}\\[0.5em]
-    \textbf{$f$}\quad
-    \convcell{1}\ \convshade{3}\ \convshade{5}\ \convshade{3}\ \convcell{1}\\[-0.1em]
-    \multicolumn{1}{c}{\scriptsize
-      $f[0]\quad f[1]\quad f[2]\quad f[3]\quad f[4]$}\\[0.5em]
-    \multicolumn{1}{c}{$\downarrow\quad\text{逐元素相乘并求和}\quad\downarrow$}\\[0.5em]
-    \convshade{8}\ \convshade{6}\ \convshade{25}\ \convshade{12}\ \convshade{1}
-    $\quad\longrightarrow\quad$
-    \textbf{$y$}\quad
-    \convcell{}\ \convcell{}\ \convshade{52}\ \convcell{}\
-    \convcell{}\ \convcell{}\ \convcell{}
-  \end{tabular}
-  \caption{一维卷积的内部元素示例（依据原书图 7.1 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch7/7-1.png}
+  \caption{一维卷积的内部元素示例}
   \label{fig:7-1}
 \end{figure}
 
@@ -113,24 +81,8 @@ y[2] &=
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    \textbf{$x$}\quad
-    \convcell{8}\ \convshade{2}\ \convshade{5}\ \convshade{4}\
-    \convshade{1}\ \convshade{7}\ \convcell{3}\\[-0.1em]
-    \multicolumn{1}{c}{\scriptsize
-      $x[0]\quad x[1]\quad x[2]\quad x[3]\quad x[4]\quad x[5]\quad x[6]$}\\[0.5em]
-    \textbf{$f$}\quad
-    \convcell{1}\ \convshade{3}\ \convshade{5}\ \convshade{3}\ \convcell{1}\\[-0.1em]
-    \multicolumn{1}{c}{\scriptsize
-      $f[0]\quad f[1]\quad f[2]\quad f[3]\quad f[4]$}\\[0.5em]
-    \convshade{2}\ \convshade{15}\ \convshade{20}\ \convshade{3}\ \convshade{7}
-    $\quad\longrightarrow\quad$
-    \textbf{$y$}\quad
-    \convcell{}\ \convcell{}\ \convcell{}\ \convshade{47}\
-    \convcell{}\ \convcell{}\ \convcell{}
-  \end{tabular}
-  \caption{一维卷积中 $y[3]$ 的计算（依据原书图 7.2 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch7/7-2.png}
+  \caption{一维卷积中 $y[3]$ 的计算}
   \label{fig:7-2}
 \end{figure}
 
@@ -166,23 +118,8 @@ y[1] &= f[0]\times0+f[1]\times x[0]+f[2]\times x[1]\\
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    \textbf{$x$}\quad
-    \convshade{0}\ \convshade{8}\ \convshade{2}\ \convshade{5}\
-    \convshade{4}\ \convcell{1}\ \convcell{7}\ \convcell{3}\\[-0.1em]
-    \multicolumn{1}{c}{\scriptsize
-      $\text{虚线框：填入的 ghost cell}\qquad
-      x[0]\quad x[1]\quad x[2]\quad x[3]\quad x[4]\quad x[5]\quad x[6]$}\\[0.5em]
-    \textbf{$f$}\quad
-    \convcell{1}\ \convshade{3}\ \convshade{5}\ \convshade{3}\ \convcell{1}\\[0.5em]
-    \convshade{0}\ \convshade{24}\ \convshade{10}\ \convshade{15}\ \convshade{4}
-    $\quad\longrightarrow\quad$
-    \textbf{$y$}\quad
-    \convshade{53}\ \convcell{}\ \convcell{}\ \convcell{}\
-    \convcell{}\ \convcell{}\ \convcell{}
-  \end{tabular}
-  \caption{一维卷积的边界条件（依据原书图 7.3 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch7/7-3.png}
+  \caption{一维卷积的边界条件}
   \label{fig:7-3}
 \end{figure}
 
@@ -211,40 +148,8 @@ $2r_y+1$，则每个 $P$ 元素的计算为
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    \textbf{$N$}\\[-0.2em]
-    \begin{tabular}{*{7}{c}}
-      1&2&3&4&5&6&7\\
-      2&3&4&5&6&7&8\\
-      3&4&\convshade{5}&6&7&8&9\\
-      4&5&6&7&8&9&0\\
-      5&6&7&8&9&0&1\\
-      6&7&8&9&0&1&2\\
-      7&8&9&0&1&2&3
-    \end{tabular}\\[0.4em]
-    \textbf{$f$}\quad
-    \begin{tabular}{*{5}{c}}
-      1&2&3&2&1\\
-      2&3&4&3&2\\
-      3&4&5&4&3\\
-      2&3&4&3&2\\
-      1&2&3&2&1
-    \end{tabular}
-    \quad
-    \begin{tabular}{*{5}{c}}
-      1&4&9&8&5\\
-      4&9&16&15&12\\
-      9&16&25&24&21\\
-      8&15&24&21&16\\
-      5&12&21&16&5
-    \end{tabular}
-    $\quad\longrightarrow\quad$
-    \textbf{$P$}\quad
-    \convcell{}\ \convcell{}\ \convcell{}\ \convcell{}\ \convcell{}\
-    \convcell{}\ \convcell{}
-  \end{tabular}
-  \caption{二维卷积示例（依据原书图 7.4 重绘）}
+  \includegraphics[width=0.85\textwidth]{figs/ch7/7-4.png}
+  \caption{二维卷积示例}
   \label{fig:7-4}
 \end{figure}
 
@@ -275,42 +180,8 @@ P_{2,2}
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    \textbf{$N$（边界外为 ghost cell）}\qquad\qquad\textbf{$P$}\\[-0.2em]
-    \begin{tabular}{*{7}{c}}
-      0&0&1&2&3&4&5\\
-      0&0&2&3&4&5&6\\
-      0&0&3&4&5&6&7\\
-      0&0&4&5&6&7&8\\
-      0&0&5&6&7&8&9
-    \end{tabular}
-    \qquad
-    \begin{tabular}{*{7}{c}}
-      \convshade{112}&\convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}\\
-      \convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}\\
-      \convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}\\
-      \convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}\\
-      \convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}&\convcell{}
-    \end{tabular}\\[0.5em]
-    \textbf{$f$}\quad
-    \begin{tabular}{*{5}{c}}
-      1&2&3&2&1\\
-      2&3&4&3&2\\
-      3&4&5&4&3\\
-      2&3&4&3&2\\
-      1&2&3&2&1
-    \end{tabular}
-    \quad
-    \begin{tabular}{*{5}{c}}
-      0&0&0&0&0\\
-      0&0&4&6&6\\
-      0&0&10&12&12\\
-      0&0&12&12&10\\
-      0&0&12&10&6
-    \end{tabular}
-  \end{tabular}
-  \caption{二维卷积的边界条件（依据原书图 7.5 重绘）}
+  \includegraphics[width=0.85\textwidth]{figs/ch7/7-5.png}
+  \caption{二维卷积的边界条件}
   \label{fig:7-5}
 \end{figure}
 
@@ -364,44 +235,8 @@ $N$、$F$、$P$、$r$、\code{width} 和 \code{height} 六项；译文按代码�
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\hspace{0.5em}}c}
-    \fbox{\begin{minipage}{0.36\textwidth}\centering
-      \textbf{输入（全局内存）}\\[0.3em]
-      \resizebox{\linewidth}{!}{%
-      \begin{tabular}{*{8}{c}}
-        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fcolorbox{black}{blue!15}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fcolorbox{black}{blue!15}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fcolorbox{black}{blue!15}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}\\
-        \multicolumn{8}{c}{\scriptsize 输出线程所需的输入 patch}\\
-        \multicolumn{8}{c}{\scriptsize $outRow-r\qquad\qquad outCol-r$}
-      \end{tabular}
-      }%
-    \end{minipage}}
-    &
-    \fbox{\begin{minipage}{0.36\textwidth}\centering
-      \textbf{输出}\\[0.3em]
-      \resizebox{\linewidth}{!}{%
-      \begin{tabular}{*{8}{c}}
-        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fcolorbox{black}{green!25}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}\\
-        \multicolumn{8}{c}{\scriptsize $outRow\qquad outCol$}
-      \end{tabular}
-      }%
-    \end{minipage}}
-  \end{tabular}
-  \caption{二维卷积的并行化与线程组织（依据原书图 7.6 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch7/7-6.png}
+  \caption{二维卷积的并行化与线程组织}
   \label{fig:7-6}
 \end{figure}
 
@@ -451,7 +286,7 @@ __global__ void convolution_2D_basic_kernel(float *N, float *F, float *P,
     }
 }
   \end{lstlisting}
-  \caption{带边界条件处理的二维卷积内核（依据原书图 7.7 重绘）}
+  \caption{带边界条件处理的二维卷积内核}
   \label{fig:7-7}
 \end{figure}
 
@@ -554,31 +389,8 @@ __global__ void convolution_2D_basic_kernel(float *N, float *F, float *P,
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \fbox{\begin{minipage}{0.82\textwidth}
-    \centering
-    \textbf{网格（Grid）}\\[0.3em]
-    \begin{tabular}{c@{\hspace{0.8em}}c}
-      \fbox{\begin{minipage}{0.28\textwidth}\centering
-        \textbf{块 $(0,0)$}\\
-        共享内存 / L1 缓存\\
-        寄存器\quad 寄存器\\
-        线程 $(0,0)$\quad 线程 $(1,0)$
-      \end{minipage}}
-      &
-      \fbox{\begin{minipage}{0.28\textwidth}\centering
-        \textbf{块 $(1,0)$}\\
-        共享内存 / L1 缓存\\
-        寄存器\quad 寄存器\\
-        线程 $(0,0)$\quad 线程 $(1,0)$
-      \end{minipage}}
-    \end{tabular}\\[0.4em]
-    \rule{0.75\textwidth}{0.5pt}\\[-0.1em]
-    \textbf{全局内存}\qquad\textbf{常量内存}\\[-0.1em]
-    \hfill$\updownarrow$\hfill\qquad\hfill$\updownarrow$\hfill\\[-0.1em]
-    \textbf{主机（Host）}
-  \end{minipage}}
-  \caption{CUDA 内存模型回顾（依据原书图 7.8 重绘）}
+  \includegraphics[width=0.85\textwidth]{figs/ch7/7-8.png}
+  \caption{CUDA 内存模型回顾}
   \label{fig:7-8}
 \end{figure}
 
@@ -652,7 +464,7 @@ __global__ void convolution_2D_const_mem_kernel(float *N, float *P, int r,
     }
 }
   \end{lstlisting}
-  \caption{使用常量内存存放 $F$ 的二维卷积内核（依据原书图 7.9 重绘）}
+  \caption{使用常量内存存放 $F$ 的二维卷积内核}
   \label{fig:7-9}
 \end{figure}
 
@@ -662,20 +474,8 @@ __global__ void convolution_2D_const_mem_kernel(float *N, float *P, int r,
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \fbox{\begin{minipage}{0.72\textwidth}\centering
-    \textbf{处理器}\\[0.3em]
-    \begin{tabular}{c@{\hspace{0.3em}}c@{\hspace{0.3em}}c}
-      \fbox{\begin{minipage}{0.16\textwidth}\centering 核心\\寄存器\\L1 缓存\end{minipage}}
-      &
-      \fbox{\begin{minipage}{0.16\textwidth}\centering 核心\\寄存器\\L1 缓存\end{minipage}}
-      &
-      \fbox{\begin{minipage}{0.16\textwidth}\centering 核心\\寄存器\\L1 缓存\end{minipage}}
-    \end{tabular}\\[0.4em]
-    \fbox{\begin{minipage}{0.58\textwidth}\centering L2 缓存\end{minipage}}\\[0.4em]
-    \fbox{\begin{minipage}{0.58\textwidth}\centering 主内存（DRAM）\end{minipage}}
-  \end{minipage}}
-  \caption{现代处理器缓存层次结构的简化视图（依据原书图 7.10 重绘）}
+  \includegraphics[width=0.85\textwidth]{figs/ch7/7-10.png}
+  \caption{现代处理器缓存层次结构的简化视图}
   \label{fig:7-10}
 \end{figure}
 
@@ -770,54 +570,8 @@ $5\times5$ 滤波器，则输入瓦片大小为
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\hspace{0.5em}}c@{\hspace{0.5em}}c}
-    \fbox{\begin{minipage}{0.25\textwidth}\centering
-      \textbf{输入}\\[0.3em]
-      \resizebox{\linewidth}{!}{%
-      \begin{tabular}{*{8}{c}}
-        \fcolorbox{black}{blue!10}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fcolorbox{black}{blue!10}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fcolorbox{black}{blue!10}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fcolorbox{black}{blue!25}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fcolorbox{black}{blue!25}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fcolorbox{black}{blue!10}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}\\
-        \multicolumn{8}{c}{\scriptsize 输入瓦片（共享内存）}\\
-        \multicolumn{8}{c}{\scriptsize 中心深色区域：输出瓦片}
-      \end{tabular}
-      }%
-    \end{minipage}}
-    &
-    \begin{minipage}{0.18\textwidth}\centering
-      \textbf{滤波器}\\[0.3em]
-      \begin{tabular}{*{5}{c}}
-        1&2&3&2&1\\
-        2&3&4&3&2\\
-        3&4&5&4&3\\
-        2&3&4&3&2\\
-        1&2&3&2&1
-      \end{tabular}\\[-0.2em]
-      \scriptsize 常量内存
-    \end{minipage}
-    &
-    \fbox{\begin{minipage}{0.25\textwidth}\centering
-      \textbf{输出瓦片}\\[0.3em]
-      \resizebox{\linewidth}{!}{%
-      \begin{tabular}{*{6}{c}}
-        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fcolorbox{black}{green!25}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fcolorbox{black}{green!25}{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}&
-        \fbox{\rule{0pt}{0.55em}\rule{0.55em}{0pt}}\\
-        \multicolumn{6}{c}{\scriptsize $t\times t$}
-      \end{tabular}
-      }%
-    \end{minipage}}
-  \end{tabular}
-  \caption{二维卷积中的输入瓦片与输出瓦片（依据原书图 7.11 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch7/7-11.png}
+  \caption{二维卷积中的输入瓦片与输出瓦片}
   \label{fig:7-11}
 \end{figure}
 
@@ -871,7 +625,7 @@ __global__ void convolution_tiled_2D_const_mem_kernel(float *N, float *P,
     }
 }
   \end{lstlisting}
-  \caption{使用常量内存的分块二维卷积内核（依据原书图 7.12 重绘）}
+  \caption{使用常量内存的分块二维卷积内核}
   \label{fig:7-12}
 \end{figure}
 
@@ -899,50 +653,8 @@ __global__ void convolution_tiled_2D_const_mem_kernel(float *N, float *P,
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c@{\hspace{0.5em}}c}
-    \fbox{\begin{minipage}{0.38\textwidth}\centering
-      \textbf{输入瓦片与线程块}\\[0.3em]
-      \resizebox{\linewidth}{!}{%
-      \begin{tabular}{*{8}{c}}
-        \fbox{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
-        \fbox{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
-        \fbox{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
-        \fbox{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
-        \fbox{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
-        \fbox{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
-        \fbox{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
-        \fbox{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}\\
-        \fbox{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
-        \fcolorbox{black}{black!60}{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
-        \fcolorbox{black}{blue!20}{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
-        \fcolorbox{black}{blue!20}{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
-        \fcolorbox{black}{blue!20}{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
-        \fcolorbox{black}{blue!20}{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
-        \fcolorbox{black}{blue!20}{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}&
-        \fbox{\rule{0pt}{0.65em}\rule{0.65em}{0pt}}\\
-        \multicolumn{8}{c}{\scriptsize 中央 $6\times6$ 区域：活动线程}\\
-        \multicolumn{8}{c}{\scriptsize 线程 $(1,1)$ $\longrightarrow$ 输出 $(0,0)$}\\
-        \multicolumn{8}{c}{\scriptsize 线程 $(6,6)$ $\longrightarrow$ 输出 $(5,5)$}
-      \end{tabular}
-      }%
-    \end{minipage}}
-    &
-    \fbox{\begin{minipage}{0.24\textwidth}\centering
-      \textbf{输出瓦片}\\[0.3em]
-      \resizebox{\linewidth}{!}{%
-      \begin{tabular}{*{6}{c}}
-        \tileshade{0}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}\\
-        \tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}\\
-        \tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}\\
-        \tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}\\
-        \tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}\\
-        \tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tilecell{}&\tileshade{5}
-      \end{tabular}
-      }%
-    \end{minipage}}
-  \end{tabular}
-  \caption{利用共享内存输入瓦片计算输出瓦片时的线程组织示例（依据原书图 7.13 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch7/7-13.png}
+  \caption{利用共享内存输入瓦片计算输出瓦片时的线程组织示例}
   \label{fig:7-13}
 \end{figure}
 
@@ -1023,22 +735,8 @@ $\frac14m^2$。随着输出瓦片维度 $t$ 增大，衰减因子趋近于 1.0�
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    \textbf{算术强度（FLOP/B）}\\[0.3em]
-    \begin{tabular}{c|cccccc}
-      \textbf{滤波器维度 $m$}\textbackslash\textbf{输出瓦片维度 $t$}
-      &8&16&28&32&64&理想\\ \hline
-      3  &1.76&1.99&2.10&2.11&2.18&2.25\\
-      5  &3.85&4.88&5.42&5.52&5.87&6.25\\
-      7  &6.03&8.48&9.90&10.17&11.16&12.25\\
-      9  &8.10&12.46&15.27&15.80&17.88&20.25\\
-      11 &9.98&16.62&21.29&22.22&25.89&30.25\\
-      13 &11.66&20.80&27.79&29.23&35.06&42.25
-    \end{tabular}\\[0.4em]
-    \scriptsize 左上区域通常更可能内存受限；右下区域通常更可能计算受限
-  \end{tabular}
-  \caption{二维分块卷积中算术强度随瓦片尺寸和滤波器尺寸的变化（依据原书图 7.14 重绘）}
+  \includegraphics[width=\textwidth]{figs/ch7/7-14.png}
+  \caption{二维分块卷积中算术强度随瓦片尺寸和滤波器尺寸的变化}
   \label{fig:7-14}
 \end{figure}
 
@@ -1125,8 +823,7 @@ __global__ void convolution_cached_tiled_2D_const_mem_kernel(float *N,
     }
 }
   \end{lstlisting}
-  \caption{使用缓存处理 halo 并使用常量内存存放 $F$ 的分块二维卷积内核
-  （依据原书图 7.15 重绘）}
+  \caption{使用缓存处理 halo 并使用常量内存存放 $F$ 的分块二维卷积内核}
   \label{fig:7-15}
 \end{figure}
 

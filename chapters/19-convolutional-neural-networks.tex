@@ -67,53 +67,8 @@ CNN 在语音领域取得了成功，但直到 2012 年，它在计算机视觉�
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[
-    x=1cm,y=1cm,>=Stealth,
-    layer/.style={draw=black!65,fill=gray!18,minimum width=1.05cm,align=center,font=\scriptsize},
-    arrow/.style={-{Stealth[length=1.8mm]},line width=.65pt,black!70}
-  ]
-    \node[layer,minimum height=2.15cm] (in) at (0,0) {\Large A};
-    \node[font=\scriptsize,align=center,above=2mm of in] {输入\\$32\times32$};
-    \foreach \i in {0,...,5} {
-      \draw[fill=blue!12,draw=black!55] (1.55+0.07*\i,-.82+0.07*\i)
-        rectangle +(0.75,1.65);
-    }
-    \node[font=\scriptsize,align=center] at (2.05,1.25) {C1：6 幅特征图\\$28\times28$};
-    \node[font=\tiny] at (2.05,-1.25) {卷积};
-    \foreach \i in {0,...,5} {
-      \draw[fill=green!12,draw=black!55] (3.75+0.06*\i,-.62+0.06*\i)
-        rectangle +(0.62,1.24);
-    }
-    \node[font=\scriptsize,align=center] at (4.1,1.2) {S2：6 幅特征图\\$14\times14$};
-    \node[font=\tiny] at (4.1,-1.25) {下采样};
-    \foreach \i in {0,...,7} {
-      \draw[fill=orange!13,draw=black!55] (5.9+0.055*\i,-.55+0.055*\i)
-        rectangle +(0.55,1.1);
-    }
-    \node[font=\scriptsize,align=center] at (6.35,1.2) {C3：16 幅特征图\\$10\times10$};
-    \node[font=\tiny] at (6.35,-1.25) {卷积};
-    \foreach \i in {0,...,7} {
-      \draw[fill=purple!10,draw=black!55] (8.05+0.045*\i,-.38+0.045*\i)
-        rectangle +(0.4,0.76);
-    }
-    \node[font=\scriptsize,align=center] at (8.45,1.08) {S4：16 幅特征图\\$5\times5$};
-    \node[font=\tiny] at (8.45,-1.25) {下采样};
-    \node[layer,minimum width=.7cm,minimum height=.7cm] (c5) at (10.05,0) {C5\\120};
-    \node[font=\tiny] at (10.05,-1.25) {卷积};
-    \node[layer,minimum width=.7cm,minimum height=1.25cm] (f6) at (11.55,0) {F6\\84};
-    \node[font=\tiny,align=center] at (11.55,-1.25) {全连接};
-    \node[layer,minimum width=.7cm,minimum height=1.7cm] (out) at (13.0,0) {输出\\10};
-    \node[font=\tiny,align=center] at (13.0,-1.25) {高斯连接};
-    \draw[arrow] (in.east)--(1.55,0);
-    \draw[arrow] (2.7,0)--(3.75,0);
-    \draw[arrow] (4.7,0)--(5.9,0);
-    \draw[arrow] (6.9,0)--(8.05,0);
-    \draw[arrow] (8.85,0)--(c5.west);
-    \draw[arrow] (c5.east)--(f6.west);
-    \draw[arrow] (f6.east)--(out.west);
-  \end{tikzpicture}
-  \caption{用于手写数字识别的卷积神经网络 LeNet-5。输入中的字母 A 应被判定为不属于
-  10 个数字类别中的任何一类。依据原书图 19.1 重绘}
+  \includegraphics[width=\textwidth]{figs/ch19/19-1.png}
+  \caption{用于手写数字识别的卷积神经网络 LeNet-5。输入中的字母 A 应被判定为不属于 10 个数字类别中的任何一类。}
   \label{fig:19-1}
 \end{figure}
 
@@ -151,36 +106,8 @@ CNN 各层的输入和输出称为\textbf{特征图}（feature map），也简�
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{minipage}{0.98\textwidth}
-    \centering
-    \textbf{(a) 卷积层前向路径}\\[0.35em]
-    \fbox{3 幅输入特征图 $X$}
-    $\;\longrightarrow\;$
-    \fbox{卷积层：6 个卷积滤波器 $F$}
-    $\;\longrightarrow\;$
-    \fbox{2 幅输出特征图 $Y$}
-
-    \vspace{0.8em}
-    \textbf{(b) 数值示例}\\[0.35em]
-    \begin{tabular}{c@{\qquad}c@{\qquad}c}
-      输入特征图 & 对输出 0 / 输出 1 的卷积滤波器 & 输出特征图\\[0.25em]
-      $X_0=\begin{bmatrix}1&2&0\\1&1&3\\0&2&2\end{bmatrix}$ &
-      $F_{0,0}=\begin{bmatrix}1&1\\2&2\end{bmatrix}\quad
-       F_{1,0}=\begin{bmatrix}1&0\\0&1\end{bmatrix}$ &
-      $Y_0=\begin{bmatrix}14&20\\15&24\end{bmatrix}$\\[1em]
-      $X_1=\begin{bmatrix}0&2&1\\0&3&2\\1&1&0\end{bmatrix}$ &
-      $F_{0,1}=\begin{bmatrix}1&1\\1&1\end{bmatrix}\quad
-       F_{1,1}=\begin{bmatrix}2&1\\2&1\end{bmatrix}$ &
-      $Y_1=\begin{bmatrix}12&24\\17&26\end{bmatrix}$\\[1em]
-      $X_2=\begin{bmatrix}1&2&1\\0&1&3\\3&3&2\end{bmatrix}$ &
-      $F_{0,2}=\begin{bmatrix}0&1\\1&0\end{bmatrix}\quad
-       F_{1,2}=\begin{bmatrix}1&2\\2&0\end{bmatrix}$ &
-      每幅输出都是三个卷积之和
-    \end{tabular}
-  \end{minipage}
-  \caption{卷积层的前向传播路径：(a) 结构；(b) 三幅输入特征图、六个卷积滤波器与
-  两幅输出特征图的数值关系。依据原书图 19.2 重绘}
+  \includegraphics[width=\textwidth]{figs/ch19/19-2.png}
+  \caption{卷积层的前向传播路径：(a) 结构；(b) 三幅输入特征图、六个卷积滤波器与 两幅输出特征图的数值关系。}
   \label{fig:19-2}
 \end{figure}
 
@@ -228,7 +155,7 @@ void convLayer_forward(int M, int C, int H, int W, int K, float* X, float* F, fl
 }
   \end{lstlisting}
   \end{minipage}
-  \caption{卷积层前向传播路径的 C 实现。依据原书图 19.3 逐字符重排}
+  \caption{卷积层前向传播路径的 C 实现。}
   \label{fig:19-3}
 \end{figure}
 
@@ -314,7 +241,7 @@ void convLayer_batched(int N, int M, int C, int H, int W, int K, float* X, float
 }
   \end{lstlisting}
   \end{minipage}
-\caption{批处理卷积层的前向路径。依据原书图 19.4 逐字符重排}
+\caption{批处理卷积层的前向路径。}
   \label{fig:19-4}
 \end{figure}
 
@@ -379,7 +306,7 @@ dim3 gridDim(M, T, N);
 ConvLayerForward_Kernel<<<gridDim, blockDim>>>(...);
   \end{lstlisting}
   \end{minipage}
-  \caption{启动卷积层内核的主机代码。依据原书图 19.5 逐字符重排}
+  \caption{启动卷积层内核的主机代码。}
   \label{fig:19-5}
 \end{figure}
 
@@ -398,34 +325,8 @@ $Z$ 维已经用于小批量中的样本下标，因此这里只剩一个维度�
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=.92cm,y=.72cm,>=Stealth,font=\scriptsize]
-    \draw[line width=.85pt] (-4,0) rectangle (4,4);
-    \foreach \x in {-2,0,2} \draw (\x,0)--(\x,4);
-    \foreach \y in {1,2,3} \draw (-4,\y)--(4,\y);
-    \foreach \m/\x in {0/-3,1/-1,2/1,3/3}
-      \node[align=center] at (\x,4.35) {$m=\m$};
-    \foreach \t/\name/\y in {0/{(0,0)}/3.5,1/{(0,1)}/2.5,2/{(1,0)}/1.5,3/{(1,1)}/.5}
-      \node[left] at (-4.15,\y) {$\code{blockIdx.y}=\t\;\leftrightarrow\;\name$};
-    \node[above,align=center] at (0,5.15)
-      {网格的 $X$--$Y$ 维：$M=4$，$T=H_{\mathrm{grid}}W_{\mathrm{grid}}=4$\\
-       $X$ 维中 $\code{blockIdx.x}=m$，即输出特征图下标};
-    \foreach \x in {-3,-1,1,3} {
-      \begin{scope}[shift={(\x,-2)}]
-        \draw[line width=.8pt] (-.65,-.65) rectangle (.65,.65);
-        \draw (-.65,0)--(.65,0); \draw (0,-.65)--(0,.65);
-      \end{scope}
-    }
-    \foreach \m/\x in {0/-3,1/-1,2/1,3/3}
-      \node[below] at (\x,-2.75) {$m=\m$};
-    \draw[dashed,->,blue!65!black] (-3,3.5)--(-3,-1.35);
-    \draw[dashed,->,orange!80!black] (-3,2.5)--(-2.35,-2);
-    \node[align=center,right] at (4.4,2) {$Y$ 维的四行依次对应\\图块 $(0,0),(0,1),(1,0),(1,1)$};
-    \node[align=center] at (0,-3.35)
-      {下方各 $2\times2$ 方格表示对应输出特征图的四个图块};
-    \node[align=center] at (0,-3.8) {同一映射会在 $Z$ 维的每个样本上重复};
-  \end{tikzpicture}
-  \caption{把输出特征图图块映射到网格 $X$--$Y$ 维中的线程块；同一映射应用于
-  $Z$ 维中的全部样本。依据原书图 19.6 重绘}
+  \includegraphics[width=0.85\textwidth]{figs/ch19/19-6.png}
+  \caption{把输出特征图图块映射到网格 $X$--$Y$ 维中的线程块；同一映射应用于 $Z$ 维中的全部样本。}
   \label{fig:19-6}
 \end{figure}
 
@@ -460,7 +361,7 @@ ConvLayerForward_Kernel(int C, int W_grid, int K, float* X, float* F, float* Y) 
 }
   \end{lstlisting}
   \end{minipage}
-  \caption{卷积层前向路径的 CUDA 内核。依据原书图 19.7 逐字符重排}
+  \caption{卷积层前向路径的 CUDA 内核。}
   \label{fig:19-7}
 \end{figure}
 
@@ -577,42 +478,8 @@ $3\times4=12$ 个元素，所以 $B$ 的尺寸为 $12\times4$。
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \setlength{\arraycolsep}{2.2pt}
-  \setcounter{MaxMatrixCols}{12}
-  \resizebox{0.98\textwidth}{!}{$\displaystyle
-    F=\begin{bmatrix}
-      1&1&2&2&1&1&1&1&0&1&1&0\\
-      1&0&0&1&2&1&2&1&1&2&2&0
-    \end{bmatrix}
-    \quad\times\quad
-    B=\begin{bmatrix}
-      1&2&1&1\\2&0&1&3\\1&1&0&2\\1&3&2&2\\
-      0&2&0&3\\2&1&3&2\\0&3&1&1\\3&2&1&0\\
-      1&2&0&1\\2&1&1&3\\0&1&3&3\\1&3&3&2
-    \end{bmatrix}
-    \quad=\quad
-    Y=\begin{bmatrix}14&20&15&24\\12&24&17&26\end{bmatrix}
-  $}
-
-  \vspace{0.45em}
-  $F:2\times12=M\times(CK^2)$，\quad
-  $B:12\times4=(CK^2)\times(H_{\mathrm{out}}W_{\mathrm{out}})$，\quad
-  $Y:2\times4=M\times(H_{\mathrm{out}}W_{\mathrm{out}})$
-
-  \vspace{0.8em}
-  \begin{tikzpicture}[>=Stealth,font=\scriptsize]
-    \node[draw,fill=orange!14,text width=3.4cm,minimum height=.9cm,align=center] (x)
-      {样本 $n$ 的输入 $X$\\3 幅 $3\times3$ 特征图};
-    \node[draw,fill=blue!12,text width=3.4cm,minimum height=.9cm,align=center,right=1.25cm of x] (f)
-      {共享滤波器组 $F$\\6 个 $2\times2$ 卷积滤波器};
-    \node[draw,fill=green!13,text width=3.4cm,minimum height=.9cm,align=center,right=1.25cm of f] (y)
-      {样本 $n$ 的输出 $Y$\\2 幅 $2\times2$ 特征图};
-    \draw[->] (x)--node[above,align=center,font=\tiny]{局部区域展开\\为 $B$ 的列}(f);
-    \draw[->] (f)--node[above]{$F B$}(y);
-  \end{tikzpicture}
-  \caption{把卷积层表述为 GEMM。批次中的各个样本拥有各自的输入、输出特征图，但共享
-  同一滤波器组；图中只画出下标为 $n$ 的一个样本。依据原书图 19.8 重绘}
+  \includegraphics[width=0.75\textwidth]{figs/ch19/19-8.png}
+  \caption{把卷积层表述为 GEMM。批次中的各个样本拥有各自的输入、输出特征图，但共享 同一滤波器组；图中只画出下标为 $n$ 的一个样本。}
   \label{fig:19-8}
 \end{figure}
 
@@ -697,28 +564,8 @@ $B[2,0]$、$B[2,1]$、$B[3,0]$、$B[3,1]$。箭头表明，$B[2,0]$ 从 $X[n,0,1
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c@{\hspace{2.2em}}c}
-    \begin{minipage}{0.43\textwidth}
-      \centering\textbf{(a) 阶段 0}\\[0.4em]
-      $\displaystyle
-      \underbrace{\begin{bmatrix}B[0,0]&B[0,1]\\B[1,0]&B[1,1]\end{bmatrix}}_{B\text{ 图块}}
-      \longleftarrow
-      \begin{bmatrix}X[n,0,0,0]&X[n,0,0,1]\\X[n,0,0,1]&X[n,0,0,2]\end{bmatrix}$\\[0.7em]
-      $F[:,0\mathinner{:}2]$ 与此 $B$ 图块相乘，累加到 $Y[:,0\mathinner{:}2]$。
-    \end{minipage}
-    &
-    \begin{minipage}{0.43\textwidth}
-      \centering\textbf{(b) 阶段 1}\\[0.4em]
-      $\displaystyle
-      \underbrace{\begin{bmatrix}B[2,0]&B[2,1]\\B[3,0]&B[3,1]\end{bmatrix}}_{B\text{ 图块}}
-      \longleftarrow
-      \begin{bmatrix}X[n,0,1,0]&X[n,0,1,1]\\X[n,0,1,1]&X[n,0,1,2]\end{bmatrix}$\\[0.7em]
-      $F[:,2\mathinner{:}4]$ 与此 $B$ 图块相乘，继续累加到同一输出图块。
-    \end{minipage}
-  \end{tabular}
-  \caption{用分块矩阵乘法实现卷积层时，每个阶段都从相应 $X$ 元素按需加载 $B$ 矩阵
-  图块。依据原书图 19.9 重绘}
+  \includegraphics[width=\textwidth]{figs/ch19/19-9.png}
+  \caption{用分块矩阵乘法实现卷积层时，每个阶段都从相应 $X$ 元素按需加载 $B$ 矩阵 图块。}
   \label{fig:19-9}
 \end{figure}
 
@@ -753,21 +600,8 @@ $\lfloor(10\bmod4)/2\rfloor=1$，$(10\bmod4)\bmod2=0$，说明它来自输入区
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[>=Stealth,font=\small]
-    \node[draw,fill=orange!15,text width=2.8cm,minimum height=1.35cm,align=center] (b)
-      {$B[10,2]=3$\\$u=10,\ v=2$};
-    \node[draw,fill=gray!12,text width=4.1cm,minimum height=1.35cm,align=center,right=1cm of b] (map)
-      {$c=\lfloor10/2^2\rfloor=2$\\局部位置 $(1,0)$\\区域起点 $(1,0)$};
-    \node[draw,fill=blue!12,text width=3.7cm,minimum height=1.35cm,align=center,right=1cm of map] (x)
-      {$X[n,2,2,0]=3$\\输入特征图 2，第 2 行、第 0 列};
-    \draw[->,line width=.8pt] (b)--(map);
-    \draw[->,line width=.8pt] (map)--(x);
-    \node[below=.8cm of map,align=center,font=\scriptsize]
-      {$u:\ 10\bmod4=2\Rightarrow(\lfloor2/2\rfloor,2\bmod2)=(1,0)$\qquad
-       $v:\ 2\Rightarrow(\lfloor2/2\rfloor,2\bmod2)=(1,0)$};
-  \end{tikzpicture}
-  \caption{$B[10,2]$（即 $u=10$、$v=2$）到输入特征图元素的映射示例。
-  依据原书图 19.10 重绘}
+  \includegraphics[width=0.75\textwidth]{figs/ch19/19-10.png}
+  \caption{$B[10,2]$（即 $u=10$、$v=2$）到输入特征图元素的映射示例。}
   \label{fig:19-10}
 \end{figure}
 
@@ -855,7 +689,7 @@ __global__ void ConvLayer_MM_Kernel(int C, int M, int H, int W, int K, float* F,
 }
   \end{lstlisting}
   \end{minipage}
-  \caption{用分块矩阵乘法实现卷积层的 CUDA 内核。依据原书图 19.11 逐字符重排}
+  \caption{用分块矩阵乘法实现卷积层的 CUDA 内核。}
   \label{fig:19-11}
 \end{figure}
 
@@ -893,8 +727,7 @@ cuDNN 是线程安全的，不同主机线程可以调用其例程。下面以 C
 
 \begin{table}[htbp]
   \centering
-  \caption{cuDNN 的卷积参数。注意，cuDNN 的命名约定与前几节略有不同，尤其是 $K$
-  在这里表示输出特征图数，而前文用 $K$ 表示方形卷积滤波器尺寸。依据原书表 19.1 重排}
+  \caption{cuDNN 的卷积参数。注意，cuDNN 的命名约定与前几节略有不同，尤其是 $K$ 在这里表示输出特征图数，而前文用 $K$ 表示方形卷积滤波器尺寸。}
   \label{tab:19-1}
   \small
   \begin{tabular}{cl}

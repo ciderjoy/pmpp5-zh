@@ -122,9 +122,12 @@ arg-min/arg-max 等操作；\code{Sum()} 还有专用便利成员。浮点加法
 
 \editorialnote 原书图 20.12 和图 20.15 各只声明一个共享
 \code{WarpReduce::TempStorage}，而原书图 20.9 的线程块有 16 个 warp，它们会并发调用
-归约。这会让多个 warp 竞态复用同一临时区。可执行实现应声明
-\code{temp_store[N_WARPS]} 并以 \code{warpIdx()} 选择；图 20.4 使用的是整块唯一的
-\code{BlockReduce}，不受这一问题影响。
+归约。按 CUB 的文档契约，每个同时工作的逻辑 warp 应各自持有一份 \code{TempStorage}。
+本例使用默认的 32 线程逻辑 warp，CUB 会选择基于 shuffle 的实现，其 \code{TempStorage}
+是空类型、不占用共享内存，因此共用一份在本实现下并不会真正触发竞态；但改用
+\code{WarpReduceSmem} 路径或改变逻辑 warp 宽度后，共用同一临时区就会出错。可执行实现
+仍应声明 \code{temp_store[N_WARPS]} 并以 \code{warpIdx()} 选择；图 20.4 使用的是整块
+唯一的 \code{BlockReduce}，不受这一问题影响。
 
 \conclusionheading \code{WarpReduce} 是逻辑 warp collective，不是普通标量函数；
 临时存储所有权、参与线程集合和 lane 0 结果语义都是正确调用的一部分。
@@ -133,7 +136,7 @@ arg-min/arg-max 等操作；\code{Sum()} 还有专用便利成员。浮点加法
 调用 \code{Reduce} 不是 32 次互不相关的标量函数，而是一组 lane 共同完成一次归约；每个 lane 提供输入，库在它们之间交换数据。完整结果通常只保证在逻辑 warp 的 lane 0 有效，其余 lane 的返回值不能未经说明直接使用，若大家都需要就应显式广播。逻辑宽度还可以是 8 或 16，使一个物理 warp 包含多个独立小组。正确使用因此要同时说明输入类型、逻辑宽度、参与 lane、结果所有者和广播步骤；CUB 封装了通信实现，却没有取消调用者对集体操作边界的责任。
 
 \discussionpoint{临时存储的所有权必须与并发实例一一对应。}
-原书教学块有 16 个 warp，若它们同时把中间值写进同一个 \code{TempStorage}，不同 collective 的生命周期重叠，就会形成共享内存竞态。最直接的设计是声明 \code{temp[WARPS_PER_BLOCK]}，用 warp 编号选择独立元素；逻辑 warp 小于 32 时还要按实际小组数分配。同一组连续两次复用临时区也应遵守 API 的同步要求，不能把硬件常见的锁步执行当成无限期可见性保证。这个问题与线程池复用工作缓冲相同：库对象的类型正确不代表并发所有权正确，资源实例必须覆盖所有同时活动的操作。
+原书教学块有 16 个 warp，若它们同时把中间值写进同一个 \code{TempStorage}，不同 collective 的生命周期重叠，就会形成共享内存竞态。本例默认逻辑 warp 为 32，CUB 走 shuffle 路径、\code{TempStorage} 为空，所以共用一份只是违反文档契约，并不会真的触发竞态；换成 \code{WarpReduceSmem} 或缩短逻辑 warp 后才会真正出错。稳妥的设计是声明 \code{temp[WARPS_PER_BLOCK]}，用 warp 编号选择独立元素；逻辑 warp 小于 32 时还要按实际小组数分配。同一组连续两次复用临时区也应遵守 API 的同步要求，不能把硬件常见的锁步执行当成无限期可见性保证。这个问题与线程池复用工作缓冲相同：库对象的类型正确不代表并发所有权正确，资源实例必须覆盖所有同时活动的操作。
 
 \discussionpoint{参与掩码定义了哪些值真正存在。}
 手写 shuffle 归约常在尾部或分支中出错：某个 lane 已退出，却仍被掩码列为来源，其他 lane 便可能读取未定义值。逻辑 warp 设为 8 时，物理 lane 0、8、16、24 分别是四组的根，不能把物理 lane 0 当成整个 warp 唯一结果位置。CUB 可以表达这些子组，但参与线程仍须以一致控制流进入 collective，并传入与有效数据一致的数量或掩码。这个边界也出现在 ballot、scan 和协作组中，说明 SIMD/SIMT 原语的正确性不仅取决于算术，还取决于“谁同时参加”这一控制流集合。
@@ -141,7 +144,7 @@ arg-min/arg-max 等操作；\code{Sum()} 还有专用便利成员。浮点加法
 \discussionpoint{归约操作需要代数性质与数值语义。}
 树形归约假定二元操作至少具有结合性，才能在改变括号位置后保持数学结果；最大值和整数加法通常满足，字符串减法之类的非结合操作则会随树形得到不同语义。浮点加法在实数中结合，在有限精度中却不严格结合，所以结果可能与串行顺序相差若干 ULP，即使 collective 没有任何竞态。自定义 functor 还应处理单位元、NaN 和有符号零等边界。性能上可以比较 shuffle、共享访问和同步，正确性上则要用不同逻辑宽度与输入分布检查结果，这把 API 使用问题连接到了并行代数结构。
 \variantheading 对 \code{WarpReduce<int,8>}，一个 32-lane 物理 warp 被分成 4 组；若物理 lane $i$ 输入 $i+1$ 并求和，则物理 lane $0,8,16,24$ 的有效聚合依次为 $36,100,164,228$。
-\practiceheading 在硬件 warp 为 32、CUDA 计算能力 7.0 或更新且逻辑 warp 设为 8 的 NVIDIA GPU 上，写 CUB 微测试并用 Compute Sanitizer racecheck 排除 TempStorage 复用；Nsight Compute 再比较 shuffle/shared 指令数。
+\practiceheading 在硬件 warp 为 32、CUDA 计算能力 7.0 或更新且逻辑 warp 设为 8 的 NVIDIA GPU 上，写 CUB 微测试并用 Compute Sanitizer racecheck 检查临时存储；注意默认 32 线程逻辑 warp 走 shuffle 路径、\code{TempStorage} 为空，此时 racecheck 不会报告该问题，需改用 \code{WarpReduceSmem} 或缩短逻辑 warp 才能暴露。Nsight Compute 再比较 shuffle/shared 指令数。
 \sourcecheck{https://github.com/NVIDIA/cccl/tree/main/cub}{NVIDIA CCCL/CUB 官方源代码与文档；对抗检查：若所有 warp 共用一个 TempStorage，或未经广播就在任意 lane 使用 Reduce 返回值，教学公式正确也会被实现竞态破坏}
 \end{solutionexercise}
 

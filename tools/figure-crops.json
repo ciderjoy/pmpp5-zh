@@ -104,6 +104,18 @@
             "output": "figs/ch2/2-9.png"
         },
         {
+            "id": "2-14",
+            "page": 67,
+            "crop": {
+                "x": 550,
+                "y": 315,
+                "width": 997,
+                "height": 759
+            },
+            "output": "figs/ch2/2-14.png",
+            "review": "reviewed"
+        },
+        {
             "id": "3-1",
             "page": 76,
             "crop": {
@@ -610,6 +622,1950 @@
                 "height": 803
             },
             "output": "figs/ch6/6-10.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "7-1",
+            "page": 188,
+            "crop": {
+                "x": 546,
+                "y": 312,
+                "width": 1306,
+                "height": 455
+            },
+            "output": "figs/ch7/7-1.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "7-2",
+            "page": 189,
+            "crop": {
+                "x": 394,
+                "y": 314,
+                "width": 1311,
+                "height": 456
+            },
+            "output": "figs/ch7/7-2.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "7-3",
+            "page": 190,
+            "crop": {
+                "x": 550,
+                "y": 316,
+                "width": 1299,
+                "height": 458
+            },
+            "output": "figs/ch7/7-3.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "7-4",
+            "page": 191,
+            "crop": {
+                "x": 452,
+                "y": 313,
+                "width": 1194,
+                "height": 928
+            },
+            "output": "figs/ch7/7-4.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "7-5",
+            "page": 192,
+            "crop": {
+                "x": 552,
+                "y": 312,
+                "width": 1295,
+                "height": 933
+            },
+            "output": "figs/ch7/7-5.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "7-6",
+            "page": 193,
+            "crop": {
+                "x": 365,
+                "y": 312,
+                "width": 1368,
+                "height": 651
+            },
+            "output": "figs/ch7/7-6.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "7-8",
+            "page": 196,
+            "crop": {
+                "x": 725,
+                "y": 1366,
+                "width": 947,
+                "height": 706
+            },
+            "output": "figs/ch7/7-8.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "7-10",
+            "page": 198,
+            "crop": {
+                "x": 748,
+                "y": 1049,
+                "width": 903,
+                "height": 610
+            },
+            "output": "figs/ch7/7-10.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "7-11",
+            "page": 201,
+            "crop": {
+                "x": 398,
+                "y": 312,
+                "width": 1300,
+                "height": 631
+            },
+            "output": "figs/ch7/7-11.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "7-13",
+            "page": 203,
+            "crop": {
+                "x": 431,
+                "y": 313,
+                "width": 1236,
+                "height": 669
+            },
+            "output": "figs/ch7/7-13.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "7-14",
+            "page": 205,
+            "crop": {
+                "x": 385,
+                "y": 312,
+                "width": 1328,
+                "height": 497
+            },
+            "output": "figs/ch7/7-14.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "8-1",
+            "page": 212,
+            "crop": {
+                "x": 481,
+                "y": 312,
+                "width": 1437,
+                "height": 517
+            },
+            "output": "figs/ch8/8-1.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "8-2",
+            "page": 214,
+            "crop": {
+                "x": 844,
+                "y": 312,
+                "width": 711,
+                "height": 517
+            },
+            "output": "figs/ch8/8-2.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "8-3",
+            "page": 214,
+            "crop": {
+                "x": 481,
+                "y": 1011,
+                "width": 1437,
+                "height": 442
+            },
+            "output": "figs/ch8/8-3.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "8-4",
+            "page": 215,
+            "crop": {
+                "x": 396,
+                "y": 312,
+                "width": 1304,
+                "height": 810
+            },
+            "output": "figs/ch8/8-4.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "8-5",
+            "page": 216,
+            "crop": {
+                "x": 679,
+                "y": 312,
+                "width": 1040,
+                "height": 556
+            },
+            "output": "figs/ch8/8-5.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "8-7",
+            "page": 218,
+            "crop": {
+                "x": 654,
+                "y": 313,
+                "width": 1091,
+                "height": 601
+            },
+            "output": "figs/ch8/8-7.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "8-9",
+            "page": 222,
+            "crop": {
+                "x": 577,
+                "y": 312,
+                "width": 1245,
+                "height": 666
+            },
+            "output": "figs/ch8/8-9.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "8-11",
+            "page": 224,
+            "crop": {
+                "x": 486,
+                "y": 312,
+                "width": 1430,
+                "height": 668
+            },
+            "output": "figs/ch8/8-11.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "9-1",
+            "page": 230,
+            "crop": {
+                "x": 612,
+                "y": 318,
+                "width": 1172,
+                "height": 589
+            },
+            "output": "figs/ch9/9-1.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "9-3",
+            "page": 232,
+            "crop": {
+                "x": 481,
+                "y": 315,
+                "width": 1437,
+                "height": 592
+            },
+            "output": "figs/ch9/9-3.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "9-4",
+            "page": 233,
+            "crop": {
+                "x": 331,
+                "y": 312,
+                "width": 1437,
+                "height": 404
+            },
+            "output": "figs/ch9/9-4.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "9-5",
+            "page": 234,
+            "crop": {
+                "x": 481,
+                "y": 314,
+                "width": 1437,
+                "height": 443
+            },
+            "output": "figs/ch9/9-5.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "9-7",
+            "page": 238,
+            "crop": {
+                "x": 567,
+                "y": 312,
+                "width": 1264,
+                "height": 381
+            },
+            "output": "figs/ch9/9-7.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "9-8",
+            "page": 239,
+            "crop": {
+                "x": 331,
+                "y": 315,
+                "width": 1437,
+                "height": 592
+            },
+            "output": "figs/ch9/9-8.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "9-11",
+            "page": 243,
+            "crop": {
+                "x": 331,
+                "y": 315,
+                "width": 1437,
+                "height": 562
+            },
+            "output": "figs/ch9/9-11.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "9-13",
+            "page": 244,
+            "crop": {
+                "x": 481,
+                "y": 315,
+                "width": 1437,
+                "height": 505
+            },
+            "output": "figs/ch9/9-13.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "10-3",
+            "page": 251,
+            "crop": {
+                "x": 338,
+                "y": 313,
+                "width": 1430,
+                "height": 606
+            },
+            "output": "figs/ch10/10-3.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "10-4",
+            "page": 255,
+            "crop": {
+                "x": 382,
+                "y": 701,
+                "width": 1333,
+                "height": 315
+            },
+            "output": "figs/ch10/10-4.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "10-6",
+            "page": 257,
+            "crop": {
+                "x": 331,
+                "y": 312,
+                "width": 1437,
+                "height": 947
+            },
+            "output": "figs/ch10/10-6.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "10-7",
+            "page": 260,
+            "crop": {
+                "x": 481,
+                "y": 312,
+                "width": 1437,
+                "height": 1008
+            },
+            "output": "figs/ch10/10-7.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "10-9",
+            "page": 264,
+            "crop": {
+                "x": 571,
+                "y": 315,
+                "width": 1257,
+                "height": 943
+            },
+            "output": "figs/ch10/10-9.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "10-12",
+            "page": 267,
+            "crop": {
+                "x": 332,
+                "y": 316,
+                "width": 1799,
+                "height": 906
+            },
+            "output": "figs/ch10/10-12.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "10-15",
+            "page": 270,
+            "crop": {
+                "x": 481,
+                "y": 315,
+                "width": 1769,
+                "height": 978
+            },
+            "output": "figs/ch10/10-15.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "10-17",
+            "page": 272,
+            "crop": {
+                "x": 585,
+                "y": 312,
+                "width": 1228,
+                "height": 635
+            },
+            "output": "figs/ch10/10-17.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "10-19",
+            "page": 275,
+            "crop": {
+                "x": 331,
+                "y": 312,
+                "width": 1437,
+                "height": 704
+            },
+            "output": "figs/ch10/10-19.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "10-21",
+            "page": 276,
+            "crop": {
+                "x": 519,
+                "y": 312,
+                "width": 1358,
+                "height": 568
+            },
+            "output": "figs/ch10/10-21.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "11-2",
+            "page": 283,
+            "crop": {
+                "x": 332,
+                "y": 315,
+                "width": 1436,
+                "height": 1097
+            },
+            "output": "figs/ch11/11-2.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "11-4",
+            "page": 287,
+            "crop": {
+                "x": 408,
+                "y": 312,
+                "width": 1280,
+                "height": 628
+            },
+            "output": "figs/ch11/11-4.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "11-6",
+            "page": 290,
+            "crop": {
+                "x": 527,
+                "y": 314,
+                "width": 1344,
+                "height": 666
+            },
+            "output": "figs/ch11/11-6.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "11-7",
+            "page": 291,
+            "crop": {
+                "x": 342,
+                "y": 316,
+                "width": 1421,
+                "height": 724
+            },
+            "output": "figs/ch11/11-7.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "11-11",
+            "page": 295,
+            "crop": {
+                "x": 348,
+                "y": 1699,
+                "width": 1407,
+                "height": 700
+            },
+            "output": "figs/ch11/11-11.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "11-14",
+            "page": 302,
+            "crop": {
+                "x": 487,
+                "y": 315,
+                "width": 1426,
+                "height": 724
+            },
+            "output": "figs/ch11/11-14.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "11-15",
+            "page": 303,
+            "crop": {
+                "x": 338,
+                "y": 315,
+                "width": 1425,
+                "height": 723
+            },
+            "output": "figs/ch11/11-15.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "11-16",
+            "page": 305,
+            "crop": {
+                "x": 331,
+                "y": 312,
+                "width": 1437,
+                "height": 752
+            },
+            "output": "figs/ch11/11-16.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "11-19",
+            "page": 311,
+            "crop": {
+                "x": 540,
+                "y": 315,
+                "width": 1019,
+                "height": 915
+            },
+            "output": "figs/ch11/11-19.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "11-20",
+            "page": 312,
+            "crop": {
+                "x": 485,
+                "y": 312,
+                "width": 1433,
+                "height": 414
+            },
+            "output": "figs/ch11/11-20.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "12-1",
+            "page": 318,
+            "crop": {
+                "x": 481,
+                "y": 313,
+                "width": 1437,
+                "height": 636
+            },
+            "output": "figs/ch12/12-1.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "12-5",
+            "page": 323,
+            "crop": {
+                "x": 338,
+                "y": 312,
+                "width": 1430,
+                "height": 557
+            },
+            "output": "figs/ch12/12-5.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "12-7",
+            "page": 325,
+            "crop": {
+                "x": 340,
+                "y": 1652,
+                "width": 1419,
+                "height": 754
+            },
+            "output": "figs/ch12/12-7.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "12-9",
+            "page": 327,
+            "crop": {
+                "x": 338,
+                "y": 312,
+                "width": 1425,
+                "height": 593
+            },
+            "output": "figs/ch12/12-9.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "12-10",
+            "page": 327,
+            "crop": {
+                "x": 338,
+                "y": 1045,
+                "width": 1429,
+                "height": 600
+            },
+            "output": "figs/ch12/12-10.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "12-11",
+            "page": 329,
+            "crop": {
+                "x": 371,
+                "y": 314,
+                "width": 1356,
+                "height": 448
+            },
+            "output": "figs/ch12/12-11.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "13-1",
+            "page": 332,
+            "crop": {
+                "x": 735,
+                "y": 312,
+                "width": 927,
+                "height": 333
+            },
+            "output": "figs/ch13/13-1.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "13-3",
+            "page": 335,
+            "crop": {
+                "x": 569,
+                "y": 312,
+                "width": 962,
+                "height": 835
+            },
+            "output": "figs/ch13/13-3.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "13-4",
+            "page": 337,
+            "crop": {
+                "x": 548,
+                "y": 312,
+                "width": 1001,
+                "height": 414
+            },
+            "output": "figs/ch13/13-4.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "13-6",
+            "page": 339,
+            "crop": {
+                "x": 529,
+                "y": 312,
+                "width": 1041,
+                "height": 556
+            },
+            "output": "figs/ch13/13-6.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "13-7",
+            "page": 340,
+            "crop": {
+                "x": 679,
+                "y": 312,
+                "width": 1038,
+                "height": 518
+            },
+            "output": "figs/ch13/13-7.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "13-8",
+            "page": 340,
+            "crop": {
+                "x": 671,
+                "y": 965,
+                "width": 1057,
+                "height": 517
+            },
+            "output": "figs/ch13/13-8.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "13-10",
+            "page": 343,
+            "crop": {
+                "x": 331,
+                "y": 315,
+                "width": 1437,
+                "height": 718
+            },
+            "output": "figs/ch13/13-10.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "13-14",
+            "page": 347,
+            "crop": {
+                "x": 331,
+                "y": 316,
+                "width": 1437,
+                "height": 716
+            },
+            "output": "figs/ch13/13-14.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "13-15",
+            "page": 349,
+            "crop": {
+                "x": 331,
+                "y": 312,
+                "width": 1437,
+                "height": 910
+            },
+            "output": "figs/ch13/13-15.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "13-17",
+            "page": 352,
+            "crop": {
+                "x": 644,
+                "y": 312,
+                "width": 1112,
+                "height": 589
+            },
+            "output": "figs/ch13/13-17.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "14-1",
+            "page": 360,
+            "crop": {
+                "x": 669,
+                "y": 313,
+                "width": 1059,
+                "height": 924
+            },
+            "output": "figs/ch14/14-1.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "14-3",
+            "page": 362,
+            "crop": {
+                "x": 481,
+                "y": 312,
+                "width": 1437,
+                "height": 944
+            },
+            "output": "figs/ch14/14-3.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "14-4",
+            "page": 363,
+            "crop": {
+                "x": 398,
+                "y": 312,
+                "width": 1303,
+                "height": 1038
+            },
+            "output": "figs/ch14/14-4.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "14-5",
+            "page": 365,
+            "crop": {
+                "x": 417,
+                "y": 312,
+                "width": 1263,
+                "height": 480
+            },
+            "output": "figs/ch14/14-5.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "14-6",
+            "page": 366,
+            "crop": {
+                "x": 481,
+                "y": 312,
+                "width": 1437,
+                "height": 687
+            },
+            "output": "figs/ch14/14-6.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "14-8",
+            "page": 369,
+            "crop": {
+                "x": 394,
+                "y": 312,
+                "width": 1312,
+                "height": 580
+            },
+            "output": "figs/ch14/14-8.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "14-9",
+            "page": 369,
+            "crop": {
+                "x": 444,
+                "y": 1075,
+                "width": 1208,
+                "height": 837
+            },
+            "output": "figs/ch14/14-9.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "14-10",
+            "page": 371,
+            "crop": {
+                "x": 415,
+                "y": 312,
+                "width": 1269,
+                "height": 534
+            },
+            "output": "figs/ch14/14-10.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "14-11",
+            "page": 371,
+            "crop": {
+                "x": 394,
+                "y": 984,
+                "width": 1310,
+                "height": 577
+            },
+            "output": "figs/ch14/14-11.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "14-12",
+            "page": 372,
+            "crop": {
+                "x": 571,
+                "y": 310,
+                "width": 1256,
+                "height": 1026
+            },
+            "output": "figs/ch14/14-12.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "14-13",
+            "page": 373,
+            "crop": {
+                "x": 419,
+                "y": 312,
+                "width": 1259,
+                "height": 656
+            },
+            "output": "figs/ch14/14-13.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "15-1",
+            "page": 379,
+            "crop": {
+                "x": 415,
+                "y": 312,
+                "width": 1268,
+                "height": 825
+            },
+            "output": "figs/ch15/15-1.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "15-2",
+            "page": 381,
+            "crop": {
+                "x": 331,
+                "y": 315,
+                "width": 1437,
+                "height": 721
+            },
+            "output": "figs/ch15/15-2.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "15-8",
+            "page": 386,
+            "crop": {
+                "x": 481,
+                "y": 312,
+                "width": 1437,
+                "height": 678
+            },
+            "output": "figs/ch15/15-8.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "15-10",
+            "page": 389,
+            "crop": {
+                "x": 331,
+                "y": 312,
+                "width": 1437,
+                "height": 783
+            },
+            "output": "figs/ch15/15-10.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "15-11",
+            "page": 390,
+            "crop": {
+                "x": 482,
+                "y": 312,
+                "width": 1436,
+                "height": 756
+            },
+            "output": "figs/ch15/15-11.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "15-12",
+            "page": 393,
+            "crop": {
+                "x": 331,
+                "y": 312,
+                "width": 1437,
+                "height": 726
+            },
+            "output": "figs/ch15/15-12.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "15-13",
+            "page": 393,
+            "crop": {
+                "x": 331,
+                "y": 1183,
+                "width": 1437,
+                "height": 726
+            },
+            "output": "figs/ch15/15-13.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "16-2",
+            "page": 405,
+            "crop": {
+                "x": 330,
+                "y": 291,
+                "width": 1424,
+                "height": 429
+            },
+            "output": "figs/ch16/16-2.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "16-5",
+            "page": 409,
+            "crop": {
+                "x": 334,
+                "y": 317,
+                "width": 1434,
+                "height": 634
+            },
+            "output": "figs/ch16/16-5.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "16-6",
+            "page": 411,
+            "crop": {
+                "x": 719,
+                "y": 312,
+                "width": 662,
+                "height": 560
+            },
+            "output": "figs/ch16/16-6.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "16-7",
+            "page": 413,
+            "crop": {
+                "x": 336,
+                "y": 319,
+                "width": 1432,
+                "height": 540
+            },
+            "output": "figs/ch16/16-7.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "16-13",
+            "page": 418,
+            "crop": {
+                "x": 613,
+                "y": 318,
+                "width": 1173,
+                "height": 437
+            },
+            "output": "figs/ch16/16-13.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "16-14",
+            "page": 419,
+            "crop": {
+                "x": 338,
+                "y": 312,
+                "width": 1424,
+                "height": 534
+            },
+            "output": "figs/ch16/16-14.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "16-20",
+            "page": 424,
+            "crop": {
+                "x": 489,
+                "y": 312,
+                "width": 1429,
+                "height": 381
+            },
+            "output": "figs/ch16/16-20.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "16-21",
+            "page": 427,
+            "crop": {
+                "x": 337,
+                "y": 307,
+                "width": 1462,
+                "height": 836
+            },
+            "output": "figs/ch16/16-21.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "17-1",
+            "page": 430,
+            "crop": {
+                "x": 973,
+                "y": 312,
+                "width": 450,
+                "height": 336
+            },
+            "output": "figs/ch17/17-1.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "17-2",
+            "page": 431,
+            "crop": {
+                "x": 498,
+                "y": 312,
+                "width": 1102,
+                "height": 514
+            },
+            "output": "figs/ch17/17-2.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "17-3",
+            "page": 432,
+            "crop": {
+                "x": 590,
+                "y": 312,
+                "width": 1219,
+                "height": 334
+            },
+            "output": "figs/ch17/17-3.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "17-4",
+            "page": 433,
+            "crop": {
+                "x": 371,
+                "y": 312,
+                "width": 1355,
+                "height": 460
+            },
+            "output": "figs/ch17/17-4.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "17-6",
+            "page": 434,
+            "crop": {
+                "x": 590,
+                "y": 312,
+                "width": 1218,
+                "height": 333
+            },
+            "output": "figs/ch17/17-6.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "17-7",
+            "page": 435,
+            "crop": {
+                "x": 437,
+                "y": 312,
+                "width": 1221,
+                "height": 334
+            },
+            "output": "figs/ch17/17-7.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "17-8",
+            "page": 436,
+            "crop": {
+                "x": 483,
+                "y": 312,
+                "width": 1430,
+                "height": 469
+            },
+            "output": "figs/ch17/17-8.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "17-10",
+            "page": 439,
+            "crop": {
+                "x": 331,
+                "y": 312,
+                "width": 1437,
+                "height": 754
+            },
+            "output": "figs/ch17/17-10.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "17-11",
+            "page": 440,
+            "crop": {
+                "x": 484,
+                "y": 313,
+                "width": 1434,
+                "height": 403
+            },
+            "output": "figs/ch17/17-11.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "17-13",
+            "page": 443,
+            "crop": {
+                "x": 331,
+                "y": 312,
+                "width": 1436,
+                "height": 425
+            },
+            "output": "figs/ch17/17-13.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "17-14",
+            "page": 444,
+            "crop": {
+                "x": 481,
+                "y": 312,
+                "width": 1437,
+                "height": 700
+            },
+            "output": "figs/ch17/17-14.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "17-15",
+            "page": 445,
+            "crop": {
+                "x": 332,
+                "y": 312,
+                "width": 1436,
+                "height": 439
+            },
+            "output": "figs/ch17/17-15.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "17-16",
+            "page": 446,
+            "crop": {
+                "x": 590,
+                "y": 312,
+                "width": 1217,
+                "height": 333
+            },
+            "output": "figs/ch17/17-16.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "18-1",
+            "page": 454,
+            "crop": {
+                "x": 913,
+                "y": 307,
+                "width": 572,
+                "height": 545
+            },
+            "output": "figs/ch18/18-1.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "18-4",
+            "page": 457,
+            "crop": {
+                "x": 429,
+                "y": 312,
+                "width": 1239,
+                "height": 658
+            },
+            "output": "figs/ch18/18-4.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "18-5",
+            "page": 458,
+            "crop": {
+                "x": 687,
+                "y": 314,
+                "width": 1021,
+                "height": 424
+            },
+            "output": "figs/ch18/18-5.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "18-7",
+            "page": 461,
+            "crop": {
+                "x": 455,
+                "y": 997,
+                "width": 1185,
+                "height": 680
+            },
+            "output": "figs/ch18/18-7.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "18-9",
+            "page": 463,
+            "crop": {
+                "x": 450,
+                "y": 312,
+                "width": 1197,
+                "height": 691
+            },
+            "output": "figs/ch18/18-9.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "18-11",
+            "page": 465,
+            "crop": {
+                "x": 477,
+                "y": 947,
+                "width": 1144,
+                "height": 651
+            },
+            "output": "figs/ch18/18-11.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "18-13",
+            "page": 468,
+            "crop": {
+                "x": 687,
+                "y": 313,
+                "width": 1026,
+                "height": 791
+            },
+            "output": "figs/ch18/18-13.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "18-16",
+            "page": 472,
+            "crop": {
+                "x": 481,
+                "y": 315,
+                "width": 1437,
+                "height": 709
+            },
+            "output": "figs/ch18/18-16.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "19-1",
+            "page": 483,
+            "crop": {
+                "x": 332,
+                "y": 312,
+                "width": 1436,
+                "height": 412
+            },
+            "output": "figs/ch19/19-1.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "19-2",
+            "page": 484,
+            "crop": {
+                "x": 489,
+                "y": 315,
+                "width": 1429,
+                "height": 549
+            },
+            "output": "figs/ch19/19-2.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "19-6",
+            "page": 490,
+            "crop": {
+                "x": 525,
+                "y": 313,
+                "width": 1342,
+                "height": 1032
+            },
+            "output": "figs/ch19/19-6.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "19-8",
+            "page": 493,
+            "crop": {
+                "x": 456,
+                "y": 312,
+                "width": 1197,
+                "height": 1295
+            },
+            "output": "figs/ch19/19-8.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "19-9",
+            "page": 496,
+            "crop": {
+                "x": 488,
+                "y": 312,
+                "width": 1430,
+                "height": 768
+            },
+            "output": "figs/ch19/19-9.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "19-10",
+            "page": 497,
+            "crop": {
+                "x": 488,
+                "y": 312,
+                "width": 1125,
+                "height": 1211
+            },
+            "output": "figs/ch19/19-10.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "20-1",
+            "page": 507,
+            "crop": {
+                "x": 563,
+                "y": 319,
+                "width": 979,
+                "height": 966
+            },
+            "output": "figs/ch20/20-1.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "20-2",
+            "page": 511,
+            "crop": {
+                "x": 331,
+                "y": 312,
+                "width": 1437,
+                "height": 783
+            },
+            "output": "figs/ch20/20-2.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "20-3",
+            "page": 513,
+            "crop": {
+                "x": 331,
+                "y": 312,
+                "width": 1432,
+                "height": 870
+            },
+            "output": "figs/ch20/20-3.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "20-5",
+            "page": 517,
+            "crop": {
+                "x": 331,
+                "y": 312,
+                "width": 1437,
+                "height": 795
+            },
+            "output": "figs/ch20/20-5.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "20-6",
+            "page": 518,
+            "crop": {
+                "x": 481,
+                "y": 312,
+                "width": 1437,
+                "height": 864
+            },
+            "output": "figs/ch20/20-6.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "20-7",
+            "page": 519,
+            "crop": {
+                "x": 331,
+                "y": 312,
+                "width": 1432,
+                "height": 868
+            },
+            "output": "figs/ch20/20-7.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "20-8",
+            "page": 520,
+            "crop": {
+                "x": 481,
+                "y": 318,
+                "width": 1437,
+                "height": 909
+            },
+            "output": "figs/ch20/20-8.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "20-17",
+            "page": 533,
+            "crop": {
+                "x": 331,
+                "y": 312,
+                "width": 1437,
+                "height": 847
+            },
+            "output": "figs/ch20/20-17.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "20-18",
+            "page": 535,
+            "crop": {
+                "x": 366,
+                "y": 280,
+                "width": 1367,
+                "height": 1404
+            },
+            "output": "figs/ch20/20-18.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "20-19",
+            "page": 537,
+            "crop": {
+                "x": 335,
+                "y": 312,
+                "width": 1433,
+                "height": 869
+            },
+            "output": "figs/ch20/20-19.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "21-1",
+            "page": 542,
+            "crop": {
+                "x": 920,
+                "y": 312,
+                "width": 560,
+                "height": 482
+            },
+            "output": "figs/ch21/21-1.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "21-2",
+            "page": 543,
+            "crop": {
+                "x": 331,
+                "y": 314,
+                "width": 1437,
+                "height": 502
+            },
+            "output": "figs/ch21/21-2.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "21-7",
+            "page": 548,
+            "crop": {
+                "x": 788,
+                "y": 309,
+                "width": 836,
+                "height": 330
+            },
+            "output": "figs/ch21/21-7.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "21-9",
+            "page": 550,
+            "crop": {
+                "x": 659,
+                "y": 337,
+                "width": 1082,
+                "height": 764
+            },
+            "output": "figs/ch21/21-9.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "21-11",
+            "page": 551,
+            "crop": {
+                "x": 694,
+                "y": 312,
+                "width": 712,
+                "height": 522
+            },
+            "output": "figs/ch21/21-11.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "21-12",
+            "page": 553,
+            "crop": {
+                "x": 665,
+                "y": 312,
+                "width": 770,
+                "height": 523
+            },
+            "output": "figs/ch21/21-12.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "21-13",
+            "page": 553,
+            "crop": {
+                "x": 750,
+                "y": 974,
+                "width": 600,
+                "height": 705
+            },
+            "output": "figs/ch21/21-13.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "21-14",
+            "page": 554,
+            "crop": {
+                "x": 640,
+                "y": 312,
+                "width": 1118,
+                "height": 628
+            },
+            "output": "figs/ch21/21-14.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "22-1",
+            "page": 560,
+            "crop": {
+                "x": 579,
+                "y": 315,
+                "width": 1240,
+                "height": 640
+            },
+            "output": "figs/ch22/22-1.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "22-2",
+            "page": 565,
+            "crop": {
+                "x": 654,
+                "y": 316,
+                "width": 789,
+                "height": 647
+            },
+            "output": "figs/ch22/22-2.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "23-2",
+            "page": 571,
+            "crop": {
+                "x": 642,
+                "y": 312,
+                "width": 814,
+                "height": 759
+            },
+            "output": "figs/ch23/23-2.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "23-3",
+            "page": 572,
+            "crop": {
+                "x": 481,
+                "y": 312,
+                "width": 1437,
+                "height": 692
+            },
+            "output": "figs/ch23/23-3.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "23-4",
+            "page": 574,
+            "crop": {
+                "x": 621,
+                "y": 316,
+                "width": 1158,
+                "height": 368
+            },
+            "output": "figs/ch23/23-4.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "23-12",
+            "page": 582,
+            "crop": {
+                "x": 481,
+                "y": 312,
+                "width": 1437,
+                "height": 741
+            },
+            "output": "figs/ch23/23-12.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "23-13",
+            "page": 583,
+            "crop": {
+                "x": 331,
+                "y": 312,
+                "width": 1437,
+                "height": 779
+            },
+            "output": "figs/ch23/23-13.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "23-15",
+            "page": 589,
+            "crop": {
+                "x": 331,
+                "y": 312,
+                "width": 1437,
+                "height": 885
+            },
+            "output": "figs/ch23/23-15.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "23-21",
+            "page": 597,
+            "crop": {
+                "x": 333,
+                "y": 312,
+                "width": 1435,
+                "height": 630
+            },
+            "output": "figs/ch23/23-21.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "A-1",
+            "page": 613,
+            "crop": {
+                "x": 646,
+                "y": 312,
+                "width": 805,
+                "height": 432
+            },
+            "output": "figs/appendix-a/A-1.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "A-2",
+            "page": 614,
+            "crop": {
+                "x": 1088,
+                "y": 1747,
+                "width": 224,
+                "height": 396
+            },
+            "output": "figs/appendix-a/A-2.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "A-3",
+            "page": 614,
+            "crop": {
+                "x": 768,
+                "y": 2291,
+                "width": 628,
+                "height": 125
+            },
+            "output": "figs/appendix-a/A-3.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "A-4",
+            "page": 615,
+            "crop": {
+                "x": 331,
+                "y": 315,
+                "width": 1437,
+                "height": 747
+            },
+            "output": "figs/appendix-a/A-4.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "A-5",
+            "page": 615,
+            "crop": {
+                "x": 331,
+                "y": 1199,
+                "width": 1437,
+                "height": 132
+            },
+            "output": "figs/appendix-a/A-5.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "A-6",
+            "page": 617,
+            "crop": {
+                "x": 331,
+                "y": 312,
+                "width": 1437,
+                "height": 149
+            },
+            "output": "figs/appendix-a/A-6.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "A-7",
+            "page": 617,
+            "crop": {
+                "x": 331,
+                "y": 598,
+                "width": 1437,
+                "height": 132
+            },
+            "output": "figs/appendix-a/A-7.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "A-8",
+            "page": 618,
+            "crop": {
+                "x": 873,
+                "y": 2148,
+                "width": 650,
+                "height": 268
+            },
+            "output": "figs/appendix-a/A-8.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "A-9",
+            "page": 623,
+            "crop": {
+                "x": 331,
+                "y": 315,
+                "width": 1437,
+                "height": 1105
+            },
+            "output": "figs/appendix-a/A-9.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "A-10",
+            "page": 624,
+            "crop": {
+                "x": 488,
+                "y": 321,
+                "width": 1430,
+                "height": 1091
+            },
+            "output": "figs/appendix-a/A-10.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "A-11",
+            "page": 626,
+            "crop": {
+                "x": 481,
+                "y": 313,
+                "width": 1437,
+                "height": 1103
+            },
+            "output": "figs/appendix-a/A-11.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "B-1",
+            "page": 631,
+            "crop": {
+                "x": 402,
+                "y": 313,
+                "width": 1294,
+                "height": 569
+            },
+            "output": "figs/appendix-b/B-1.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "B-2",
+            "page": 632,
+            "crop": {
+                "x": 481,
+                "y": 312,
+                "width": 1437,
+                "height": 1020
+            },
+            "output": "figs/appendix-b/B-2.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "B-3",
+            "page": 633,
+            "crop": {
+                "x": 331,
+                "y": 312,
+                "width": 1437,
+                "height": 484
+            },
+            "output": "figs/appendix-b/B-3.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "B-4",
+            "page": 641,
+            "crop": {
+                "x": 332,
+                "y": 312,
+                "width": 1436,
+                "height": 409
+            },
+            "output": "figs/appendix-b/B-4.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "B-5",
+            "page": 642,
+            "crop": {
+                "x": 487,
+                "y": 316,
+                "width": 1431,
+                "height": 549
+            },
+            "output": "figs/appendix-b/B-5.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "B-8",
+            "page": 646,
+            "crop": {
+                "x": 488,
+                "y": 316,
+                "width": 1425,
+                "height": 574
+            },
+            "output": "figs/appendix-b/B-8.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "B-9",
+            "page": 647,
+            "crop": {
+                "x": 390,
+                "y": 312,
+                "width": 1319,
+                "height": 532
+            },
+            "output": "figs/appendix-b/B-9.png",
+            "review": "reviewed"
+        },
+        {
+            "id": "18-ex1",
+            "page": 478,
+            "crop": {
+                "x": 1039,
+                "y": 315,
+                "width": 378,
+                "height": 985
+            },
+            "output": "figs/ch18/18-ex1.png",
             "review": "reviewed"
         }
     ]

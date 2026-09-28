@@ -48,12 +48,8 @@ $A\times B$ 通常是计算量最大的部分，本章专注于此。
 的寄存器中；全部计算结束后，线程协作把它写回全局内存。
 
 \begin{figure}[htbp]
-  \centering\small
-  \begin{tabular}{c@{\quad$\times$\quad}c@{\quad$\longrightarrow$\quad}c}
-    \fbox{$A$：$m\times k$ tile} & \fbox{$B$：$k\times n$ tile}
-      & \fbox{$C$：$m\times n$ tile}\\[-0.1em]
-    共享内存 & 共享内存 & 线程寄存器
-  \end{tabular}
+  \centering
+  \includegraphics[width=0.85\textwidth]{figs/ch15/15-1.png}
   \caption{分块矩阵乘法回顾}
   \label{fig:15-1}
 \end{figure}
@@ -87,12 +83,8 @@ tile。这 4 个输出都需要同一个 $A$ 输入 tile；原来由 4 个块分
 为 $16\times16$，每线程可负责 $tM\times tN=8\times8$ 的\textbf{线程级输出 tile}。
 
 \begin{figure}[htbp]
-  \centering\small
-  \begin{tabular}{c@{\quad$\supset$\quad}c@{\qquad}c}
-    \fbox{块级 $C$ tile：$bM\times bN$}
-    & \fbox{线程级 $C$ tile：$tM\times tN$}
-    & \begin{tabular}{l}$A$ 输入：$tM\times bK$\\$B$ 输入：$bK\times tN$\end{tabular}
-  \end{tabular}
+  \centering
+  \includegraphics[width=\textwidth]{figs/ch15/15-2.png}
   \caption{使用大 tile 的分块矩阵乘法及线程级 tile 层次}
   \label{fig:15-2}
 \end{figure}
@@ -289,12 +281,7 @@ __device__ __forceinline__ void writeTile(float *c, unsigned int ldc,
 
 \begin{figure}[htbp]
   \centering
-  \fbox{\begin{minipage}{0.9\textwidth}\centering
-    共享内存：$A$ 与 $B$ 的块级输入 tile\\[0.35em]
-    $\Downarrow$ 每线程每次加载 $A$ 的 $tM$ 元素条带与 $B$ 的 $tN$ 元素条带\\[0.35em]
-    寄存器：$a_r[tM]$、$b_r[tN]$\\[0.35em]
-    $\Downarrow$ 外积更新寄存器中的 $tM\times tN$ 输出 tile
-  \end{minipage}}
+  \includegraphics[width=\textwidth]{figs/ch15/15-8.png}
   \caption{对输入 tile 使用寄存器分块的矩阵乘法}
   \label{fig:15-8}
 \end{figure}
@@ -359,13 +346,8 @@ __device__ __forceinline__ void mm(unsigned int m, unsigned int n,
 $8\times8$ 输出 tile 改成四个分散的 $4\times4$ tile。
 
 \begin{figure}[htbp]
-  \centering\small
-  \begin{tabular}{c@{$\Rightarrow$}c@{$\Rightarrow$}c}
-    \fbox{块级 $128\times128$}
-    & \fbox{8 个 warp：每个 $64\times32$}
-    & \fbox{4 象限：每线程各取一个 $4\times4$}\\
-    块级 tile & warp 级 tile & 四个物理子 tile 构成逻辑 $8\times8$
-  \end{tabular}
+  \centering
+  \includegraphics[width=\textwidth]{figs/ch15/15-10.png}
   \caption{为合并存储而重新排列线程输出 tile}
   \label{fig:15-10}
 \end{figure}
@@ -391,12 +373,8 @@ tile 宽度为 8，其下标是 $4\times8=32$，仍位于 bank $32\bmod32=0$。�
 每次访问均形成 8 路冲突。
 
 \begin{figure}[htbp]
-  \centering\small
-  \begin{tabular}{c|ccc}
-    & 第 0 行首元素 & 第 4 行首元素 & 第 8 行首元素\\\hline
-    (a) 主维度 8 & $0\to$ bank 0 & $32\to$ bank 0 & $64\to$ bank 0\\
-    (b) 填充后主维度 9 & $0\to$ bank 0 & $36\to$ bank 4 & $72\to$ bank 8
-  \end{tabular}
+  \centering
+  \includegraphics[width=\textwidth]{figs/ch15/15-11.png}
   \caption{增加填充列以消除共享内存 bank 冲突}
   \label{fig:15-11}
 \end{figure}
@@ -461,12 +439,8 @@ $A_0,B_0$，随后覆盖共享内存，加载 $A_1,B_1$。加载时浮点 ALU �
 硬件空闲。
 
 \begin{figure}[htbp]
-  \centering\small
-  \begin{tabular}{c|l}
-    (a) 原始 & 加载 $A_0B_0$；屏障；计算 $C_0$；屏障；加载 $A_1B_1$；……\\
-    (b) 双缓冲 & 加载当前缓冲；计算当前缓冲与加载下一缓冲之间无假依赖屏障\\
-    (c) 软件流水 & 第 $i$ 轮计算 $A_iB_i$，同时预取 $A_{i+1}B_{i+1}$
-  \end{tabular}
+  \centering
+  \includegraphics[width=\textwidth]{figs/ch15/15-12.png}
   \caption{采用双缓冲与软件流水线前后的指令交错}
   \label{fig:15-12}
 \end{figure}
@@ -482,13 +456,8 @@ $A_0,B_0$，随后覆盖共享内存，加载 $A_1,B_1$。加载时浮点 ALU �
 $i+1$ 对。这样编译器就能交错两类指令。
 
 \begin{figure}[htbp]
-  \centering\small
-  \begin{tabular}{c|cccccc}
-    时间 & 0 & 1 & 2 & 3 & 4 & 5\\\hline
-    (a) 原始 & 加载 0 & 等待 & 计算 0 & 加载 1 & 等待 & 计算 1\\
-    (b) 流水 & 加载 0 & \multicolumn{2}{c}{计算 0 $\parallel$ 加载 1}
-      & \multicolumn{2}{c}{计算 1 $\parallel$ 加载 2} & 计算末 tile
-  \end{tabular}
+  \centering
+  \includegraphics[width=\textwidth]{figs/ch15/15-13.png}
   \caption{软件流水线前后的时序示意}
   \label{fig:15-13}
 \end{figure}

@@ -43,7 +43,7 @@ __global__ void jacobi_kernel(float* out, float* in, float* l2norm,
     }
 }
   \end{lstlisting}
-  \caption{二维 Jacobi 迭代法的修改版模板内核。依据原书图 23.1 逐字符重排。}
+  \caption{二维 Jacobi 迭代法的修改版模板内核。}
   \label{fig:23-1}
 \end{figure}
 
@@ -77,19 +77,8 @@ $x=0$、$x=nx-1$、$y=0$ 和 $y=ny-1$ 处的点会被跳过，因为它们是边
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=0.75cm,y=0.58cm,>=Stealth]
-    \foreach \y/\c/\g in {6.0/red!68/0,4.2/yellow!75/1,2.4/green!60/2,0.6/blue!55/3} {
-      \fill[\c] (0,\y) rectangle (7,\y+1.5);
-      \draw[thick] (0,\y) rectangle (7,\y+1.5);
-      \draw[dashed] (0,\y+0.18) -- (7,\y+0.18);
-      \draw[dashed] (0,\y+1.32) -- (7,\y+1.32);
-      \node[left,font=\small] at (0,\y+0.75) {GPU \g};
-    }
-    \draw[<->] (0,8.1) -- (7,8.1) node[midway,above] {$nx$};
-    \draw[<->] (7.35,4.2) -- (7.35,5.7) node[midway,right] {$ny$};
-  \end{tikzpicture}
-  \caption{跨 4 个 GPU 划分建模系统的二维网格数组。依据原书图 23.2 重绘；实线分隔各
-  GPU 负责的域分区，虚线标出 halo 行。}
+  \includegraphics[width=0.75\textwidth]{figs/ch23/23-2.png}
+  \caption{跨 4 个 GPU 划分建模系统的二维网格数组。实线分隔各 GPU 负责的域分区，虚线标出 halo 行。}
   \label{fig:23-2}
 \end{figure}
 
@@ -115,27 +104,8 @@ $ny-2$ 行既是输入，也是输出。
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=0.54cm,y=0.48cm,>=Stealth]
-    \node[font=\small\bfseries] at (3.5,7.9) {(a) 计算前可用的旧值};
-    \node[font=\small\bfseries] at (12.5,7.9) {(b) 计算后可用的新值};
-    \foreach \base/\panel in {0/0,9/1} {
-      \foreach \y/\c/\g in {5.8/red!68/0,3.3/yellow!75/1,0.8/green!60/2} {
-        \fill[\c] (\base,\y) rectangle +(7,1.7);
-        \draw[thick] (\base,\y) rectangle +(7,1.7);
-        \draw[dashed] (\base,\y+0.17) -- +(7,0);
-        \draw[dashed] (\base,\y+1.53) -- +(7,0);
-        \node[left,font=\scriptsize] at (\base,\y+0.85) {GPU \g};
-      }
-    }
-    \foreach \y in {5.8,3.3} {
-      \draw[<->,orange!80!black] (16.2,\y-0.03) .. controls (16.8,\y-0.35) and
-        (16.8,\y-0.65) .. (16.2,\y-0.87);
-      \node[right,font=\scriptsize,align=left] at (16.55,\y-0.45) {halo\\交换};
-    }
-    \node[font=\scriptsize,align=center] at (3.5,-0.15) {各 GPU 已取得相邻分区的 halo 行};
-    \node[font=\scriptsize,align=center] at (12.5,-0.15) {本地 halo 行已过期，必须重新交换};
-  \end{tikzpicture}
-  \caption{各 GPU 在计算前后可用的值。依据原书图 23.3 重绘。}
+  \includegraphics[width=\textwidth]{figs/ch23/23-3.png}
+  \caption{各 GPU 在计算前后可用的值。}
   \label{fig:23-3}
 \end{figure}
 
@@ -177,22 +147,8 @@ $L_2$ 范数平方和。MPI、NCCL 和 NVSHMEM 分别提供了自己的 GPU 间�
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[>=Stealth,node distance=0.35cm]
-    \foreach \n in {0,...,3} {
-      \begin{scope}[shift={(\n*3.4,0)}]
-        \draw[rounded corners=3pt,thick,blue!60!black] (0,0) rectangle (2.8,2.15);
-        \node[font=\small\bfseries] at (1.4,0.28) {节点 \n};
-        \foreach \x/\y/\r in {0.65/1.55/0,1.55/1.55/1,0.65/0.85/2,1.55/0.85/3} {
-          \node[draw,ellipse,fill=red!18,minimum width=0.82cm,minimum height=0.48cm,
-                font=\scriptsize] at (\x,\y) {进程};
-        }
-      \end{scope}
-    }
-    \draw[thick] (1.4,-0.25) -- (11.6,-0.25);
-    \foreach \x in {1.4,4.8,8.2,11.6} {\draw[thick] (\x,0) -- (\x,-0.25);}
-    \node[below,font=\small] at (6.5,-0.25) {互连网络};
-  \end{tikzpicture}
-  \caption{程序员看到的 MPI 进程。依据原书图 23.4 重绘；每个节点可以包含一个或多个进程。}
+  \includegraphics[width=\textwidth]{figs/ch23/23-4.png}
+  \caption{程序员看到的 MPI 进程。每个节点可以包含一个或多个进程。}
   \label{fig:23-4}
 \end{figure}
 
@@ -219,8 +175,7 @@ int MPI_Comm_rank(MPI_Comm comm, int *rank)       // 返回 comm 中调用进程
 int MPI_Comm_size(MPI_Comm comm, int *size)       // 返回 comm 中的进程数
 int MPI_Finalize()                                // 结束 MPI 应用并释放资源
   \end{lstlisting}
-  \caption{建立和关闭通信系统所用的基本 MPI API 函数。依据原书图 23.5 逐字符重排，
-  说明文字译为中文。}
+  \caption{建立和关闭通信系统所用的基本 MPI API 函数。}
   \label{fig:23-5}
 \end{figure}
 
@@ -245,7 +200,7 @@ int main(int argc, char *argv[]) {
     return 0;
 }
   \end{lstlisting}
-  \caption{一个简单的 MPI 主程序。依据原书图 23.6 逐字符重排。}
+  \caption{一个简单的 MPI 主程序。}
   \label{fig:23-6}
 \end{figure}
 
@@ -328,7 +283,7 @@ for(unsigned int iter = 0; l2norm > tol && iter < iter_max; ++iter) {
 
 }
   \end{lstlisting}
-  \caption{基于 MPI 的多 GPU Jacobi 迭代法主机代码。依据原书图 23.7 逐字符重排。}
+  \caption{基于 MPI 的多 GPU Jacobi 迭代法主机代码。}
   \label{fig:23-7}
 \end{figure}
 
@@ -362,7 +317,7 @@ int MPI_Send(void *buf, int count, MPI_Datatype datatype,
 // tag: 消息标签（整数）
 // comm: 通信器（句柄）
   \end{lstlisting}
-  \caption{\code{MPI_Send()} 函数的签名。依据原书图 23.8 逐字符重排，参数说明译为中文。}
+  \caption{\code{MPI_Send} 函数的签名。}
   \label{fig:23-8}
 \end{figure}
 
@@ -388,7 +343,7 @@ int MPI_Recv(void *buf, int count, MPI_Datatype datatype,
 // comm: 通信器（句柄）
 // status: 状态对象（MPI_Status）
   \end{lstlisting}
-  \caption{\code{MPI_Recv()} 函数的签名。依据原书图 23.9 逐字符重排，参数说明译为中文。}
+  \caption{\code{MPI_Recv} 函数的签名。}
   \label{fig:23-9}
 \end{figure}
 
@@ -418,7 +373,7 @@ int MPI_Sendrecv(void *sendbuf, int sendcount, MPI_Datatype sendtype,
 // source/recvtag: 源进程的秩和接收标签
 // comm: 通信器；status: 接收操作的状态对象
   \end{lstlisting}
-  \caption{\code{MPI_Sendrecv()} 函数的签名。依据原书图 23.10 逐字符重排，参数说明译为中文。}
+  \caption{\code{MPI_Sendrecv} 函数的签名。}
   \label{fig:23-10}
 \end{figure}
 
@@ -481,7 +436,7 @@ int MPI_Allreduce(const void *sendbuf, void *recvbuf, int count,
 // datatype: 发送缓冲区元素的数据类型
 // op: 归约操作；comm: 通信器
   \end{lstlisting}
-  \caption{\code{MPI_Allreduce()} 函数的签名。依据原书图 23.11 逐字符重排，参数说明译为中文。}
+  \caption{\code{MPI_Allreduce} 函数的签名。}
   \label{fig:23-11}
 \end{figure}
 
@@ -509,31 +464,8 @@ halo 数据，GPU 计算硬件利用不足。理想情况下，应当让通信�
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=0.50cm,y=0.46cm,>=Stealth]
-    \node[font=\small\bfseries] at (3.5,9.0) {(a) 阶段 1：计算边界值};
-    \node[font=\small\bfseries,align=center] at (13,9.0) {(b) 阶段 2：计算内部值，\\同时执行 halo 交换};
-    \foreach \base in {0,9.5} {
-      \foreach \y/\c/\g in {5.8/red!68/0,3.3/yellow!75/1,0.8/green!60/2} {
-        \draw[thick] (\base,\y) rectangle +(7,1.7);
-        \draw[dashed] (\base,\y+0.17) -- +(7,0);
-        \draw[dashed] (\base,\y+1.53) -- +(7,0);
-        \node[left,font=\scriptsize] at (\base,\y+0.85) {GPU \g};
-      }
-    }
-    \fill[red!68] (0,5.97) rectangle +(7,0.2);
-    \fill[yellow!75] (0,3.47) rectangle +(7,0.2);
-    \fill[yellow!75] (0,4.83) rectangle +(7,0.2);
-    \fill[green!60] (0,0.97) rectangle +(7,0.2);
-    \fill[green!60] (0,2.33) rectangle +(7,0.2);
-    \foreach \y/\c in {5.8/red!68,3.3/yellow!75,0.8/green!60}
-      \fill[\c] (9.5,\y) rectangle +(7,1.7);
-    \foreach \y in {5.8,3.3} {
-      \draw[<->,orange!80!black] (16.7,\y-0.03) .. controls (17.3,\y-0.35) and
-        (17.3,\y-0.65) .. (16.7,\y-0.87);
-      \node[right,font=\scriptsize,align=left] at (17.05,\y-0.45) {halo\\交换};
-    }
-  \end{tikzpicture}
-  \caption{让计算与通信重叠的两阶段策略。依据原书图 23.12 重绘。}
+  \includegraphics[width=\textwidth]{figs/ch23/23-12.png}
+  \caption{让计算与通信重叠的两阶段策略。}
   \label{fig:23-12}
 \end{figure}
 
@@ -549,30 +481,8 @@ halo 数据，GPU 计算硬件利用不足。理想情况下，应当让通信�
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=0.72cm,y=0.72cm,>=Stealth,font=\scriptsize]
-    \draw[->] (0,6.4) -- (12.4,6.4) node[above left] {时间};
-    \node[left,align=right] at (0,5.75) {计算硬件\\（GPU）};
-    \node[left,align=right] at (0,4.65) {通信网络};
-    \draw[fill=blue!30] (0,5.35) rectangle (6.9,6.05) node[midway] {计算全部网格点};
-    \draw[fill=orange!28] (7.0,4.25) rectangle (9.25,5.0) node[midway,align=center] {顶部 halo\\交换};
-    \draw[fill=green!25] (9.25,4.25) rectangle (11.5,5.0) node[midway,align=center] {底部 halo\\交换};
-    \draw[fill=blue!25] (11.5,4.25) rectangle (12.35,5.0) node[midway,align=center] {归约\\$L_2$};
-    \node[align=center] at (6.2,3.75) {(a) 计算与通信不重叠};
-
-    \draw[->] (0,3.1) -- (12.4,3.1) node[above left] {时间};
-    \node[left,align=right] at (0,2.25) {计算硬件\\（GPU）};
-    \node[left,align=right] at (0,0.85) {通信网络};
-    \draw[fill=blue!30] (0,2.35) rectangle (7.0,2.95) node[midway] {计算内部网格点};
-    \draw[fill=orange!35] (0,1.75) rectangle (1.75,2.35) node[midway,font=\tiny] {顶部边界};
-    \draw[fill=green!35] (0,1.15) rectangle (1.75,1.75) node[midway,font=\tiny] {底部边界};
-    \draw[fill=orange!28] (1.75,0.45) rectangle (4.5,1.1) node[midway,align=center] {顶部 halo 交换};
-    \draw[fill=green!25] (4.5,0.45) rectangle (7.0,1.1) node[midway,align=center] {底部 halo 交换};
-    \draw[fill=blue!25] (7.0,0.45) rectangle (8.0,1.1) node[midway,align=center] {归约\\$L_2$};
-    \draw[->,orange!80!black] (1.75,2.05) -- (1.75,1.1);
-    \draw[->,green!60!black] (1.75,1.45) -- (4.5,1.1);
-    \node[align=center] at (6.2,-0.05) {(b) 计算与通信重叠};
-  \end{tikzpicture}
-  \caption{计算与通信不重叠和重叠时的执行时间线比较。依据原书图 23.13 重绘。}
+  \includegraphics[width=\textwidth]{figs/ch23/23-13.png}
+  \caption{计算与通信不重叠和重叠时的执行时间线比较。}
   \label{fig:23-13}
 \end{figure}
 
@@ -671,8 +581,7 @@ for(unsigned int iter = 0; l2norm > tol && iter < iter_max; ++iter) {
 
 }
   \end{lstlisting}
-  \caption{基于 MPI、重叠计算与通信的多 GPU Jacobi 迭代法主机代码。依据原书图 23.14
-  逐字符重排。}
+  \caption{基于 MPI、重叠计算与通信的多 GPU Jacobi 迭代法主机代码。}
   \label{fig:23-14}
 \end{figure}
 
@@ -796,39 +705,8 @@ cudaEventCreateWithFlags(&resetL2, cudaEventDisableTiming);
 
 \begin{figure}[htbp]
   \centering
-  \resizebox{\linewidth}{!}{%
-  \begin{tikzpicture}[x=1cm,y=1cm,>=Stealth,font=\scriptsize]
-    \draw[->] (0,6.4) -- (16.8,6.4) node[above left] {时间};
-    \foreach \y/\name in {5.5/{主机},4.0/{顶部 stream},2.5/{底部 stream},1.0/{内部 stream}}
-      \node[left,align=right] at (0,\y) {\name};
-    \foreach \x/\n in {0/04,0.7/05,1.4/06,2.1/07,2.8/10,3.5/11,4.2/12,4.9/14,5.6/15,6.3/19,7/20,7.7/21}
-      \node[draw,minimum width=0.7cm,minimum height=0.5cm] at (\x+0.35,5.5) {\n};
-    \node[draw,minimum width=3.2cm,minimum height=0.65cm] at (10.0,5.5) {MPI 交换顶部};
-    \node[draw,minimum width=3.2cm,minimum height=0.65cm] at (13.3,5.5) {MPI 交换底部};
-    \node[draw,minimum width=2.2cm,minimum height=0.65cm] at (16.1,5.5) {MPI 全归约};
-    \node[draw,dotted,minimum width=1.7cm] at (2.1,4.0) {等待 resetL2};
-    \node[draw,minimum width=2.0cm] at (4.0,4.0) {Jacobi（顶部）};
-    \node[draw,dotted,minimum width=1.2cm] at (6.0,4.0) {computeTop};
-    \node[draw,dotted,minimum width=1.7cm] at (2.1,2.5) {等待 resetL2};
-    \node[draw,minimum width=2.0cm] at (4.0,2.5) {Jacobi（底部）};
-    \node[draw,dotted,minimum width=1.5cm] at (6.2,2.5) {computeBottom};
-    \node[draw,minimum width=1.7cm] at (1.0,1.0) {memset};
-    \node[draw,dotted,minimum width=1.2cm] at (2.55,1.0) {resetL2};
-    \node[draw,minimum width=6.0cm] at (7.1,1.0) {Jacobi（内部）};
-    \node[draw,dotted,minimum width=0.8cm] at (10.75,1.0) {等待顶};
-    \node[draw,dotted,minimum width=0.8cm] at (12.0,1.0) {等待底};
-    \node[draw,minimum width=1.4cm] at (13.4,1.0) {memcpy};
-    \draw[dotted,->] (2.55,1.35) -- (2.1,3.65);
-    \draw[dotted,->] (2.55,1.35) -- (2.1,2.85);
-    \draw[dotted,->] (6.0,3.65) -- (10.75,1.35);
-    \draw[dotted,->] (6.2,2.15) -- (12.0,1.35);
-    \draw[dashed,thick,->] (6.0,4.35) -- (8.4,5.15);
-    \draw[dashed,thick,->] (6.2,2.85) -- (11.7,5.15);
-    \draw[dashed,thick,->] (13.4,1.35) -- (15.2,5.15);
-  \end{tikzpicture}
-  }
-  \caption{使用 CUDA stream 和事件重叠计算与 MPI 通信的示例时间线。依据原书图 23.15
-  重绘；实线框为计算或复制操作，点线框为事件与等待，粗虚线连接 stream 进度与主机同步。}
+  \includegraphics[width=0.85\textwidth]{figs/ch23/23-15.png}
+  \caption{使用 CUDA stream 和事件重叠计算与 MPI 通信的示例时间线。实线框为计算或复制操作，点线框为事件与等待，粗虚线连接 stream 进度与主机同步。}
   \label{fig:23-15}
 \end{figure}
 
@@ -948,8 +826,7 @@ ncclResult_t ncclCommInitRank(ncclComm_t *comm, int nranks,
 ncclResult_t ncclCommDestroy(ncclComm_t comm)
 // 销毁 comm 指定的通信器对象
   \end{lstlisting}
-  \caption{建立和关闭通信系统所用的基本 NCCL API 函数。依据原书图 23.16 逐字符重排，
-  参数说明译为中文。}
+  \caption{建立和关闭通信系统所用的基本 NCCL API 函数。}
   \label{fig:23-16}
 \end{figure}
 
@@ -981,7 +858,7 @@ int main(int argc, char *argv[]) {
     return 0;
 }
   \end{lstlisting}
-  \caption{一个简单的 MPI + NCCL 主程序。依据原书图 23.17 逐字符重排。}
+  \caption{一个简单的 MPI + NCCL 主程序。}
   \label{fig:23-17}
 \end{figure}
 
@@ -1022,7 +899,7 @@ ncclResult_t ncclRecv(void *recvbuff, size_t count,
                       ncclComm_t comm, cudaStream_t stream)
 // 从另一个秩接收数据；参数给出缓冲区、元素数、类型、源秩、通信器和执行 stream
   \end{lstlisting}
-  \caption{发送和接收数据的 NCCL API 函数。依据原书图 23.18 逐字符重排，参数说明译为中文。}
+  \caption{发送和接收数据的 NCCL API 函数。}
   \label{fig:23-18}
 \end{figure}
 
@@ -1044,8 +921,7 @@ ncclResult_t ncclGroupStart()
 ncclResult_t ncclGroupEnd()
 // 等待自 ncclGroupStart 后的全部通信原语都已提交到指定 stream
   \end{lstlisting}
-  \caption{把通信原语组织在一起的 NCCL API 函数。依据原书图 23.19 逐字符重排，
-  说明文字译为中文。}
+  \caption{把通信原语组织在一起的 NCCL API 函数。}
   \label{fig:23-19}
 \end{figure}
 
@@ -1110,8 +986,7 @@ for(unsigned int iter = 0; l2norm > tol && iter < iter_max; ++iter) {
 
 }
   \end{lstlisting}
-  \caption{基于 NCCL、重叠计算与通信的多 GPU Jacobi 迭代法主机代码。依据原书图 23.20
-  逐字符重排。}
+  \caption{基于 NCCL、重叠计算与通信的多 GPU Jacobi 迭代法主机代码。}
   \label{fig:23-20}
 \end{figure}
 
@@ -1125,42 +1000,8 @@ for(unsigned int iter = 0; l2norm > tol && iter < iter_max; ++iter) {
 
 \begin{figure}[htbp]
   \centering
-  \resizebox{\linewidth}{!}{%
-  \begin{tikzpicture}[x=1cm,y=1cm,>=Stealth,font=\scriptsize]
-    \draw[->] (0,6.4) -- (18.2,6.4) node[above left] {时间};
-    \foreach \y/\name in {5.5/{主机},4.0/{顶部 stream},2.5/{底部 stream},1.0/{内部 stream}}
-      \node[left,align=right] at (0,\y) {\name};
-    \foreach \x/\n in {0/04,0.7/05,1.4/06,2.1/07,2.8/10,3.5/11,4.2/12,4.9/14,5.6/15,6.3/19,7/20,7.7/21,8.4/27,9.1/31,9.8/32,10.5/36}
-      \node[draw,minimum width=0.7cm,minimum height=0.5cm] at (\x+0.35,5.5) {\n};
-    \node[draw,minimum width=2.5cm,minimum height=0.65cm] at (14.0,5.5) {同步内部 stream};
-    \node[draw,minimum width=2.2cm,minimum height=0.65cm] at (16.5,5.5) {MPI 全归约};
-    \node[draw,dotted,minimum width=1.6cm] at (2.1,4.0) {等待 resetL2};
-    \node[draw,minimum width=1.9cm] at (4.0,4.0) {Jacobi（顶部）};
-    \node[draw,dotted,minimum width=1.0cm] at (5.55,4.0) {完成};
-    \node[draw,minimum width=3.3cm] at (8.2,4.0) {NCCL 组调用：发送、接收};
-    \node[draw,dotted,minimum width=1.3cm] at (11.1,4.0) {exchangeTop};
-    \node[draw,dotted,minimum width=1.6cm] at (2.1,2.5) {等待 resetL2};
-    \node[draw,minimum width=1.9cm] at (4.0,2.5) {Jacobi（底部）};
-    \node[draw,dotted,minimum width=1.0cm] at (5.55,2.5) {完成};
-    \node[draw,minimum width=3.3cm] at (8.2,2.5) {NCCL 组调用：发送、接收};
-    \node[draw,dotted,minimum width=1.5cm] at (11.2,2.5) {exchangeBottom};
-    \node[draw,minimum width=1.6cm] at (0.9,1.0) {memset};
-    \node[draw,dotted,minimum width=1.2cm] at (2.4,1.0) {resetL2};
-    \node[draw,minimum width=5.8cm] at (6.4,1.0) {Jacobi（内部）};
-    \node[draw,dotted,minimum width=0.8cm] at (9.9,1.0) {等待顶};
-    \node[draw,dotted,minimum width=0.8cm] at (11.1,1.0) {等待底};
-    \node[draw,minimum width=1.3cm] at (12.45,1.0) {memcpy};
-    \node[draw,dotted,minimum width=1.2cm] at (15.1,1.0) {等待交换顶};
-    \node[draw,dotted,minimum width=1.2cm] at (17.2,1.0) {等待交换底};
-    \draw[dotted,->] (2.4,1.35) -- (2.1,3.65);
-    \draw[dotted,->] (2.4,1.35) -- (2.1,2.85);
-    \draw[dotted,->] (11.1,3.65) -- (15.1,1.35);
-    \draw[dotted,->] (11.2,2.15) -- (17.2,1.35);
-    \draw[dashed,thick,->] (12.45,1.35) -- (14.0,5.15);
-  \end{tikzpicture}
-  }
-  \caption{使用 CUDA stream 和事件重叠计算与 NCCL 通信的示例时间线。依据原书图 23.21
-  重绘。}
+  \includegraphics[width=\textwidth]{figs/ch23/23-21.png}
+  \caption{使用 CUDA stream 和事件重叠计算与 NCCL 通信的示例时间线。}
   \label{fig:23-21}
 \end{figure}
 
@@ -1216,8 +1057,7 @@ __device__ float nvshmem_float_g(const float* source, int pe)
 __device__ void nvshmem_float_p(float* dest, float val, int pe)
 // 把 val 存入 PE pe 的内存中、对称地址 dest 处
   \end{lstlisting}
-  \caption{为对称堆分配、释放、put 和 get 数据的 NVSHMEM API 函数。依据原书图 23.22
-  逐字符重排，说明文字译为中文。}
+  \caption{为对称堆分配、释放、put 和 get 数据的 NVSHMEM API 函数。}
   \label{fig:23-22}
 \end{figure}
 
@@ -1272,8 +1112,7 @@ __global__ void jacobi_kernel(float* out, float* in, float* l2norm,
     }
 }
   \end{lstlisting}
-  \caption{使用 NVSHMEM put 函数执行 halo 交换的 Jacobi 迭代模板内核。依据原书图 23.23
-  逐字符重排。}
+  \caption{使用 NVSHMEM put 函数执行 halo 交换的 Jacobi 迭代模板内核。}
   \label{fig:23-23}
 \end{figure}
 
@@ -1317,7 +1156,7 @@ int main(int argc, char *argv[]) {
     return 0;
 }
   \end{lstlisting}
-  \caption{一个简单的 MPI + NVSHMEM 主程序。依据原书图 23.24 逐字符重排。}
+  \caption{一个简单的 MPI + NVSHMEM 主程序。}
   \label{fig:23-24}
 \end{figure}
 
@@ -1365,8 +1204,7 @@ for(unsigned int iter = 0; l2norm > tol && iter < iter_max; ++iter) {
 
 }
   \end{lstlisting}
-  \caption{基于 NVSHMEM、重叠计算与通信的多 GPU Jacobi 迭代法主机代码。依据原书图 23.25
-  逐字符重排。}
+  \caption{基于 NVSHMEM、重叠计算与通信的多 GPU Jacobi 迭代法主机代码。}
   \label{fig:23-25}
 \end{figure}
 

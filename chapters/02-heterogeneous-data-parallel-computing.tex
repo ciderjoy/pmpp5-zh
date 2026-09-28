@@ -1,5 +1,6 @@
 \chapter{异构数据并行计算}
 \label{chap:heterogeneous-data-parallel-computing}
+\chaptercontents
 
 数据并行性是这样一种现象：要在数据集的不同部分上执行的计算彼此独立，因此
 可以并行执行。许多应用都具有丰富的数据并行性，适合进行可扩展的并行执行；在
@@ -715,19 +716,7 @@ NVCC 的运行时组件会进一步把这些 PTX 文件编译为真正的目标�
 
 \begin{figure}[htbp]
   \centering
-  \begin{tabular}{c}
-    \textbf{包含 CUDA 扩展的 C++ 程序}\\
-    $\downarrow$\\
-    \fbox{\parbox{0.55\textwidth}{\centering NVCC 编译器}}\\[0.4em]
-    \begin{tabular}{c@{\qquad}c}
-      $\swarrow$ 主机代码 & 设备代码（PTX） $\searrow$\\
-      \fbox{\parbox{0.31\textwidth}{\centering 主机 C++ 预处理器、编译器/链接器}}
-      &
-      \fbox{\parbox{0.31\textwidth}{\centering 设备即时编译器}}\\
-      $\searrow$ & $\swarrow$
-    \end{tabular}\\[0.4em]
-    \fbox{\parbox{0.65\textwidth}{\centering 包含 CPU 和 GPU 的异构计算平台}}
-  \end{tabular}
+  \includegraphics[width=0.82\textwidth]{figs/ch2/2-14.png}
   \caption{CUDA C++ 程序的编译过程概览}
   \label{fig:2-14}
 \end{figure}

@@ -86,17 +86,7 @@ $[(30,150),(32,80),(29,80),(22,45)]$。如果列表元素本身只是数值，�
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \setlength{\tabcolsep}{5pt}
-  \begin{tabular}{c|*{8}{c}}
-    初始&4&7&2&3&8&5&9&6\\
-    整理偶数对&4&7&2&3&5&8&6&9\\
-    整理奇数对&4&2&7&3&5&6&8&9\\
-    整理偶数对&2&4&3&7&5&6&8&9\\
-    整理奇数对&2&3&4&5&7&6&8&9\\
-    整理偶数对&2&3&4&5&6&7&8&9\\
-    整理奇数对（无变化）&2&3&4&5&6&7&8&9
-  \end{tabular}
+  \includegraphics[width=0.75\textwidth]{figs/ch14/14-1.png}
   \caption{并行奇偶排序}
   \label{fig:14-1}
 \end{figure}
@@ -160,22 +150,7 @@ $N/2$ 次，即 $O(N)$ 次比较，因此奇偶排序的工作复杂度为 $O(N^
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \begin{tabular}{c}
-    \fbox{块 0}\ \fbox{块 1}\ \fbox{块 2}\ \fbox{块 3}\
-    \ \fbox{块 4}\ \fbox{块 5}\ \fbox{块 6}\ \fbox{块 7}\\[0.3em]
-    $\downarrow$ 各块独立排序 $\downarrow$\\[0.3em]
-    \fbox{有序段 0}\ \fbox{有序段 1}\ \fbox{有序段 2}\ \fbox{有序段 3}\
-    \ \fbox{有序段 4}\ \fbox{有序段 5}\ \fbox{有序段 6}\ \fbox{有序段 7}\\[0.3em]
-    $\searrow\!\swarrow\quad\searrow\!\swarrow\quad
-     \searrow\!\swarrow\quad\searrow\!\swarrow$\\[-0.1em]
-    \fbox{归并段 0--1}\quad\fbox{归并段 2--3}\quad
-    \fbox{归并段 4--5}\quad\fbox{归并段 6--7}\\[0.3em]
-    $\searrow\!\swarrow\qquad\qquad\searrow\!\swarrow$\\[-0.1em]
-    \fbox{归并段 0--3}\qquad\qquad\fbox{归并段 4--7}\\[0.3em]
-    $\searrow\qquad\swarrow$\\[-0.1em]
-    \fbox{完整有序列表}
-  \end{tabular}
+  \includegraphics[width=0.85\textwidth]{figs/ch14/14-3.png}
   \caption{并行化归并排序的一种方式}
   \label{fig:14-3}
 \end{figure}
@@ -208,15 +183,7 @@ $O(\log N)$ 的时间复杂度和 $O(N\log N)$ 的工作复杂度。
 
 \begin{figure}[htbp]
   \centering
-  \tiny
-  \setlength{\tabcolsep}{1.5pt}
-  \begin{tabular}{c|*{16}{c}}
-    输入&1100&0011&0110&1001&1111&1000&0101&1010&1001&0110&1011&1101&0100&1010&0111&0000\\
-    第 1 轮（位 0）&1100&0110&1000&1010&0110&0100&1010&0000&0011&1001&1111&0101&1001&1011&1101&0111\\
-    第 2 轮（位 1）&1100&1000&0100&0000&1001&0101&1001&1101&0110&1010&0110&1010&0011&1111&1011&0111\\
-    第 3 轮（位 2）&1000&0000&1001&1001&1010&1010&0011&1011&1100&0100&0101&1101&0110&0110&1111&0111\\
-    第 4 轮（位 3）&0000&0011&0100&0101&0110&0110&0111&1000&1001&1001&1010&1010&1011&1100&1101&1111
-  \end{tabular}
+  \includegraphics[width=0.85\textwidth]{figs/ch14/14-4.png}
   \caption{1 位基数的基数排序示例}
   \label{fig:14-4}
 \end{figure}
@@ -258,16 +225,7 @@ $O(\log N)$ 的时间复杂度和 $O(N\log N)$ 的工作复杂度。
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    \fbox{块 0：1100 0011 0110 1001}\quad
-    \fbox{块 1：1111 1000 0101 1010}\\
-    \fbox{块 2：1001 0110 1011 1101}\quad
-    \fbox{块 3：0100 1010 0111 0000}\\[0.4em]
-    $\downarrow$ 每个线程根据最低位求目标下标 $\downarrow$\\[0.4em]
-    \fbox{0 桶：1100 0110 1000 1010 0110 0100 1010 0000}\\
-    \fbox{1 桶：0011 1001 1111 0101 1001 1011 1101 0111}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch14/14-5.png}
   \caption{为每个输入键分配一个线程，并行化一次基数排序迭代}
   \label{fig:14-5}
 \end{figure}
@@ -303,14 +261,7 @@ $O(\log N)$ 的时间复杂度和 $O(N\log N)$ 的工作复杂度。
 
 \begin{figure}[htbp]
   \centering
-  \tiny
-  \setlength{\tabcolsep}{2.1pt}
-  \begin{tabular}{c|*{16}{c}}
-    键下标&0&1&2&3&4&5&6&7&8&9&10&11&12&13&14&15\\
-    当前位&0&1&0&1&1&0&1&0&1&0&1&1&0&0&1&0\\
-    此前 1 键数&0&0&1&1&2&3&3&4&4&5&5&6&7&7&7&8\\
-    目标下标&0&8&1&9&10&2&11&3&12&4&13&14&5&6&15&7
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch14/14-6.png}
   \caption{求每个输入键的目标位置}
   \label{fig:14-6}
 \end{figure}
@@ -385,16 +336,7 @@ __global__ void radix_sort_iter(unsigned int* input, unsigned int* output,
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    \fbox{块 0：1100 0011 0110 1001 $\rightarrow$ 1100 0110 $\mid$ 0011 1001}\\
-    \fbox{块 1：1111 1000 0101 1010 $\rightarrow$ 1000 1010 $\mid$ 1111 0101}\\
-    \fbox{块 2：1001 0110 1011 1101 $\rightarrow$ 0110 $\mid$ 1001 1011 1101}\\
-    \fbox{块 3：0100 1010 0111 0000 $\rightarrow$ 0100 1010 0000 $\mid$ 0111}\\[0.35em]
-    $\downarrow$ 共享内存中先按块局部排序，再连续写出局部桶 $\downarrow$\\[0.35em]
-    \fbox{全局 0 桶：1100 0110 1000 1010 0110 0100 1010 0000}\\
-    \fbox{全局 1 桶：0011 1001 1111 0101 1001 1011 1101 0111}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch14/14-8.png}
   \caption{先在共享内存中局部排序，再写入全局内存，以改进内存合并}
   \label{fig:14-8}
 \end{figure}
@@ -413,16 +355,7 @@ __global__ void radix_sort_iter(unsigned int* input, unsigned int* output,
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \setlength{\tabcolsep}{8pt}
-  \begin{tabular}{c|cccc}
-    线程块&0&1&2&3\\\hline
-    局部 0 桶大小&2&2&1&3\\
-    局部 1 桶大小&2&2&3&1\\\hline
-    \multicolumn{5}{c}{$\Downarrow$ 对按行展开的桶大小表执行排他扫描 $\Downarrow$}\\\hline
-    局部 0 桶目标起点&0&2&4&5\\
-    局部 1 桶目标起点&8&10&12&15
-  \end{tabular}
+  \includegraphics[width=0.85\textwidth]{figs/ch14/14-9.png}
   \caption{确定每个线程块的局部桶在全局输出中的目标位置}
   \label{fig:14-9}
 \end{figure}
@@ -454,13 +387,7 @@ __global__ void radix_sort_iter(unsigned int* input, unsigned int* output,
 
 \begin{figure}[htbp]
   \centering
-  \tiny
-  \setlength{\tabcolsep}{1.5pt}
-  \begin{tabular}{c|*{16}{c}}
-    输入&1100&0011&0110&1001&1111&1000&0101&1010&1001&0110&1011&1101&0100&1010&0111&0000\\
-    低 2 位&1100&1000&0100&0000&1001&0101&1001&1101&0110&1010&0110&1010&0011&1111&1011&0111\\
-    高 2 位&0000&0011&0100&0101&0110&0110&0111&1000&1001&1001&1010&1010&1011&1100&1101&1111
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch14/14-10.png}
   \caption{使用 2 位基数的基数排序示例}
   \label{fig:14-10}
 \end{figure}
@@ -472,14 +399,7 @@ __global__ void radix_sort_iter(unsigned int* input, unsigned int* output,
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    \fbox{每个线程块在共享内存中处理各自的 4 个键}\\[0.3em]
-    $\downarrow$ 连续执行两轮局部 1 位基数排序 $\downarrow$\\[0.3em]
-    \fbox{每块形成 00、01、10、11 四个稳定局部桶}\\[0.3em]
-    $\downarrow$ 对局部桶大小表执行全局排他扫描 $\downarrow$\\[0.3em]
-    \fbox{把各局部桶以连续区段写到四个全局桶}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch14/14-11.png}
   \caption{用共享内存并行化并优化 2 位基数的一次基数排序迭代}
   \label{fig:14-11}
 \end{figure}
@@ -497,20 +417,7 @@ __global__ void radix_sort_iter(unsigned int* input, unsigned int* output,
 
 \begin{figure}[htbp]
   \centering
-  \small
-  \setlength{\tabcolsep}{7pt}
-  \begin{tabular}{c|cccc}
-    线程块&0&1&2&3\\\hline
-    局部 00 桶大小&1&1&0&2\\
-    局部 01 桶大小&1&1&2&0\\
-    局部 10 桶大小&1&1&1&1\\
-    局部 11 桶大小&1&1&1&1\\\hline
-    \multicolumn{5}{c}{$\Downarrow$ 行主序展开后执行排他扫描 $\Downarrow$}\\\hline
-    00 桶目标起点&0&1&2&2\\
-    01 桶目标起点&4&5&6&8\\
-    10 桶目标起点&8&9&10&11\\
-    11 桶目标起点&12&13&14&15
-  \end{tabular}
+  \includegraphics[width=0.85\textwidth]{figs/ch14/14-12.png}
   \caption{确定 2 位基数下每个线程块局部桶的目标位置}
   \label{fig:14-12}
 \end{figure}
@@ -537,16 +444,7 @@ __global__ void radix_sort_iter(unsigned int* input, unsigned int* output,
 
 \begin{figure}[htbp]
   \centering
-  \scriptsize
-  \begin{tabular}{c}
-    \fbox{粗化块 0：处理输入前 8 个键}\qquad
-    \fbox{粗化块 1：处理输入后 8 个键}\\[0.35em]
-    $\downarrow$ 每个线程负责多个键，在共享内存中形成较大局部桶 $\downarrow$\\[0.35em]
-    \fbox{块 0 的 00、01、10、11 桶}\qquad
-    \fbox{块 1 的 00、01、10、11 桶}\\[0.35em]
-    $\downarrow$ 更少、更大的连续区段写入全局内存 $\downarrow$\\[0.35em]
-    \fbox{按低 2 位稳定划分后的全局输出列表}
-  \end{tabular}
+  \includegraphics[width=\textwidth]{figs/ch14/14-13.png}
   \caption{对 2 位基数应用线程粗化，以改进内存合并}
   \label{fig:14-13}
 \end{figure}

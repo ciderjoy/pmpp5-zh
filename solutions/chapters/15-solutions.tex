@@ -58,7 +58,7 @@ __device__ __forceinline__ void loadTileVec4(
 \variantheading 若 \code{width=10}，每行前两个四元组可在对齐时向量加载，最后一组只含列
 8、9，必须标量加载两项并把另外两项填 0。
 \practiceheading 用 CUTLASS 的协作 tile copy 或 \code{cuda::memcpy_async} 实现作性能基线，
-并以 Compute Sanitizer memcheck 覆盖偏移子矩阵、\code{lda\%4!=0} 和尾行；Nsight Compute
+并以 Compute Sanitizer memcheck 覆盖偏移子矩阵、\texttt{lda\%4!=0} 和尾行；Nsight Compute
 可统计向量与标量加载指令比例。
 \sourcecheck{https://docs.nvidia.com/cuda/cuda-c-programming-guide/}{NVIDIA CUDA C++ Programming Guide 的内建向量类型与对齐要求；高置信度}
 对抗审查：\code{cudaMalloc} 的基址对齐并不保证任意行地址仍对齐；若 \code{lda} 不是

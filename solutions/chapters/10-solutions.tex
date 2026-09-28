@@ -23,7 +23,7 @@ __global__ void SimpleSumReductionKernel(float* input, float* output) {
 warp。把“第 1 次”对应到步幅 1，逐轮列出活跃线程。
 
 \answerheading 第 5 次迭代的步幅为 $1,2,4,8,16$ 中的 16。条件
-\code{threadIdx.x \% 16 == 0} 使每个 warp 的 lane 0 和 lane 16 执行加法，其余 lane
+\texttt{threadIdx.x \% 16 == 0} 使每个 warp 的 lane 0 和 lane 16 执行加法，其余 lane
 不执行。每个 warp 内都有真假两条控制路径，因此 16 个 warp 全部分歧。
 
 \conclusionheading 发生分歧的 warp 数为 $\boxed{16}$。
@@ -316,7 +316,7 @@ memcheck 下运行；生产封装还应检查 \code{size_t} 网格计算是否�
   \item 图 10.8 中针对访问合并与分歧优化的内核。
 \end{enumerate}
 图 10.5 令线程 $t$ 拥有位置 $2t$，步幅从 1 开始逐轮加倍，满足
-\code{threadIdx.x \% stride == 0} 的线程执行
+\texttt{threadIdx.x \% stride == 0} 的线程执行
 \code{input[2*t] += input[2*t + stride]}。图 10.8 令线程 $t$ 拥有位置 $t$，
 步幅从 4 开始逐轮减半，满足 $t<\code{stride}$ 的线程执行
 \code{input[t] += input[t + stride]}；每轮之后均有块级屏障。

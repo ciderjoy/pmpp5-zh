@@ -34,41 +34,8 @@
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[x=0.55cm,y=0.55cm,>=Stealth]
-    \begin{scope}[shift={(0,0)}]
-      \node[font=\small] at (0.2,5.9) {输入};
-      \foreach \x in {1,...,8} {\draw[fill=white,draw=gray!70] (\x-0.5,5.5) rectangle +(1,0.55);}
-      \draw[fill=cyan!65,draw=cyan!50!black] (1.1,3.15) circle (0.72);
-      \draw[fill=cyan!65,draw=cyan!50!black] (3.6,3.15) circle (0.72);
-      \node[font=\scriptsize] at (1.1,3.15) {线程 1};
-      \node[font=\scriptsize] at (3.6,3.15) {线程 2};
-      \foreach \x in {0.5,1.5,2.5,3.5,4.5,5.5,6.5,7.5} {
-        \draw[->,teal!80!black] (\x,5.45) -- (1.1,3.82);
-        \draw[->,teal!80!black] (\x,5.45) -- (3.6,3.82);
-      }
-      \foreach \x in {1,...,7} {\draw[fill=cyan!45,draw=gray!70] (\x-0.5,0.55) rectangle +(1,0.55);}
-      \node[font=\small] at (0.15,0.82) {输出};
-      \foreach \x in {0.5,1.5,2.5} {\draw[->,teal!80!black] (1.1,2.45) -- (\x,1.12);}
-      \foreach \x in {3.5,4.5,5.5,6.5} {\draw[->,teal!80!black] (3.6,2.45) -- (\x,1.12);}
-      \node[font=\small] at (3.5,-0.15) {(a) 输出中心};
-    \end{scope}
-    \begin{scope}[shift={(9.2,0)}]
-      \node[font=\small] at (0.2,5.9) {输入};
-      \foreach \x in {1,...,8} {\draw[fill=cyan!65,draw=cyan!50!black] (\x-0.5,5.5) rectangle +(1,0.55);}
-      \draw[fill=cyan!65,draw=cyan!50!black] (1.1,3.15) circle (0.72);
-      \draw[fill=cyan!65,draw=cyan!50!black] (3.6,3.15) circle (0.72);
-      \node[font=\scriptsize] at (1.1,3.15) {线程 1};
-      \node[font=\scriptsize] at (3.6,3.15) {线程 2};
-      \draw[->,teal!80!black] (0.5,5.45) -- (1.1,3.82);
-      \draw[->,teal!80!black] (2.5,5.45) -- (3.6,3.82);
-      \foreach \x in {1,...,7} {\draw[fill=white,draw=gray!70] (\x-0.5,0.55) rectangle +(1,0.55);}
-      \node[font=\small] at (0.15,0.82) {输出};
-      \foreach \x in {0.5,1.5,2.5,3.5} {\draw[->,teal!80!black] (1.1,2.45) -- (\x,1.12);}
-      \foreach \x in {3.5,4.5,5.5,6.5} {\draw[->,teal!80!black] (3.6,2.45) -- (\x,1.12);}
-      \node[font=\small] at (3.5,-0.15) {(b) 输入中心};
-    \end{scope}
-  \end{tikzpicture}
-  \caption{问题分解策略：（a）输出中心分解和（b）输入中心分解。依据原书图 22.1 重绘；箭头表示输入贡献在工作单元与输出元素之间的映射。}
+  \includegraphics[width=\textwidth]{figs/ch22/22-1.png}
+  \caption{问题分解策略：（a）输出中心分解和（b）输入中心分解。箭头表示输入贡献在工作单元与输出元素之间的映射。}
   \label{fig:22-1}
 \end{figure}
 
@@ -128,18 +95,8 @@
 
 \begin{figure}[htbp]
   \centering
-  \begin{tikzpicture}[>=Stealth,node distance=0.8cm and 1.2cm]
-    \node[draw,minimum width=3.0cm,minimum height=0.7cm,align=center] (neighbor) {邻域列表};
-    \node[draw,minimum width=3.0cm,minimum height=0.7cm,align=center,below=of neighbor] (nonbond) {非键力};
-    \node[draw,minimum width=5.8cm,minimum height=0.7cm,align=center,below=1.0cm of nonbond] (update) {更新原子位置和速度};
-    \node[draw,minimum width=3.2cm,minimum height=0.7cm,align=center,left=1.8cm of update] (vib) {振动力与转动力};
-    \node[draw,minimum width=3.0cm,minimum height=0.7cm,align=center,below=of update] (next) {下一时间步};
-    \draw[->] (neighbor) -- (nonbond);
-    \draw[->] (nonbond) -- (update);
-    \draw[->] (vib) -- (update);
-    \draw[->] (update) -- (next);
-  \end{tikzpicture}
-  \caption{分子动力学应用的主要任务。依据原书图 22.2 重绘。}
+  \includegraphics[width=0.85\textwidth]{figs/ch22/22-2.png}
+  \caption{分子动力学应用的主要任务。}
   \label{fig:22-2}
 \end{figure}
 

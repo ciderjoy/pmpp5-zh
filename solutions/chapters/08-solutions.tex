@@ -99,6 +99,11 @@ $32^2\times4=4096$ B，即 4 KiB。
 \end{enumerate}
 算术强度忽略系数流量、缓存重复和边界块浪费，正是题目采用的理想化模型。
 
+\editorialnote 教材正文 8.4 节对同类线程粗化内核给出 $t=32$ 时 1.52 FLOP/B，该数值
+相当于把 $z$ 向输入平面数取成与输出平面数相同、不计入前后各一层 halo。本题 (a) 按
+图 8.10 内核的实际装载（\code{inPrev_s}、\code{inCurr_s}，再加循环中逐层载入的
+\code{inNext_s}）计入这 2 个 halo 平面，故 (c) 为 1.42544；两种口径的差别仅在此处。
+
 \complexity{$13\times14{,}400$ FLOP/块}{12 KiB 或 4 KiB 共享内存/块}{1024 个线程协作处理 16 个输出平面}
 \conclusionheading (a) 18,432；(b) 14,400；(c) 约 1.42544 FLOP/B；
 (d) 12,288 B；(e) 4096 B。
